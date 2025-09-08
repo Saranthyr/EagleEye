@@ -1,0 +1,680 @@
+{
+	"folders": [
+		{
+			"name": "EagleEye",
+			"path": "."
+		},
+		{
+			"name": "UE5",
+			"path": "C:\\Program Files\\Epic Games\\UE_5.4"
+		}
+	],
+	"settings": {
+		"typescript.tsc.autoDetect": "off",
+		"npm.autoDetect": "off",
+		"files.associations": {
+			"__bits": "cpp",
+			"__config": "cpp",
+			"__debug": "cpp",
+			"__threading_support": "cpp",
+			"__tuple": "cpp",
+			"__verbose_abort": "cpp",
+			"array": "cpp",
+			"atomic": "cpp",
+			"cctype": "cpp",
+			"cinttypes": "cpp",
+			"cmath": "cpp",
+			"cstdarg": "cpp",
+			"cstddef": "cpp",
+			"cstdint": "cpp",
+			"cstdio": "cpp",
+			"cstdlib": "cpp",
+			"cstring": "cpp",
+			"ctime": "cpp",
+			"cwchar": "cpp",
+			"cwctype": "cpp",
+			"exception": "cpp",
+			"initializer_list": "cpp",
+			"iomanip": "cpp",
+			"ios": "cpp",
+			"iosfwd": "cpp",
+			"iostream": "cpp",
+			"istream": "cpp",
+			"limits": "cpp",
+			"locale": "cpp",
+			"map": "cpp",
+			"memory": "cpp",
+			"new": "cpp",
+			"optional": "cpp",
+			"ostream": "cpp",
+			"ratio": "cpp",
+			"sstream": "cpp",
+			"stdexcept": "cpp",
+			"streambuf": "cpp",
+			"string": "cpp",
+			"string_view": "cpp",
+			"system_error": "cpp",
+			"tuple": "cpp",
+			"type_traits": "cpp",
+			"typeinfo": "cpp",
+			"unordered_map": "cpp",
+			"vector": "cpp",
+			"algorithm": "cpp",
+			"chrono": "cpp",
+			"compare": "cpp",
+			"concepts": "cpp",
+			"functional": "cpp",
+			"iterator": "cpp",
+			"numeric": "cpp",
+			"random": "cpp",
+			"utility": "cpp",
+			"xmemory": "cpp",
+			"xstring": "cpp",
+			"xtr1common": "cpp",
+			"xutility": "cpp"
+		},
+		"files.exclude": {
+			"**/*.rpyc": true,
+			"**/*.rpa": true,
+			"**/*.rpymc": true,
+			"**/cache/": true
+		}
+	},
+	"extensions": {
+		"recommendations": [
+			"ms-vscode.cpptools",
+			"ms-dotnettools.csharp"
+		]
+	},
+	"tasks": {
+		"version": "2.0.0",
+		"tasks": [
+			{
+				"label": "EagleEye Win64 Debug Build",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"Debug",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEye Win64 Debug Rebuild",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"Debug",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"EagleEye Win64 Debug Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEye Win64 Debug Clean",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"Debug",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEye Win64 DebugGame Build",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"DebugGame",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEye Win64 DebugGame Rebuild",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"DebugGame",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"EagleEye Win64 DebugGame Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEye Win64 DebugGame Clean",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"DebugGame",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEye Win64 Development Build",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"Development",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEye Win64 Development Rebuild",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"Development",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"EagleEye Win64 Development Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEye Win64 Development Clean",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"Development",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEye Win64 Test Build",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"Test",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEye Win64 Test Rebuild",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"Test",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"EagleEye Win64 Test Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEye Win64 Test Clean",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"Test",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEye Win64 Shipping Build",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"Shipping",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEye Win64 Shipping Rebuild",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"Shipping",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"EagleEye Win64 Shipping Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEye Win64 Shipping Clean",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"Shipping",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEyeEditor Win64 Debug Build",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEyeEditor",
+					"Win64",
+					"Debug",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEyeEditor Win64 Debug Rebuild",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEyeEditor",
+					"Win64",
+					"Debug",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"EagleEyeEditor Win64 Debug Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEyeEditor Win64 Debug Clean",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
+				"args": [
+					"EagleEyeEditor",
+					"Win64",
+					"Debug",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEyeEditor Win64 DebugGame Build",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEyeEditor",
+					"Win64",
+					"DebugGame",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEyeEditor Win64 DebugGame Rebuild",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEyeEditor",
+					"Win64",
+					"DebugGame",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"EagleEyeEditor Win64 DebugGame Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEyeEditor Win64 DebugGame Clean",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
+				"args": [
+					"EagleEyeEditor",
+					"Win64",
+					"DebugGame",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEyeEditor Win64 Development Build",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEyeEditor",
+					"Win64",
+					"Development",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEyeEditor Win64 Development Rebuild",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEyeEditor",
+					"Win64",
+					"Development",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"EagleEyeEditor Win64 Development Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"label": "EagleEyeEditor Win64 Development Clean",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
+				"args": [
+					"EagleEyeEditor",
+					"Win64",
+					"Development",
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			}
+		]
+	},
+	"launch": {
+		"version": "0.2.0",
+		"configurations": [
+			{
+				"name": "Launch EagleEye (Debug)",
+				"request": "launch",
+				"program": "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Binaries\\Win64\\UnrealGame-Win64-Debug.exe",
+				"preLaunchTask": "EagleEye Win64 Debug Build",
+				"args": [
+				],
+				"cwd": "C:\\Program Files\\Epic Games\\UE_5.4",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "C:\\Program Files\\Epic Games\\UE_5.4\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
+				"sourceFileMap": {
+					"D:\\build\\++UE5\\Sync": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"name": "Launch EagleEye (DebugGame)",
+				"request": "launch",
+				"program": "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Binaries\\Win64\\UnrealGame-Win64-DebugGame.exe",
+				"preLaunchTask": "EagleEye Win64 DebugGame Build",
+				"args": [
+				],
+				"cwd": "C:\\Program Files\\Epic Games\\UE_5.4",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "C:\\Program Files\\Epic Games\\UE_5.4\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
+				"sourceFileMap": {
+					"D:\\build\\++UE5\\Sync": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"name": "Launch EagleEye (Development)",
+				"request": "launch",
+				"program": "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Binaries\\Win64\\UnrealGame.exe",
+				"preLaunchTask": "EagleEye Win64 Development Build",
+				"args": [
+				],
+				"cwd": "C:\\Program Files\\Epic Games\\UE_5.4",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "C:\\Program Files\\Epic Games\\UE_5.4\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
+				"sourceFileMap": {
+					"D:\\build\\++UE5\\Sync": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"name": "Launch EagleEye (Test)",
+				"request": "launch",
+				"program": "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Binaries\\Win64\\UnrealGame-Win64-Test.exe",
+				"preLaunchTask": "EagleEye Win64 Test Build",
+				"args": [
+				],
+				"cwd": "C:\\Program Files\\Epic Games\\UE_5.4",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "C:\\Program Files\\Epic Games\\UE_5.4\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
+				"sourceFileMap": {
+					"D:\\build\\++UE5\\Sync": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"name": "Launch EagleEye (Shipping)",
+				"request": "launch",
+				"program": "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Binaries\\Win64\\UnrealGame-Win64-Shipping.exe",
+				"preLaunchTask": "EagleEye Win64 Shipping Build",
+				"args": [
+				],
+				"cwd": "C:\\Program Files\\Epic Games\\UE_5.4",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "C:\\Program Files\\Epic Games\\UE_5.4\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
+				"sourceFileMap": {
+					"D:\\build\\++UE5\\Sync": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"name": "Launch EagleEyeEditor (Debug)",
+				"request": "launch",
+				"program": "C:\\Program Files\\Epic Games\\UE_5.4\\Engine\\Binaries\\Win64\\UnrealEditor-Win64-Debug.exe",
+				"preLaunchTask": "EagleEyeEditor Win64 Debug Build",
+				"args": [
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject"
+				],
+				"cwd": "C:\\Program Files\\Epic Games\\UE_5.4",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "C:\\Program Files\\Epic Games\\UE_5.4\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
+				"sourceFileMap": {
+					"D:\\build\\++UE5\\Sync": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"name": "Launch EagleEyeEditor (DebugGame)",
+				"request": "launch",
+				"program": "C:\\Program Files\\Epic Games\\UE_5.4\\Engine\\Binaries\\Win64\\UnrealEditor-Win64-DebugGame.exe",
+				"preLaunchTask": "EagleEyeEditor Win64 DebugGame Build",
+				"args": [
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject"
+				],
+				"cwd": "C:\\Program Files\\Epic Games\\UE_5.4",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "C:\\Program Files\\Epic Games\\UE_5.4\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
+				"sourceFileMap": {
+					"D:\\build\\++UE5\\Sync": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"name": "Launch EagleEyeEditor (Development)",
+				"request": "launch",
+				"program": "C:\\Program Files\\Epic Games\\UE_5.4\\Engine\\Binaries\\Win64\\UnrealEditor.exe",
+				"preLaunchTask": "EagleEyeEditor Win64 Development Build",
+				"args": [
+					"C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject"
+				],
+				"cwd": "C:\\Program Files\\Epic Games\\UE_5.4",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "C:\\Program Files\\Epic Games\\UE_5.4\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
+				"sourceFileMap": {
+					"D:\\build\\++UE5\\Sync": "C:\\Program Files\\Epic Games\\UE_5.4"
+				}
+			},
+			{
+				"name": "Generate Project Files",
+				"type": "coreclr",
+				"request": "launch",
+				"preLaunchTask": "UnrealBuildTool Win64 Development Build",
+				"program": "C:\\Program Files\\Epic Games\\UE_5.4\\Engine\\Build\\BatchFiles\\RunUBT.bat",
+				"args": [
+					"-projectfiles",
+					"-vscode",
+					"-project=C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\EagleEye.uproject",
+					"-game",
+					"-engine",
+					"-dotnet"
+				],
+				"console": "integratedTerminal",
+				"stopAtEntry": false,
+				"cwd": "C:\\Program Files\\Epic Games\\UE_5.4"
+			}
+		]
+	}
+}

@@ -31,8 +31,8 @@
 #include "Components/Image.h"
 #include "Engine/Texture2D.h"
 #include "RenderUtils.h"
+#include "DetectionResult.h"
 #include "MyActorComponent.generated.h"
-
 
 
 UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent), Blueprintable )
@@ -46,6 +46,15 @@ public:
 	
     void TestOpenCV();
 
+    UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category="Detection")
+    TArray<FDetectionResult> LastFrameDetections;
+
+    UFUNCTION(BlueprintCallable, Category="Detection")
+    TArray<FDetectionResult> GetLastFrameDetections() const { return LastFrameDetections; }
+
+    // Example: call this from your YOLO update loop
+    void UpdateDetections(const TArray<FDetectionResult>& NewDetections);
+
 protected:
 	// Called when the game starts
 	virtual void BeginPlay() override;
@@ -57,6 +66,7 @@ public:
     UPROPERTY(BlueprintReadOnly)
     UTexture2D* OverlayText;
 
+    FTimerHandle TimerHandle_Capture;
 private:
     UPROPERTY()
     USceneCaptureComponent2D* SceneCaptureComponent;
@@ -74,12 +84,14 @@ private:
 
     void get_yolo_net(const std::string& FilePath1, const std::string& FilePath2);
 
-    cv::Mat ProcessWithOpenCV(const TArray<FColor>& Bitmap, int32 Width, int32 Height, int threshold, cv::dnn::Net& net);
+    TArray<FDetectionResult> ProcessWithOpenCV(const TArray<FColor>& Bitmap, int32 Width, int32 Height, int threshold, cv::dnn::Net& net);
 
 
 public:	
 	// Called every frame
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+    
+    UFUNCTION()
+	void TickCapture();
 
-	
 };
