@@ -32,66 +32,136 @@
 #include "Engine/Texture2D.h"
 #include "RenderUtils.h"
 #include "DetectionResult.h"
+#include <atomic>
 #include "MyActorComponent.generated.h"
 
+USTRUCT()
+struct FPersistentDetection
+{
+    GENERATED_BODY()
 
-UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent), Blueprintable )
+    FDetectionResult Det;
+    int FramesSinceLastSeen = 0;
+};
+
+
+UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class EAGLEEYE_API UMyActorComponent : public USceneComponent
 {
 	GENERATED_BODY()
-
+    
 public:	
 	// Sets default values for this component's properties
 	UMyActorComponent();
 	
-    void TestOpenCV();
-
     UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category="Detection")
     TArray<FDetectionResult> LastFrameDetections;
 
-    UFUNCTION(BlueprintCallable, Category="Detection")
-    TArray<FDetectionResult> GetLastFrameDetections() const { return LastFrameDetections; }
+    void InitializeScreenCapture();
 
-    // Example: call this from your YOLO update loop
-    void UpdateDetections(const TArray<FDetectionResult>& NewDetections);
+    UFUNCTION()
+    void TickCapture();
 
 protected:
-	// Called when the game starts
-	virtual void BeginPlay() override;
+    virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
-public:
-    UFUNCTION(BlueprintCallable, Category="Camera Processing")
-    void CaptureAndProcess(int threshold);
-    
-    UPROPERTY(BlueprintReadOnly)
-    UTexture2D* OverlayText;
-
-    FTimerHandle TimerHandle_Capture;
 private:
-    UPROPERTY()
-    USceneCaptureComponent2D* SceneCaptureComponent;
+    // ---- Capture & Worker orchestration ----
+    void StartWorker();
+    void StopWorker();
+    void CaptureAndEnqueue(int Threshold);
+    void CopyResultsFromWorker(); // game-thread copy from shared buffer
 
-    UPROPERTY()
-    UTextureRenderTarget2D* RenderTarget;
+    // --- Frame container passed to worker ---
+    struct FFrameData
+    {
+        TArray<FColor> Pixels;
+        int32 Width = 0;
+        int32 Height = 0;
+        int32 Threshold = 0;
+    };
 
-    cv::dnn::Net yolo_net;
+    // Single-latest-frame queue (replace old frame with new)
+    TQueue<TSharedPtr<FFrameData>, EQueueMode::Mpsc> FrameQueue;
 
-    std::vector<std::string> class_names;
+    // Shared results (worker writes, game thread reads)
+    FCriticalSection ResultsMutex;
+    TArray<FDetectionResult> ResultsShared; // guarded by ResultsMutex
 
-    void InitializeSceneCapture();
+    // Worker control
+    FTimerHandle TimerHandle_Capture;
+    FTimerHandle TimerHandle_PullResults;
+    TFuture<void> WorkerFuture;
+    std::atomic<bool> bWorkerRunning{false};
+
+    // YOLO state (paths only; net will be created inside worker)
+    std::string WeightsPath;
+    std::string CfgPath;
+    std::string NamesPath;
+
+    cv::dnn::Net YoloNet;
+    std::vector<std::string> ClassNames;
+
+    bool bIsModelLoaded = false;
+
+    bool LoadYOLO();
+    TArray<FPersistentDetection> PersistentDetections;
+    int32 MaxMissedFrames = 3; 
+public:
+    void get_class_names();
+    // void get_yolo_net(const std::string& Cfg, const std::string& Weights); // keep if you want, but we’ll init in worker
+    // IMPORTANT: Make sure ProcessWithOpenCV touches no Unreal APIs.
+    // It should accept raw pixels/size and return detections only.
+    TArray<FDetectionResult> ProcessWithOpenCV_BG(const TArray<FColor>& Bitmap, int32 Width, int32 Height, int Threshold, cv::dnn::Net& Net);
+//     void TestOpenCV();
+
+//     UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category="Detection")
+//     TArray<FDetectionResult> LastFrameDetections;
+
+//     UFUNCTION(BlueprintCallable, Category="Detection")
+//     TArray<FDetectionResult> GetLastFrameDetections() const { return LastFrameDetections; }
+
+//     // Example: call this from your YOLO update loop
+//     void UpdateDetections(const TArray<FDetectionResult>& NewDetections);
+
+// protected:
+// 	// Called when the game starts
+// 	virtual void BeginPlay() override;
+
+// public:
+//     UFUNCTION(BlueprintCallable, Category="Camera Processing")
+//     void CaptureAndProcess(int threshold);
     
-    void get_class_names(const std::string& FilePath);
+//     UPROPERTY(BlueprintReadOnly)
+//     UTexture2D* OverlayText;
 
-    void get_yolo_net(const std::string& FilePath1, const std::string& FilePath2);
+//     FTimerHandle TimerHandle_Capture;
+// private:
+//     UPROPERTY()
+//     USceneCaptureComponent2D* SceneCaptureComponent;
 
-    TArray<FDetectionResult> ProcessWithOpenCV(const TArray<FColor>& Bitmap, int32 Width, int32 Height, int threshold, cv::dnn::Net& net);
+//     UPROPERTY()
+//     UTextureRenderTarget2D* RenderTarget;
 
+//     cv::dnn::Net yolo_net;
 
-public:	
-	// Called every frame
-	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+//     std::vector<std::string> class_names;
+
+//     void InitializeSceneCapture();
     
-    UFUNCTION()
-	void TickCapture();
+//     void get_class_names(const std::string& FilePath);
+
+//     void get_yolo_net(const std::string& FilePath1, const std::string& FilePath2);
+
+//     TArray<FDetectionResult> ProcessWithOpenCV(const TArray<FColor>& Bitmap, int32 Width, int32 Height, int threshold, cv::dnn::Net& net);
+
+
+// public:	
+// 	// Called every frame
+// 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+    
+//     UFUNCTION()
+// 	void TickCapture();
 
 };
