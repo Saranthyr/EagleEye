@@ -4,10 +4,10 @@
 			"name": "EagleEye",
 			"path": "."
 		},
-		{
-			"name": "UE5_Win32",
-			"path": "C:\\Program Files\\Epic Games\\UE_5.4"
-		},
+		// {
+		// 	"name": "UE5_Win32",
+		// 	"path": "C:\\Program Files\\Epic Games\\UE_5.4"
+		// },
 		{
 			"name": "UE5_Linux",
 			"path": "/home/saranthyr/Unreal_Engine_5.6.1"

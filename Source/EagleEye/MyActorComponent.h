@@ -67,7 +67,6 @@ protected:
     virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
-    // ---- Capture & Worker orchestration ----
     void StartWorker();
     void StopWorker();
     void CaptureAndEnqueue(int Threshold);

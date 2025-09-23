@@ -70,14 +70,13 @@ void UMyActorComponent::CaptureAndEnqueue(int Threshold)
     if (!Viewport->ReadPixels(Pixels)) return;
     if (Pixels.Num() != Size.X * Size.Y) return;
 
-    // Replace any queued frame with the newest one to avoid lag
     {
         TSharedPtr<FFrameData> Dump;
-        while (FrameQueue.Dequeue(Dump)) {} // empty the queue
+        while (FrameQueue.Dequeue(Dump)) {} 
     }
 
     TSharedPtr<FFrameData> Frame = MakeShared<FFrameData>();
-    Frame->Pixels   = MoveTemp(Pixels); // move to avoid copy
+    Frame->Pixels   = MoveTemp(Pixels); 
     Frame->Width    = Size.X;
     Frame->Height   = Size.Y;
     Frame->Threshold= Threshold;
@@ -90,7 +89,6 @@ void UMyActorComponent::StartWorker()
     if (bWorkerRunning.load()) return;
     bWorkerRunning.store(true);
 
-    // Launch a dedicated thread with a persistent loop
     WorkerFuture = Async(EAsyncExecution::Thread, [this]()
 {
     if (!LoadYOLO())
@@ -127,37 +125,23 @@ void UMyActorComponent::StopWorker()
     bWorkerRunning.store(false);
     if (WorkerFuture.IsValid())
     {
-        WorkerFuture.Wait(); // join
+        WorkerFuture.Wait();
     }
 }
 
 void UMyActorComponent::CopyResultsFromWorker()
 {
-    // Game thread reads & copies into LastFrameDetections
     FScopeLock Lock(&ResultsMutex);
-    LastFrameDetections = ResultsShared; // copy (small: just arrays of FVector2D + FString)
+    LastFrameDetections = ResultsShared; 
 }
 
 bool UMyActorComponent::LoadYOLO()
 {
     try
     {
-        // Load class names
-        // ClassNames.clear();
-        // std::ifstream ifs(NamesPath.c_str());
-        // if (!ifs.is_open())
-        // {
-        //     UE_LOG(LogTemp, Error, TEXT("Could not open class names file: %s"), *FString(NamesPath.c_str()));
-        //     return false;
-        // }
-        // std::string line;
-        // while (std::getline(ifs, line))
-        //     ClassNames.push_back(line);
-
-        // Load YOLO net
         YoloNet = cv::dnn::readNetFromDarknet(CfgPath, WeightsPath);
         YoloNet.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
-        YoloNet.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+        YoloNet.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA_FP16);
 
         bIsModelLoaded = true;
         return true;
@@ -171,7 +155,6 @@ bool UMyActorComponent::LoadYOLO()
 
 TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FColor>& Bitmap, int32 Width, int32 Height, int Threshold, cv::dnn::Net& Net)
 {
-    // Convert UE pixels to cv::Mat BGRA → BGR
     cv::Mat Image(Height, Width, CV_8UC4);
     for (int32 y = 0; y < Height; y++) {
         const FColor* Row = &Bitmap[y * Width];
@@ -184,7 +167,6 @@ TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FC
     cv::cvtColor(Image, imgBGR, cv::COLOR_BGRA2BGR);
     cv::resize(imgBGR, imgBGR, cv::Size(416, 416));
 
-    // Blob + inference
     cv::Mat blob = cv::dnn::blobFromImage(imgBGR, 1/255.f, cv::Size(416, 416),
                                           cv::Scalar(), true, false);
     Net.setInput(blob);
