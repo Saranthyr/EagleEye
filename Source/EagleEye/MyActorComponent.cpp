@@ -25,10 +25,15 @@ void UMyActorComponent::get_class_names() {
 void UMyActorComponent::BeginPlay() {
     Super::BeginPlay();
 
-    UMyActorComponent::NamesPath = "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Source\\EagleEye\\coco.names";
-    UMyActorComponent::WeightsPath = "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Source\\EagleEye\\yolov7.weights";
-    UMyActorComponent::CfgPath = "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Source\\EagleEye\\yolov7.cfg";
-
+    #if PLATFORM_WINDOWS
+        UMyActorComponent::NamesPath = "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Source\\EagleEye\\coco.names";
+        UMyActorComponent::WeightsPath = "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Source\\EagleEye\\yolov7.weights";
+        UMyActorComponent::CfgPath = "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Source\\EagleEye\\yolov7.cfg";
+    #elif PLATFORM_LINUX
+        UMyActorComponent::NamesPath = "/home/saranthyr/EagleEye/Source/EagleEye/coco.names";
+        UMyActorComponent::WeightsPath = "/home/saranthyr/EagleEye/Source/EagleEye/yolov7.weights";
+        UMyActorComponent::CfgPath = "/home/saranthyr/EagleEye/Source/EagleEye/yolov7.cfg";
+    #endif
     get_class_names();
 
     StartWorker();
