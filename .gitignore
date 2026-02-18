@@ -7,3 +7,4 @@ ThirdParty
 .vs
 *.onnx
 .vscode
+yolo*
