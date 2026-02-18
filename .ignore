@@ -1,8 +1,9 @@
-/.git
-/.vs
-/.vscode
-/Content
-/DerivedDataCache
 /Intermediate
-/Saved
 /ThirdParty
+/DerivedDataCache
+/.git
+/Content
+/Saved
+/.vscode
+/Plugins/OpenCV412/Intermediate
+/Plugins/OpenCV412/Content

@@ -23,12 +23,16 @@
 			]
 		},
 		{
-			"Name": "OpenCV",
+			"Name": "ChaosVehiclesPlugin",
 			"Enabled": true
 		},
 		{
-			"Name": "ChaosVehiclesPlugin",
+			"Name": "OpenCV412",
 			"Enabled": true
+		},
+		{
+			"Name": "OpenCV",
+			"Enabled": false
 		}
 	]
 }

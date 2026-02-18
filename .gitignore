@@ -5,5 +5,5 @@ Intermediate
 Saved
 ThirdParty
 .vs
-yolo*
+*.onnx
 .vscode

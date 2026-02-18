@@ -13,5 +13,5 @@ struct FDetectionResult {
     UPROPERTY()
     FString Label;               // "person: 0.92"
 
-    int32 ClassId; // add this
+    int32 ClassId = -1;
 };
