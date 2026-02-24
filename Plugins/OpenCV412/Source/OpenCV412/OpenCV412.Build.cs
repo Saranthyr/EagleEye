@@ -2,6 +2,7 @@
 
 using UnrealBuildTool;
 using System.IO;
+using System.Collections.Generic;
 
 public class OpenCV412 : ModuleRules
 {
@@ -49,6 +50,8 @@ public class OpenCV412 : ModuleRules
 			if (Directory.Exists(LibPath))
 			{
 				bool bUsingSharedOpenCV = false;
+                bool bUsingStaticOpenCV = false;
+                HashSet<string> AddedLibraries = new HashSet<string>();
 				string[] Libraries =
 				{
 					"opencv_core",
@@ -75,11 +78,18 @@ public class OpenCV412 : ModuleRules
 					string StaticPath = Path.Combine(LibPath, $"lib{Lib}.a");
 					if (File.Exists(StaticPath))
 					{
-						PublicAdditionalLibraries.Add(StaticPath);
+                        if (AddedLibraries.Add(StaticPath))
+                        {
+						    PublicAdditionalLibraries.Add(StaticPath);
+                        }
+                        bUsingStaticOpenCV = true;
 					}
 					else if (File.Exists(SoPath))
 					{
-						PublicAdditionalLibraries.Add(SoPath);
+                        if (AddedLibraries.Add(SoPath))
+                        {
+						    PublicAdditionalLibraries.Add(SoPath);
+                        }
 						RuntimeDependencies.Add(SoPath);
 						bUsingSharedOpenCV = true;
 
@@ -90,6 +100,30 @@ public class OpenCV412 : ModuleRules
 						}
 					}
 				}
+
+                if (bUsingStaticOpenCV)
+                {
+                    string[] StaticDependencyCandidates =
+                    {
+                        "liblibprotobuf.a", "libprotobuf.a",
+                        "libzlib.a", "libz.a",
+                        "liblibjpeg-turbo.a", "libjpeg-turbo.a",
+                        "liblibpng.a", "libpng.a",
+                        "liblibtiff.a", "libtiff.a",
+                        "liblibwebp.a", "libwebp.a",
+                        "liblibopenjp2.a", "libopenjp2.a"
+                    };
+
+                    foreach (string Candidate in StaticDependencyCandidates)
+                    {
+                        string CandidatePath = Path.Combine(LibPath, Candidate);
+                        if (File.Exists(CandidatePath) && AddedLibraries.Add(CandidatePath))
+                        {
+                            PublicAdditionalLibraries.Add(CandidatePath);
+                        }
+                    }
+                }
+
 				PublicSystemLibraries.AddRange(new[] { "pthread", "dl", "m" });
 
 				// If we are using shared OpenCV libs built against libc++, stage libc++ runtime alongside them.

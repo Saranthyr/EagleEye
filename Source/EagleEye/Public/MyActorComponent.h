@@ -26,6 +26,7 @@
 #include <atomic>
 #include <cuda_runtime_api.h>
 #include "HAL/CriticalSection.h"
+#include "Containers/UnrealString.h"
 #include "MyActorComponent.generated.h"
 
 namespace nvinfer1
@@ -35,8 +36,14 @@ namespace nvinfer1
     class IExecutionContext;
 }
 
+UENUM(BlueprintType)
+enum class EDetectionInferenceBackend : uint8
+{
+    TensorRT UMETA(DisplayName="TensorRT"),
+    OpenCVDNN UMETA(DisplayName="OpenCV DNN")
+};
 
-UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
+UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent), Config=Game)
 class EAGLEEYE_API UMyActorComponent : public USceneComponent
 {
 	GENERATED_BODY()
@@ -118,6 +125,15 @@ private:
     UPROPERTY(EditAnywhere, Category="Detection|Model")
     FString NamesPathOverride;
 
+    UPROPERTY(EditAnywhere, Config, Category="Detection|Model")
+    EDetectionInferenceBackend InferenceBackend = EDetectionInferenceBackend::TensorRT;
+
+    UPROPERTY(EditAnywhere, Config, Category="Detection|Model")
+    bool bOpenCVDNNPreferCUDA = true;
+
+    UPROPERTY(EditAnywhere, Config, Category="Detection|Model")
+    bool bOpenCVDNNUseFP16 = true;
+
     std::vector<std::string> ClassNames;
 
     bool bIsModelLoaded = false;
@@ -140,9 +156,26 @@ private:
     UPROPERTY(EditAnywhere, Category="Detection|Preprocess", meta=(ClampMin="0", ClampMax="255"))
     int32 LetterboxValue = 114;
 
+    UPROPERTY(EditAnywhere, Config, Category="Detection|Benchmark")
+    bool bRecordFrameTimes = false;
+
+    UPROPERTY(EditAnywhere, Config, Category="Detection|Benchmark")
+    FString FrameTimeCsvPath;
+
+    UPROPERTY(EditAnywhere, Config, Category="Detection|Benchmark")
+    bool bResetFrameTimeLogOnBeginPlay = true;
+
+    UPROPERTY(EditAnywhere, Config, Category="Detection|Benchmark", meta=(ClampMin="1", ClampMax="600"))
+    int32 FrameTimeFlushInterval = 60;
+
     bool LoadYOLO();
     void ReleaseTensorRT();
     bool RunTensorRT();
+    bool RunTensorRTInference_BG(const cv::Mat& ModelInputBGR);
+    bool RunOpenCVDNNInference_BG(const cv::Mat& ModelInputBGR);
+    void InitFrameTimingLog();
+    void AppendFrameTimingLogLine(int32 Sequence, int32 Width, int32 Height, int32 DetectionCount, double TotalMs, double InferMs);
+    void FlushFrameTimingLog(bool bForce);
 
     nvinfer1::IRuntime* TrtRuntime = nullptr;
     nvinfer1::ICudaEngine* TrtEngine = nullptr;
@@ -156,12 +189,17 @@ private:
     int32 TrtOutputElements = 0;
     int32 TrtOutputChannels = 0;
     int32 TrtOutputDetections = 0;
+    cv::dnn::Net OpenCVDnnNet;
+    FString ResolvedFrameTimeCsvPath;
+    TArray<FString> FrameTimeLogBuffer;
+    bool bFrameTimingLogInitialized = false;
+    FCriticalSection FrameTimeLogMutex;
 public:
     void get_class_names();
     // void get_yolo_net(const std::string& Cfg, const std::string& Weights); // keep if you want, but we’ll init in worker
     // IMPORTANT: Make sure ProcessWithOpenCV touches no Unreal APIs.
     // It should accept raw pixels/size and return detections only.
-    TArray<FDetectionResult> ProcessWithOpenCV_BG(const TArray<FColor>& Bitmap, int32 Width, int32 Height, int Threshold);
+    TArray<FDetectionResult> ProcessWithOpenCV_BG(const TArray<FColor>& Bitmap, int32 Width, int32 Height, int Threshold, double* OutInferenceMs = nullptr);
 //     void TestOpenCV();
 
 //     UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category="Detection")

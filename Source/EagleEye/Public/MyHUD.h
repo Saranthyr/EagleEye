@@ -16,9 +16,21 @@ class EAGLEEYE_API AMyHUD : public AHUD
 	GENERATED_BODY()
 public:
 	virtual void DrawHUD() override;	
+
+    UFUNCTION(BlueprintCallable, Category="Detection|HUD")
+    void SetDetectionHudEnabled(bool bEnabled);
+
+    UFUNCTION(BlueprintCallable, Category="Detection|HUD")
+    void ToggleDetectionHudEnabled();
+
+    UFUNCTION(BlueprintPure, Category="Detection|HUD")
+    bool IsDetectionHudEnabled() const { return bDetectionHudEnabled; }
 	
 	UPROPERTY()
     class UMyActorComponent* ActorComponentRef;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|HUD")
+    bool bDetectionHudEnabled = true;
 
     UPROPERTY(EditAnywhere, Category="Detection|Stabilization")
     bool bEnableUniversalStabilization = true;
@@ -75,6 +87,8 @@ private:
     int32 StableSourceWidth = 0;
     int32 StableSourceHeight = 0;
     int32 LastProcessedSequence = 0;
+
+    void ResetStabilizationState();
 
     void UpdateStableTracks(const TArray<FDetectionResult>& NewDetections, int32 NewSourceWidth, int32 NewSourceHeight, int32 FrameSequence, float DeltaSeconds);
     void DrawDetectionList(const TArray<FDetectionResult>& Detections, int32 SourceWidth, int32 SourceHeight, APawn* Pawn);

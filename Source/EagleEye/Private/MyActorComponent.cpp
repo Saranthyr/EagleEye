@@ -7,6 +7,10 @@
 #include "Async/Async.h"
 #include "RHI.h"
 #include "Misc/ScopeLock.h"
+#include "Misc/Paths.h"
+#include "Misc/ConfigCacheIni.h"
+#include "HAL/FileManager.h"
+#include "Math/UnrealMathUtility.h"
 #include <algorithm>
 #include <NvInfer.h>
 #include <NvInferVersion.h>
@@ -139,6 +143,27 @@ namespace
             }
         }
     }
+
+    FORCEINLINE float Sigmoidf(float V)
+    {
+        const float Clamped = FMath::Clamp(V, -60.0f, 60.0f);
+        return 1.0f / (1.0f + FMath::Exp(-Clamped));
+    }
+
+    FString MatShapeToString(const cv::Mat& M)
+    {
+        FString Out = TEXT("[");
+        for (int32 i = 0; i < M.dims; ++i)
+        {
+            if (i > 0)
+            {
+                Out += TEXT(", ");
+            }
+            Out += FString::FromInt(M.size[i]);
+        }
+        Out += TEXT("]");
+        return Out;
+    }
 }
 
 UMyActorComponent::UMyActorComponent()
@@ -146,6 +171,121 @@ UMyActorComponent::UMyActorComponent()
 	PrimaryComponentTick.bCanEverTick = true;
 
 	// ...
+}
+
+void UMyActorComponent::InitFrameTimingLog()
+{
+    if (!bRecordFrameTimes)
+    {
+        return;
+    }
+
+    FScopeLock Lock(&FrameTimeLogMutex);
+    if (bFrameTimingLogInitialized)
+    {
+        return;
+    }
+
+    ResolvedFrameTimeCsvPath = FrameTimeCsvPath;
+    if (ResolvedFrameTimeCsvPath.IsEmpty())
+    {
+        ResolvedFrameTimeCsvPath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Profiling"), TEXT("DetectionFrameTimes.csv"));
+    }
+
+    const FString Directory = FPaths::GetPath(ResolvedFrameTimeCsvPath);
+    if (!Directory.IsEmpty())
+    {
+        IFileManager::Get().MakeDirectory(*Directory, true);
+    }
+
+    if (bResetFrameTimeLogOnBeginPlay && IFileManager::Get().FileExists(*ResolvedFrameTimeCsvPath))
+    {
+        IFileManager::Get().Delete(*ResolvedFrameTimeCsvPath, false, true, true);
+    }
+
+    if (!IFileManager::Get().FileExists(*ResolvedFrameTimeCsvPath))
+    {
+        const FString Header = TEXT("frame_sequence,backend,source_width,source_height,total_ms,inference_ms,detections\n");
+        FFileHelper::SaveStringToFile(Header, *ResolvedFrameTimeCsvPath, FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get());
+    }
+
+    FrameTimeLogBuffer.Reset();
+    bFrameTimingLogInitialized = true;
+    UE_LOG(LogTemp, Log, TEXT("Frame timing log enabled: %s"), *ResolvedFrameTimeCsvPath);
+}
+
+void UMyActorComponent::FlushFrameTimingLog(bool bForce)
+{
+    if (!bRecordFrameTimes)
+    {
+        return;
+    }
+
+    FScopeLock Lock(&FrameTimeLogMutex);
+    if (!bFrameTimingLogInitialized || FrameTimeLogBuffer.Num() == 0)
+    {
+        return;
+    }
+
+    const int32 FlushEvery = FMath::Max(1, FrameTimeFlushInterval);
+    if (!bForce && FrameTimeLogBuffer.Num() < FlushEvery)
+    {
+        return;
+    }
+
+    FString Batch;
+    Batch.Reserve(FrameTimeLogBuffer.Num() * 96);
+    for (const FString& Line : FrameTimeLogBuffer)
+    {
+        Batch += Line;
+    }
+
+    FFileHelper::SaveStringToFile(
+        Batch,
+        *ResolvedFrameTimeCsvPath,
+        FFileHelper::EEncodingOptions::AutoDetect,
+        &IFileManager::Get(),
+        FILEWRITE_Append);
+
+    FrameTimeLogBuffer.Reset();
+}
+
+void UMyActorComponent::AppendFrameTimingLogLine(
+    int32 Sequence,
+    int32 Width,
+    int32 Height,
+    int32 DetectionCount,
+    double TotalMs,
+    double InferMs)
+{
+    if (!bRecordFrameTimes)
+    {
+        return;
+    }
+
+    const FString BackendLabel = (InferenceBackend == EDetectionInferenceBackend::TensorRT)
+        ? TEXT("TensorRT")
+        : TEXT("OpenCVDNN");
+    const FString Line = FString::Printf(
+        TEXT("%d,%s,%d,%d,%.4f,%.4f,%d\n"),
+        Sequence,
+        *BackendLabel,
+        Width,
+        Height,
+        TotalMs,
+        InferMs,
+        DetectionCount);
+
+    {
+        FScopeLock Lock(&FrameTimeLogMutex);
+        if (!bFrameTimingLogInitialized)
+        {
+            return;
+        }
+        FrameTimeLogBuffer.Add(Line);
+    }
+
+    FlushFrameTimingLog(false);
 }
 
 void UMyActorComponent::get_class_names() {
@@ -166,6 +306,23 @@ void UMyActorComponent::get_class_names() {
 
 void UMyActorComponent::BeginPlay() {
     Super::BeginPlay();
+    // LoadConfig();
+
+    // FString BackendFromIni;
+    // if (GConfig && GConfig->GetString(TEXT("/Script/EagleEye.MyActorComponent"), TEXT("InferenceBackend"), BackendFromIni, GGameIni))
+    // {
+    //     if (BackendFromIni.Equals(TEXT("OpenCVDNN"), ESearchCase::IgnoreCase))
+    //     {
+    //         InferenceBackend = EDetectionInferenceBackend::OpenCVDNN;
+    //     }
+    //     else if (BackendFromIni.Equals(TEXT("TensorRT"), ESearchCase::IgnoreCase))
+    //     {
+    //         InferenceBackend = EDetectionInferenceBackend::TensorRT;
+    //     }
+    // }
+
+    UE_LOG(LogTemp, Log, TEXT("Inference backend selected: %s"),
+        (InferenceBackend == EDetectionInferenceBackend::TensorRT) ? TEXT("TensorRT") : TEXT("OpenCVDNN"));
 
     #if PLATFORM_WINDOWS
         UMyActorComponent::NamesPath = "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Source\\EagleEye\\coco.names";
@@ -173,7 +330,7 @@ void UMyActorComponent::BeginPlay() {
         UMyActorComponent::CfgPath = "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Source\\EagleEye\\yolov7.cfg";
     #elif PLATFORM_LINUX
         UMyActorComponent::NamesPath = "/home/saranthyr/Documents/Unreal Projects/EagleEye/Source/EagleEye/coco.names";
-        UMyActorComponent::WeightsPath = "/home/saranthyr/Documents/Unreal Projects/EagleEye/Source/EagleEye/yolo26x_fp16.plan";
+        UMyActorComponent::WeightsPath = "/home/saranthyr/Documents/Unreal Projects/EagleEye/Source/EagleEye/yolo11x.plan";
     #endif
 
     if (!ModelPathOverride.IsEmpty())
@@ -190,6 +347,7 @@ void UMyActorComponent::BeginPlay() {
     }
 
     get_class_names();
+    InitFrameTimingLog();
     StartWorker();
 
     const float ClampedCaptureFPS = FMath::Clamp(CaptureFPS, 1.0f, 120.0f);
@@ -317,9 +475,11 @@ void UMyActorComponent::StartWorker()
                 }
 
                 TArray<FDetectionResult> Det;
+                double FrameInferMs = -1.0;
+                const double FrameT0 = FPlatformTime::Seconds();
                 try
                 {
-                    Det = ProcessWithOpenCV_BG(Frame->Pixels, Frame->Width, Frame->Height, Frame->Threshold);
+                    Det = ProcessWithOpenCV_BG(Frame->Pixels, Frame->Width, Frame->Height, Frame->Threshold, &FrameInferMs);
                 }
                 catch (const cv::Exception& e)
                 {
@@ -337,13 +497,19 @@ void UMyActorComponent::StartWorker()
                     Det.Reset();
                 }
 
+                int32 LoggedSequence = 0;
+                int32 LoggedDetectionCount = 0;
                 {
                     FScopeLock Lock(&ResultsMutex);
                     ResultsShared = MoveTemp(Det);
                     ResultsSourceWidth = Frame->Width;
                     ResultsSourceHeight = Frame->Height;
                     ++ResultsSequence;
+                    LoggedSequence = ResultsSequence;
+                    LoggedDetectionCount = ResultsShared.Num();
                 }
+                const double FrameTotalMs = (FPlatformTime::Seconds() - FrameT0) * 1000.0;
+                AppendFrameTimingLogLine(LoggedSequence, Frame->Width, Frame->Height, LoggedDetectionCount, FrameTotalMs, FrameInferMs);
             }
         }
         catch (const cv::Exception& e)
@@ -375,6 +541,7 @@ void UMyActorComponent::StopWorker()
     {
         WorkerFuture.Wait();
     }
+    FlushFrameTimingLog(true);
     {
         FScopeLock Lock(&ResultsMutex);
         ResultsShared.Reset();
@@ -387,6 +554,7 @@ void UMyActorComponent::StopWorker()
     LastFrameSourceHeight = 0;
     LastFrameSequence = 0;
     ReleaseTensorRT();
+    OpenCVDnnNet = cv::dnn::Net();
 }
 
 void UMyActorComponent::CopyResultsFromWorker()
@@ -426,125 +594,250 @@ void UMyActorComponent::CopyResultsFromWorker()
 	        cv::setNumThreads(FPlatformMisc::NumberOfCoresIncludingHyperthreads());
 
 	        ReleaseTensorRT();
+	        OpenCVDnnNet = cv::dnn::Net();
+
+            // Always resolve effective backend from merged config at model-load time.
+            // FString BackendFromIni;
+            // if (GConfig && GConfig->GetString(TEXT("/Script/EagleEye.MyActorComponent"), TEXT("InferenceBackend"), BackendFromIni, GGameIni))
+            // {
+            //     if (BackendFromIni.Equals(TEXT("OpenCVDNN"), ESearchCase::IgnoreCase))
+            //     {
+            //         InferenceBackend = EDetectionInferenceBackend::OpenCVDNN;
+            //     }
+            //     else if (BackendFromIni.Equals(TEXT("TensorRT"), ESearchCase::IgnoreCase))
+            //     {
+            //         InferenceBackend = EDetectionInferenceBackend::TensorRT;
+            //     }
+            // }
+
+            UE_LOG(LogTemp, Log, TEXT("LoadYOLO effective backend: %s"),
+                (InferenceBackend == EDetectionInferenceBackend::TensorRT) ? TEXT("TensorRT") : TEXT("OpenCVDNN"));
 
 	        const FString ModelPathUE = FString(WeightsPath.c_str());
 	        if (!FPlatformFileManager::Get().GetPlatformFile().FileExists(*ModelPathUE))
 	        {
-	            UE_LOG(LogTemp, Error, TEXT("TensorRT plan not found: %s"), *ModelPathUE);
+	            UE_LOG(LogTemp, Error, TEXT("Model file not found: %s"), *ModelPathUE);
 	            return false;
 	        }
 
-	        bIsOnnxModel = ModelPathUE.EndsWith(TEXT(".onnx")) || ModelPathUE.EndsWith(TEXT(".plan"));
-	        if (!ModelPathUE.EndsWith(TEXT(".plan")))
-	        {
-	            UE_LOG(LogTemp, Error, TEXT("TensorRT requires a .plan engine file, got: %s"), *ModelPathUE);
-	            return false;
-	        }
+            if (InferenceBackend == EDetectionInferenceBackend::TensorRT)
+            {
+                bIsOnnxModel = ModelPathUE.EndsWith(TEXT(".onnx")) || ModelPathUE.EndsWith(TEXT(".plan"));
+                if (!ModelPathUE.EndsWith(TEXT(".plan")))
+                {
+                    UE_LOG(LogTemp, Error, TEXT("TensorRT requires a .plan engine file, got: %s"), *ModelPathUE);
+                    return false;
+                }
 
-	        TArray<uint8> PlanData;
-	        if (!FFileHelper::LoadFileToArray(PlanData, *ModelPathUE) || PlanData.Num() == 0)
-	        {
-	            UE_LOG(LogTemp, Error, TEXT("Failed to load TensorRT plan: %s"), *ModelPathUE);
-	            return false;
-	        }
+                TArray<uint8> PlanData;
+                if (!FFileHelper::LoadFileToArray(PlanData, *ModelPathUE) || PlanData.Num() == 0)
+                {
+                    UE_LOG(LogTemp, Error, TEXT("Failed to load TensorRT plan: %s"), *ModelPathUE);
+                    return false;
+                }
 
-	        TrtRuntime = nvinfer1::createInferRuntime(GTrtLogger);
-	        if (!TrtRuntime)
-	        {
-	            UE_LOG(LogTemp, Error, TEXT("Failed to create TensorRT runtime"));
-	            return false;
-	        }
+                TrtRuntime = nvinfer1::createInferRuntime(GTrtLogger);
+                if (!TrtRuntime)
+                {
+                    UE_LOG(LogTemp, Error, TEXT("Failed to create TensorRT runtime"));
+                    return false;
+                }
 
-	        TrtEngine = TrtRuntime->deserializeCudaEngine(PlanData.GetData(), PlanData.Num());
-	        if (!TrtEngine)
-	        {
-	            UE_LOG(LogTemp, Error, TEXT("Failed to deserialize TensorRT engine"));
-	            ReleaseTensorRT();
-	            return false;
-	        }
+                TrtEngine = TrtRuntime->deserializeCudaEngine(PlanData.GetData(), PlanData.Num());
+                if (!TrtEngine)
+                {
+                    UE_LOG(LogTemp, Error, TEXT("Failed to deserialize TensorRT engine"));
+                    ReleaseTensorRT();
+                    return false;
+                }
 
-	        TrtContext = TrtEngine->createExecutionContext();
-	        if (!TrtContext)
-	        {
-	            UE_LOG(LogTemp, Error, TEXT("Failed to create TensorRT execution context"));
-	            ReleaseTensorRT();
-	            return false;
-	        }
+                TrtContext = TrtEngine->createExecutionContext();
+                if (!TrtContext)
+                {
+                    UE_LOG(LogTemp, Error, TEXT("Failed to create TensorRT execution context"));
+                    ReleaseTensorRT();
+                    return false;
+                }
 
-        const nvinfer1::Dims InputDims = TrtEngine->getTensorShape(kTrtInputName);
-        const nvinfer1::Dims OutputDims = TrtEngine->getTensorShape(kTrtOutputName);
+                const nvinfer1::Dims InputDims = TrtEngine->getTensorShape(kTrtInputName);
+                const nvinfer1::Dims OutputDims = TrtEngine->getTensorShape(kTrtOutputName);
 
-	        const int64 InputVolume = CalcTrtVolume(InputDims);
-	        const int64 OutputVolume = CalcTrtVolume(OutputDims);
-	        if (InputVolume <= 0 || OutputVolume <= 0)
-	        {
-	            UE_LOG(LogTemp, Error, TEXT("Invalid TensorRT tensor shapes (input=%d dims, output=%d dims)"),
-	                InputDims.nbDims, OutputDims.nbDims);
-	            ReleaseTensorRT();
-	            return false;
-	        }
+                const int64 InputVolume = CalcTrtVolume(InputDims);
+                const int64 OutputVolume = CalcTrtVolume(OutputDims);
+                if (InputVolume <= 0 || OutputVolume <= 0)
+                {
+                    UE_LOG(LogTemp, Error, TEXT("Invalid TensorRT tensor shapes (input=%d dims, output=%d dims)"),
+                        InputDims.nbDims, OutputDims.nbDims);
+                    ReleaseTensorRT();
+                    return false;
+                }
 
-	        if (InputDims.nbDims >= 4 && InputDims.d[2] > 0 && InputDims.d[3] > 0)
-	        {
-	            ModelInputHeight = InputDims.d[2];
-	            ModelInputWidth = InputDims.d[3];
-	        }
-	        else
-	        {
-	            const int32 ClampedInputSize = FMath::Clamp(OnnxInputSize, 160, 1280);
-	            ModelInputWidth = ClampedInputSize;
-	            ModelInputHeight = ClampedInputSize;
-	        }
+                if (InputDims.nbDims >= 4 && InputDims.d[2] > 0 && InputDims.d[3] > 0)
+                {
+                    ModelInputHeight = InputDims.d[2];
+                    ModelInputWidth = InputDims.d[3];
+                }
+                else
+                {
+                    const int32 ClampedInputSize = FMath::Clamp(OnnxInputSize, 160, 1280);
+                    ModelInputWidth = ClampedInputSize;
+                    ModelInputHeight = ClampedInputSize;
+                }
 
-        TrtInputElements = static_cast<int32>(InputVolume);
-        TrtOutputElements = static_cast<int32>(OutputVolume);
-        TrtOutputChannels = (OutputDims.nbDims == 3) ? OutputDims.d[1] : 0;
-        TrtOutputDetections = (OutputDims.nbDims == 3) ? OutputDims.d[2] : 0;
-	        TrtInputHost.SetNumUninitialized(TrtInputElements);
-	        TrtOutputHost.SetNumUninitialized(TrtOutputElements);
+                TrtInputElements = static_cast<int32>(InputVolume);
+                TrtOutputElements = static_cast<int32>(OutputVolume);
+                TrtOutputChannels = (OutputDims.nbDims == 3) ? OutputDims.d[1] : 0;
+                TrtOutputDetections = (OutputDims.nbDims == 3) ? OutputDims.d[2] : 0;
+                TrtInputHost.SetNumUninitialized(TrtInputElements);
+                TrtOutputHost.SetNumUninitialized(TrtOutputElements);
 
-	        const size_t InputBytes = static_cast<size_t>(TrtInputElements) * sizeof(float);
-	        const size_t OutputBytes = static_cast<size_t>(TrtOutputElements) * sizeof(float);
+                const size_t InputBytes = static_cast<size_t>(TrtInputElements) * sizeof(float);
+                const size_t OutputBytes = static_cast<size_t>(TrtOutputElements) * sizeof(float);
 
-	        const cudaError_t StreamErr = cudaStreamCreate(&TrtStream);
-	        if (StreamErr != cudaSuccess)
-	        {
-	            UE_LOG(LogTemp, Error, TEXT("cudaStreamCreate failed: %s"), *FString(cudaGetErrorString(StreamErr)));
-	            ReleaseTensorRT();
-	            return false;
-	        }
+                const cudaError_t StreamErr = cudaStreamCreate(&TrtStream);
+                if (StreamErr != cudaSuccess)
+                {
+                    UE_LOG(LogTemp, Error, TEXT("cudaStreamCreate failed: %s"), *FString(cudaGetErrorString(StreamErr)));
+                    ReleaseTensorRT();
+                    return false;
+                }
 
-	        const cudaError_t InAllocErr = cudaMalloc(&TrtInputDevice, InputBytes);
-	        if (InAllocErr != cudaSuccess)
-	        {
-	            UE_LOG(LogTemp, Error, TEXT("cudaMalloc input failed: %s"), *FString(cudaGetErrorString(InAllocErr)));
-	            ReleaseTensorRT();
-	            return false;
-	        }
+                const cudaError_t InAllocErr = cudaMalloc(&TrtInputDevice, InputBytes);
+                if (InAllocErr != cudaSuccess)
+                {
+                    UE_LOG(LogTemp, Error, TEXT("cudaMalloc input failed: %s"), *FString(cudaGetErrorString(InAllocErr)));
+                    ReleaseTensorRT();
+                    return false;
+                }
 
-	        const cudaError_t OutAllocErr = cudaMalloc(&TrtOutputDevice, OutputBytes);
-	        if (OutAllocErr != cudaSuccess)
-	        {
-	            UE_LOG(LogTemp, Error, TEXT("cudaMalloc output failed: %s"), *FString(cudaGetErrorString(OutAllocErr)));
-	            ReleaseTensorRT();
-	            return false;
-	        }
+                const cudaError_t OutAllocErr = cudaMalloc(&TrtOutputDevice, OutputBytes);
+                if (OutAllocErr != cudaSuccess)
+                {
+                    UE_LOG(LogTemp, Error, TEXT("cudaMalloc output failed: %s"), *FString(cudaGetErrorString(OutAllocErr)));
+                    ReleaseTensorRT();
+                    return false;
+                }
 
-        UE_LOG(LogTemp, Log, TEXT("TensorRT engine loaded: input=%s, output=%s, elements=%d"),
-            *TrtDimsToString(InputDims), *TrtDimsToString(OutputDims), TrtOutputElements);
-	        bIsModelLoaded = true;
-	        return true;
+                UE_LOG(LogTemp, Log, TEXT("TensorRT engine loaded: input=%s, output=%s, elements=%d"),
+                    *TrtDimsToString(InputDims), *TrtDimsToString(OutputDims), TrtOutputElements);
+                bIsModelLoaded = true;
+                return true;
+            }
+
+            if (InferenceBackend != EDetectionInferenceBackend::OpenCVDNN)
+            {
+                UE_LOG(LogTemp, Error, TEXT("Unsupported inference backend value: %d"), static_cast<int32>(InferenceBackend));
+                return false;
+            }
+
+            FString OpenCvModelPath = ModelPathUE;
+            if (OpenCvModelPath.EndsWith(TEXT(".plan")))
+            {
+                const FString CandidateOnnxPath = FPaths::ChangeExtension(OpenCvModelPath, TEXT("onnx"));
+                if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*CandidateOnnxPath))
+                {
+                    OpenCvModelPath = CandidateOnnxPath;
+                }
+                else
+                {
+                    FString BaseName = FPaths::GetBaseFilename(OpenCvModelPath);
+                    const FString DirPath = FPaths::GetPath(OpenCvModelPath);
+                    if (BaseName.EndsWith(TEXT("_fp16")) || BaseName.EndsWith(TEXT("_fp32")) || BaseName.EndsWith(TEXT("_int8")))
+                    {
+                        BaseName = BaseName.LeftChop(5);
+                    }
+                    const FString AltOnnxPath = FPaths::Combine(DirPath, BaseName + TEXT(".onnx"));
+                    if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*AltOnnxPath))
+                    {
+                        OpenCvModelPath = AltOnnxPath;
+                    }
+                    else
+                    {
+                        UE_LOG(LogTemp, Error, TEXT("OpenCV DNN cannot load .plan. Tried %s and %s"),
+                            *CandidateOnnxPath, *AltOnnxPath);
+                        return false;
+                    }
+                }
+            }
+
+            if (OpenCvModelPath.EndsWith(TEXT(".onnx")))
+            {
+                OpenCVDnnNet = cv::dnn::readNetFromONNX(std::string(TCHAR_TO_UTF8(*OpenCvModelPath)));
+                bIsOnnxModel = true;
+            }
+            else if (OpenCvModelPath.EndsWith(TEXT(".weights")))
+            {
+                const FString CfgPathUE = FString(CfgPath.c_str());
+                if (!FPlatformFileManager::Get().GetPlatformFile().FileExists(*CfgPathUE))
+                {
+                    UE_LOG(LogTemp, Error, TEXT("Darknet cfg not found: %s"), *CfgPathUE);
+                    return false;
+                }
+                OpenCVDnnNet = cv::dnn::readNetFromDarknet(
+                    std::string(TCHAR_TO_UTF8(*CfgPathUE)),
+                    std::string(TCHAR_TO_UTF8(*OpenCvModelPath)));
+                bIsOnnxModel = false;
+            }
+            else
+            {
+                UE_LOG(LogTemp, Error, TEXT("Unsupported OpenCV model format: %s"), *OpenCvModelPath);
+                return false;
+            }
+
+            if (OpenCVDnnNet.empty())
+            {
+                UE_LOG(LogTemp, Error, TEXT("OpenCV DNN failed to load model: %s"), *OpenCvModelPath);
+                return false;
+            }
+
+            try
+            {
+                if (bOpenCVDNNPreferCUDA)
+                {
+                    OpenCVDnnNet.setPreferableTarget(
+                        bOpenCVDNNUseFP16 ? cv::dnn::DNN_TARGET_CUDA_FP16 : cv::dnn::DNN_TARGET_CUDA);
+                    OpenCVDnnNet.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
+                }
+                else
+                {
+                    OpenCVDnnNet.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+                    OpenCVDnnNet.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+                }
+            }
+            catch (const cv::Exception& e)
+            {
+                UE_LOG(LogTemp, Warning, TEXT("OpenCV DNN preferred backend setup failed (%s). Falling back to CPU."),
+                    *FString(e.what()));
+                OpenCVDnnNet.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+                OpenCVDnnNet.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+            }
+
+            const int32 ClampedInputSize = FMath::Clamp(OnnxInputSize, 160, 1280);
+            ModelInputWidth = ClampedInputSize;
+            ModelInputHeight = ClampedInputSize;
+            TrtInputElements = 0;
+            TrtOutputElements = 0;
+            TrtOutputChannels = 0;
+            TrtOutputDetections = 0;
+            TrtInputHost.Reset();
+            TrtOutputHost.Reset();
+
+            UE_LOG(LogTemp, Log, TEXT("OpenCV DNN model loaded: %s"), *OpenCvModelPath);
+            bIsModelLoaded = true;
+            return true;
 	    }
 	    catch (const std::exception& e)
 	    {
-	        UE_LOG(LogTemp, Error, TEXT("TensorRT load failed: %s"), *FString(e.what()));
+	        UE_LOG(LogTemp, Error, TEXT("Model load failed: %s"), *FString(e.what()));
 	        ReleaseTensorRT();
+            OpenCVDnnNet = cv::dnn::Net();
 	        return false;
 	    }
 	    catch (...)
 	    {
-	        UE_LOG(LogTemp, Error, TEXT("TensorRT load failed (unknown exception)"));
+	        UE_LOG(LogTemp, Error, TEXT("Model load failed (unknown exception)"));
 	        ReleaseTensorRT();
+            OpenCVDnnNet = cv::dnn::Net();
 	        return false;
 	    }
 	}
@@ -634,8 +927,248 @@ bool UMyActorComponent::RunTensorRT()
     return true;
 }
 
-TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FColor>& Bitmap, int32 Width, int32 Height, int Threshold)
+bool UMyActorComponent::RunTensorRTInference_BG(const cv::Mat& ModelInputBGR)
 {
+    cv::Mat imgRGB;
+    cv::cvtColor(ModelInputBGR, imgRGB, cv::COLOR_BGR2RGB);
+
+    cv::Mat imgFloat;
+    imgRGB.convertTo(imgFloat, CV_32F, 1.0f / 255.0f);
+
+    const int32 PlaneSize = ModelInputWidth * ModelInputHeight;
+    if (TrtInputElements != PlaneSize * 3)
+    {
+        UE_LOG(LogTemp, Error, TEXT("TensorRT input size mismatch (expected %d, got %d)"),
+            PlaneSize * 3, TrtInputElements);
+        return false;
+    }
+
+    if (TrtInputHost.Num() != TrtInputElements)
+    {
+        TrtInputHost.SetNumUninitialized(TrtInputElements);
+    }
+
+    std::vector<cv::Mat> Channels;
+    cv::split(imgFloat, Channels);
+    if (Channels.size() != 3)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Unexpected channel count from preprocessing: %d"), Channels.size());
+        return false;
+    }
+
+    float* InputPtr = TrtInputHost.GetData();
+    for (int32 c = 0; c < 3; ++c)
+    {
+        const float* Src = Channels[c].ptr<float>();
+        FMemory::Memcpy(InputPtr + (c * PlaneSize), Src, PlaneSize * sizeof(float));
+    }
+
+    if (!RunTensorRT())
+    {
+        UE_LOG(LogTemp, Error, TEXT("TensorRT inference failed"));
+        return false;
+    }
+
+    return true;
+}
+
+bool UMyActorComponent::RunOpenCVDNNInference_BG(const cv::Mat& ModelInputBGR)
+{
+    if (InferenceBackend != EDetectionInferenceBackend::OpenCVDNN)
+    {
+        UE_LOG(LogTemp, Error, TEXT("RunOpenCVDNNInference_BG called while backend is not OpenCVDNN"));
+        return false;
+    }
+
+    if (OpenCVDnnNet.empty())
+    {
+        UE_LOG(LogTemp, Error, TEXT("OpenCV DNN backend selected but net is not initialized"));
+        return false;
+    }
+
+    cv::Mat Blob = cv::dnn::blobFromImage(
+        ModelInputBGR,
+        1.0 / 255.0,
+        cv::Size(ModelInputWidth, ModelInputHeight),
+        cv::Scalar(),
+        true,
+        false);
+
+    std::vector<cv::Mat> Outputs;
+    auto ForwardOnce = [&]() -> void
+    {
+        Outputs.clear();
+        OpenCVDnnNet.setInput(Blob);
+        const std::vector<cv::String> OutNames = OpenCVDnnNet.getUnconnectedOutLayersNames();
+        if (OutNames.empty())
+        {
+            Outputs.push_back(OpenCVDnnNet.forward());
+        }
+        else
+        {
+            OpenCVDnnNet.forward(Outputs, OutNames);
+        }
+    };
+
+    try
+    {
+        ForwardOnce();
+    }
+    catch (const cv::Exception& e)
+    {
+        const FString Err = FString(e.what());
+        const bool bBackendTargetMismatch =
+            Err.Contains(TEXT("validateBackendAndTarget")) ||
+            Err.Contains(TEXT("preferableBackend"));
+
+        if (!bBackendTargetMismatch)
+        {
+            UE_LOG(LogTemp, Error, TEXT("OpenCV DNN forward failed: %s"), *Err);
+            return false;
+        }
+
+        UE_LOG(LogTemp, Warning, TEXT("OpenCV DNN backend/target mismatch (%s). Falling back to CPU."),
+            *Err);
+        try
+        {
+            OpenCVDnnNet.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+            OpenCVDnnNet.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+            ForwardOnce();
+        }
+        catch (const cv::Exception& RetryErr)
+        {
+            UE_LOG(LogTemp, Error, TEXT("OpenCV DNN CPU fallback failed: %s"), *FString(RetryErr.what()));
+            return false;
+        }
+    }
+
+    cv::Mat ChosenOut;
+    int64 BestScore = -1;
+    for (const cv::Mat& OutRef : Outputs)
+    {
+        cv::Mat Out = OutRef;
+        if (Out.empty())
+        {
+            continue;
+        }
+
+        int32 NonSingletonA = 0;
+        int32 NonSingletonB = 0;
+        int32 NonSingletonCount = 0;
+        for (int32 d = 0; d < Out.dims; ++d)
+        {
+            if (Out.size[d] > 1)
+            {
+                if (NonSingletonCount == 0)
+                {
+                    NonSingletonA = Out.size[d];
+                }
+                else if (NonSingletonCount == 1)
+                {
+                    NonSingletonB = Out.size[d];
+                }
+                ++NonSingletonCount;
+            }
+        }
+
+        int64 Score = static_cast<int64>(Out.total());
+        if (NonSingletonCount == 2)
+        {
+            const int32 MinSide = FMath::Min(NonSingletonA, NonSingletonB);
+            const int32 MaxSide = FMath::Max(NonSingletonA, NonSingletonB);
+            if (MinSide >= 5 && MinSide <= 512 && MaxSide >= 16)
+            {
+                Score += 1000000000LL;
+            }
+            if (MinSide == 6)
+            {
+                Score += 100000000LL;
+            }
+        }
+
+        if (Score > BestScore)
+        {
+            BestScore = Score;
+            ChosenOut = Out;
+        }
+    }
+
+    if (ChosenOut.empty())
+    {
+        UE_LOG(LogTemp, Error, TEXT("OpenCV DNN produced no outputs"));
+        return false;
+    }
+
+    if (!ChosenOut.isContinuous())
+    {
+        ChosenOut = ChosenOut.clone();
+    }
+    if (ChosenOut.type() != CV_32F)
+    {
+        ChosenOut.convertTo(ChosenOut, CV_32F);
+    }
+
+    int32 OutputChannels = 0;
+    int32 OutputDetections = 0;
+    if (ChosenOut.dims == 2)
+    {
+        OutputChannels = ChosenOut.rows;
+        OutputDetections = ChosenOut.cols;
+    }
+    else if (ChosenOut.dims == 3 && ChosenOut.size[0] == 1)
+    {
+        OutputChannels = ChosenOut.size[1];
+        OutputDetections = ChosenOut.size[2];
+    }
+    else
+    {
+        TArray<int32> NonSingletonDims;
+        for (int32 d = 0; d < ChosenOut.dims; ++d)
+        {
+            if (ChosenOut.size[d] > 1)
+            {
+                NonSingletonDims.Add(ChosenOut.size[d]);
+            }
+        }
+        if (NonSingletonDims.Num() != 2)
+        {
+            UE_LOG(LogTemp, Error, TEXT("Unsupported OpenCV output dims: %d"), ChosenOut.dims);
+            return false;
+        }
+        OutputChannels = NonSingletonDims[0];
+        OutputDetections = NonSingletonDims[1];
+    }
+
+    const int32 TotalValues = OutputChannels * OutputDetections;
+    if (TotalValues <= 0 || ChosenOut.total() < static_cast<size_t>(TotalValues))
+    {
+        UE_LOG(LogTemp, Error, TEXT("OpenCV output size mismatch: channels=%d, dets=%d, total=%lld"),
+            OutputChannels, OutputDetections, static_cast<long long>(ChosenOut.total()));
+        return false;
+    }
+
+    TrtOutputHost.SetNumUninitialized(TotalValues);
+    FMemory::Memcpy(TrtOutputHost.GetData(), ChosenOut.ptr<float>(), static_cast<size_t>(TotalValues) * sizeof(float));
+    TrtOutputElements = TotalValues;
+    TrtOutputChannels = OutputChannels;
+    TrtOutputDetections = OutputDetections;
+
+    if (bLogPerf)
+    {
+        UE_LOG(LogTemp, Log, TEXT("OpenCV output shape: raw=%s resolved=[%d, %d] total=%d"),
+            *MatShapeToString(ChosenOut), TrtOutputChannels, TrtOutputDetections, TrtOutputElements);
+    }
+
+    return true;
+}
+
+TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FColor>& Bitmap, int32 Width, int32 Height, int Threshold, double* OutInferenceMs)
+{
+    if (OutInferenceMs)
+    {
+        *OutInferenceMs = -1.0;
+    }
+
     if (!bIsModelLoaded)
     {
         return {};
@@ -677,50 +1210,38 @@ TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FC
         cv::resize(imgBGR, modelInputBGR, cv::Size(ModelInputWidth, ModelInputHeight), 0.0, 0.0, cv::INTER_LINEAR);
     }
 
-    cv::Mat imgRGB;
-    cv::cvtColor(modelInputBGR, imgRGB, cv::COLOR_BGR2RGB);
-
-    cv::Mat imgFloat;
-    imgRGB.convertTo(imgFloat, CV_32F, 1.0f / 255.0f);
-
-    const int32 PlaneSize = ModelInputWidth * ModelInputHeight;
-    if (TrtInputElements != PlaneSize * 3)
-    {
-        UE_LOG(LogTemp, Error, TEXT("TensorRT input size mismatch (expected %d, got %d)"),
-            PlaneSize * 3, TrtInputElements);
-        return {};
-    }
-
-    if (TrtInputHost.Num() != TrtInputElements)
-    {
-        TrtInputHost.SetNumUninitialized(TrtInputElements);
-    }
-
-    std::vector<cv::Mat> Channels;
-    cv::split(imgFloat, Channels);
-    if (Channels.size() != 3)
-    {
-        UE_LOG(LogTemp, Error, TEXT("Unexpected channel count from preprocessing: %d"), Channels.size());
-        return {};
-    }
-
-    float* InputPtr = TrtInputHost.GetData();
-    for (int32 c = 0; c < 3; ++c)
-    {
-        const float* Src = Channels[c].ptr<float>();
-        FMemory::Memcpy(InputPtr + (c * PlaneSize), Src, PlaneSize * sizeof(float));
-    }
-
     const double T0 = FPlatformTime::Seconds();
-    if (!RunTensorRT())
+    bool bInferOk = false;
+    if (InferenceBackend == EDetectionInferenceBackend::TensorRT)
     {
-        UE_LOG(LogTemp, Error, TEXT("TensorRT inference failed"));
+        bInferOk = RunTensorRTInference_BG(modelInputBGR);
+    }
+    else if (InferenceBackend == EDetectionInferenceBackend::OpenCVDNN)
+    {
+        bInferOk = RunOpenCVDNNInference_BG(modelInputBGR);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("Unknown inference backend value: %d"), static_cast<int32>(InferenceBackend));
         return {};
     }
+
+    if (!bInferOk)
+    {
+        return {};
+    }
+
     const double InferMs = (FPlatformTime::Seconds() - T0) * 1000.0;
+    if (OutInferenceMs)
+    {
+        *OutInferenceMs = InferMs;
+    }
     if (bLogPerf)
     {
-        UE_LOG(LogTemp, Log, TEXT("TensorRT forward: %.1f ms"), InferMs);
+        const TCHAR* BackendLabel = (InferenceBackend == EDetectionInferenceBackend::TensorRT)
+            ? TEXT("TensorRT")
+            : TEXT("OpenCV DNN");
+        UE_LOG(LogTemp, Log, TEXT("%s forward: %.1f ms"), BackendLabel, InferMs);
     }
 
     std::vector<cv::Rect> boxes;
@@ -818,111 +1339,16 @@ TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FC
         return true;
     };
 
-    auto AddXYWH = [&](float cx, float cy, float w, float h, float Score, int ClassId)
-    {
-        const float x1 = cx - (w * 0.5f);
-        const float y1 = cy - (h * 0.5f);
-        const float x2 = cx + (w * 0.5f);
-        const float y2 = cy + (h * 0.5f);
-        cv::Rect MappedBox;
-        float Overflow = 0.0f;
-        if (MapXYXYToSource(x1, y1, x2, y2, bUseLetterbox, MappedBox, Overflow))
-        {
-            CommitMappedBox(MappedBox, Score, ClassId);
-        }
-    };
-
     if (!bIsOnnxModel || !OutData || TrtOutputChannels <= 0 || TrtOutputDetections <= 0)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Unexpected TensorRT output state, skipping detections"));
-    }
-    else if (TrtOutputDetections == 6 || TrtOutputChannels == 6)
-    {
-        // End-to-end exports with NMS usually emit [1, N, 6] or [1, 6, N]:
-        // [x1, y1, x2, y2, score, class].
-        const bool bNBy6 = (TrtOutputDetections == 6);
-        const int32 Dets = bNBy6 ? TrtOutputChannels : TrtOutputDetections;
-        struct FMappedDet
-        {
-            cv::Rect Box;
-            float Score = 0.0f;
-            int32 ClassId = -1;
-        };
-        std::vector<FMappedDet> UndoLetterboxDetections;
-        std::vector<FMappedDet> DirectScaleDetections;
-        float UndoOverflow = 0.0f;
-        float DirectOverflow = 0.0f;
-
-        for (int32 i = 0; i < Dets; ++i)
-        {
-            const float x1 = bNBy6 ? OutData[(i * 6) + 0] : OutData[(0 * Dets) + i];
-            const float y1 = bNBy6 ? OutData[(i * 6) + 1] : OutData[(1 * Dets) + i];
-            const float x2 = bNBy6 ? OutData[(i * 6) + 2] : OutData[(2 * Dets) + i];
-            const float y2 = bNBy6 ? OutData[(i * 6) + 3] : OutData[(3 * Dets) + i];
-            const float score = bNBy6 ? OutData[(i * 6) + 4] : OutData[(4 * Dets) + i];
-            const float classF = bNBy6 ? OutData[(i * 6) + 5] : OutData[(5 * Dets) + i];
-
-            if (score < ConfThreshold)
-            {
-                continue;
-            }
-
-            const int32 classId = FMath::Max(0, FMath::RoundToInt(classF));
-            cv::Rect UndoBox;
-            cv::Rect DirectBox;
-            float BoxUndoOverflow = 0.0f;
-            float BoxDirectOverflow = 0.0f;
-
-            const bool bHasUndo = MapXYXYToSource(x1, y1, x2, y2, true, UndoBox, BoxUndoOverflow);
-            const bool bHasDirect = MapXYXYToSource(x1, y1, x2, y2, false, DirectBox, BoxDirectOverflow);
-            UndoOverflow += BoxUndoOverflow;
-            DirectOverflow += BoxDirectOverflow;
-
-            if (bHasUndo)
-            {
-                UndoLetterboxDetections.push_back({ UndoBox, score, classId });
-            }
-            if (bHasDirect)
-            {
-                DirectScaleDetections.push_back({ DirectBox, score, classId });
-            }
-        }
-
-        bool bUseUndoMapping = bUseLetterbox;
-        if (bUseLetterbox && (PadX > 0.5f || PadY > 0.5f))
-        {
-            const bool bDirectClearlyBetter = !DirectScaleDetections.empty() &&
-                (UndoLetterboxDetections.empty() || (DirectOverflow + 1e-3f) < (UndoOverflow * 0.85f));
-            if (bDirectClearlyBetter)
-            {
-                bUseUndoMapping = false;
-            }
-        }
-
-        const std::vector<FMappedDet>& Selected = bUseUndoMapping ? UndoLetterboxDetections : DirectScaleDetections;
-        if (!Selected.empty())
-        {
-            for (const FMappedDet& Det : Selected)
-            {
-                CommitMappedBox(Det.Box, Det.Score, Det.ClassId);
-            }
-        }
-        else
-        {
-            const std::vector<FMappedDet>& Fallback = bUseUndoMapping ? DirectScaleDetections : UndoLetterboxDetections;
-            for (const FMappedDet& Det : Fallback)
-            {
-                CommitMappedBox(Det.Box, Det.Score, Det.ClassId);
-            }
-        }
+        UE_LOG(LogTemp, Warning, TEXT("Unexpected model output state, skipping detections"));
     }
     else
     {
-        // Raw YOLO layout, commonly [1, attrs, dets] or [1, dets, attrs].
+        // Normalize output layout to [attrs, dets].
         int32 Attrs = TrtOutputChannels;
         int32 Dets = TrtOutputDetections;
         bool bAttrsMajor = true;
-
         if (TrtOutputDetections <= 256 && TrtOutputChannels > TrtOutputDetections)
         {
             Attrs = TrtOutputDetections;
@@ -930,25 +1356,65 @@ TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FC
             bAttrsMajor = false;
         }
 
-        if (Attrs < 5 || Dets <= 0)
+        auto ReadAttr = [&](int32 Attr, int32 Det) -> float
         {
-            UE_LOG(LogTemp, Warning, TEXT("Unsupported raw output shape [%d, %d]"), TrtOutputChannels, TrtOutputDetections);
+            return bAttrsMajor ? OutData[(Attr * Dets) + Det] : OutData[(Det * Attrs) + Attr];
+        };
+
+        const int32 NumClassesHint = static_cast<int32>(ClassNames.size());
+
+        if (Attrs == 6)
+        {
+            // End-to-end layout: [x1, y1, x2, y2, score, class_id].
+            for (int32 i = 0; i < Dets; ++i)
+            {
+                const float x1 = ReadAttr(0, i);
+                const float y1 = ReadAttr(1, i);
+                const float x2 = ReadAttr(2, i);
+                const float y2 = ReadAttr(3, i);
+                float score = ReadAttr(4, i);
+                const float classF = ReadAttr(5, i);
+                if (!FMath::IsFinite(score) || !FMath::IsFinite(classF))
+                {
+                    continue;
+                }
+
+                if (score < 0.0f || score > 1.0f)
+                {
+                    score = Sigmoidf(score);
+                }
+                if (score < ConfThreshold)
+                {
+                    continue;
+                }
+
+                int32 classId = FMath::RoundToInt(classF);
+                if (NumClassesHint > 0)
+                {
+                    classId = FMath::Clamp(classId, 0, NumClassesHint - 1);
+                }
+                else
+                {
+                    classId = FMath::Max(0, classId);
+                }
+
+                cv::Rect MappedBox;
+                float Overflow = 0.0f;
+                if (MapXYXYToSource(x1, y1, x2, y2, bUseLetterbox, MappedBox, Overflow))
+                {
+                    CommitMappedBox(MappedBox, score, classId);
+                }
+            }
         }
-        else
+        else if (Attrs >= 5)
         {
-            const int32 ClassCount = static_cast<int32>(ClassNames.size());
-            const bool bHasObjectness = (ClassCount > 0 && (Attrs - 5) == ClassCount);
+            // Raw layout: [cx, cy, w, h, ...classes] or [cx, cy, w, h, obj, ...classes].
+            const bool bHasObjectness = (NumClassesHint > 0 && (Attrs - 5) == NumClassesHint);
             const int32 ClassStart = bHasObjectness ? 5 : 4;
             const int32 NumClasses = Attrs - ClassStart;
-
-            auto ReadAttr = [&](int32 Attr, int32 Det) -> float
-            {
-                return bAttrsMajor ? OutData[(Attr * Dets) + Det] : OutData[(Det * Attrs) + Attr];
-            };
-
             if (NumClasses <= 0)
             {
-                UE_LOG(LogTemp, Warning, TEXT("Raw output has no classes (attrs=%d)"), Attrs);
+                UE_LOG(LogTemp, Warning, TEXT("Unsupported raw output shape [%d, %d]"), Attrs, Dets);
             }
             else
             {
@@ -958,13 +1424,21 @@ TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FC
                     const float cy = ReadAttr(1, i);
                     const float w = ReadAttr(2, i);
                     const float h = ReadAttr(3, i);
-                    const float obj = bHasObjectness ? ReadAttr(4, i) : 1.0f;
+                    float obj = bHasObjectness ? ReadAttr(4, i) : 1.0f;
+                    if (bHasObjectness && (obj < 0.0f || obj > 1.0f))
+                    {
+                        obj = Sigmoidf(obj);
+                    }
 
                     float bestScore = 0.0f;
                     int32 bestClass = -1;
                     for (int32 c = 0; c < NumClasses; ++c)
                     {
-                        const float cls = ReadAttr(ClassStart + c, i);
+                        float cls = ReadAttr(ClassStart + c, i);
+                        if (cls < 0.0f || cls > 1.0f)
+                        {
+                            cls = Sigmoidf(cls);
+                        }
                         const float score = obj * cls;
                         if (score > bestScore)
                         {
@@ -978,14 +1452,51 @@ TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FC
                         continue;
                     }
 
-                    AddXYWH(cx, cy, w, h, bestScore, bestClass);
+                    const float x1 = cx - (w * 0.5f);
+                    const float y1 = cy - (h * 0.5f);
+                    const float x2 = cx + (w * 0.5f);
+                    const float y2 = cy + (h * 0.5f);
+                    cv::Rect MappedBox;
+                    float Overflow = 0.0f;
+                    if (MapXYXYToSource(x1, y1, x2, y2, bUseLetterbox, MappedBox, Overflow))
+                    {
+                        CommitMappedBox(MappedBox, bestScore, bestClass);
+                    }
                 }
             }
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Unsupported output shape [%d, %d]"), Attrs, Dets);
         }
     }
 
     std::vector<int> indices;
     ApplyNms(boxes, confidences, ConfThreshold, IoUThreshold, indices);
+
+    if (InferenceBackend == EDetectionInferenceBackend::OpenCVDNN && indices.empty())
+    {
+        static int32 OpenCvEmptyLogDecimator = 0;
+        if ((OpenCvEmptyLogDecimator++ % 30) == 0)
+        {
+            float MinV = 0.0f;
+            float MaxV = 0.0f;
+            if (OutData && TrtOutputElements > 0)
+            {
+                MinV = OutData[0];
+                MaxV = OutData[0];
+                const int32 ProbeCount = FMath::Min(TrtOutputElements, 8192);
+                for (int32 i = 1; i < ProbeCount; ++i)
+                {
+                    MinV = FMath::Min(MinV, OutData[i]);
+                    MaxV = FMath::Max(MaxV, OutData[i]);
+                }
+            }
+
+            UE_LOG(LogTemp, Warning, TEXT("OpenCVDNN produced 0 final boxes (raw=%d, shape=[%d,%d], value_range=[%.4f, %.4f], conf=%.2f, nms=%.2f)"),
+                static_cast<int32>(boxes.size()), TrtOutputChannels, TrtOutputDetections, MinV, MaxV, ConfThreshold, IoUThreshold);
+        }
+    }
 
     TArray<FDetectionResult> Out;
     for (int idx : indices) {

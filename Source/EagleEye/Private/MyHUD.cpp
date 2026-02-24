@@ -87,6 +87,33 @@ namespace
     }
 }
 
+void AMyHUD::ResetStabilizationState()
+{
+    StableTracks.Reset();
+    StableSourceWidth = 0;
+    StableSourceHeight = 0;
+    LastProcessedSequence = 0;
+}
+
+void AMyHUD::SetDetectionHudEnabled(bool bEnabled)
+{
+    if (bDetectionHudEnabled == bEnabled)
+    {
+        return;
+    }
+
+    bDetectionHudEnabled = bEnabled;
+    if (!bDetectionHudEnabled)
+    {
+        ResetStabilizationState();
+    }
+}
+
+void AMyHUD::ToggleDetectionHudEnabled()
+{
+    SetDetectionHudEnabled(!bDetectionHudEnabled);
+}
+
 void AMyHUD::UpdateStableTracks(const TArray<FDetectionResult>& NewDetections, int32 NewSourceWidth, int32 NewSourceHeight, int32 FrameSequence, float DeltaSeconds)
 {
     if (NewSourceWidth <= 0 || NewSourceHeight <= 0)
@@ -382,6 +409,11 @@ void AMyHUD::DrawHUD()
 
     APlayerController* PC = GetOwningPlayerController();
     if (!PC)
+    {
+        return;
+    }
+
+    if (!bDetectionHudEnabled)
     {
         return;
     }
