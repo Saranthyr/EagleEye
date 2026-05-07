@@ -1,9 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EagleEyeCharacter.h"
+#include "AI/BotCharacter.h"
 #include "Engine/LocalPlayer.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "EngineUtils.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "GameFramework/Controller.h"
@@ -86,6 +88,21 @@ void AEagleEyeCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputC
 
 		// Looking
 		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &AEagleEyeCharacter::Look);
+
+		if (ToggleCrowViewAction)
+		{
+			EnhancedInputComponent->BindAction(ToggleCrowViewAction, ETriggerEvent::Started, this, &AEagleEyeCharacter::ToggleCrowPOV);
+		}
+
+		if (NextCrowViewAction)
+		{
+			EnhancedInputComponent->BindAction(NextCrowViewAction, ETriggerEvent::Started, this, &AEagleEyeCharacter::NextCrowPOV);
+		}
+
+		if (PreviousCrowViewAction)
+		{
+			EnhancedInputComponent->BindAction(PreviousCrowViewAction, ETriggerEvent::Started, this, &AEagleEyeCharacter::PreviousCrowPOV);
+		}
 	}
 	else
 	{
@@ -127,4 +144,131 @@ void AEagleEyeCharacter::Look(const FInputActionValue& Value)
 		AddControllerYawInput(LookAxisVector.X);
 		AddControllerPitchInput(LookAxisVector.Y);
 	}
+}
+
+void AEagleEyeCharacter::ToggleCrowPOV()
+{
+	SetCrowPOVEnabled(!bViewingCrowPOV);
+}
+
+void AEagleEyeCharacter::NextCrowPOV()
+{
+	StepCrowPOV(1);
+}
+
+void AEagleEyeCharacter::PreviousCrowPOV()
+{
+	StepCrowPOV(-1);
+}
+
+void AEagleEyeCharacter::SetCrowPOVEnabled(bool bEnabled)
+{
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	if (!PlayerController)
+	{
+		return;
+	}
+
+	if (bEnabled)
+	{
+		SetCrowPOVTarget(FindCrowViewTarget());
+		return;
+	}
+
+	PlayerController->SetViewTargetWithBlend(this, 0.25f);
+	bViewingCrowPOV = false;
+	CurrentCrowViewTarget = nullptr;
+}
+
+AActor* AEagleEyeCharacter::FindCrowViewTarget() const
+{
+	TArray<ABotCharacter*> Crows;
+	GatherCrowViewTargets(Crows);
+	return Crows.Num() > 0 ? Crows[0] : nullptr;
+}
+
+void AEagleEyeCharacter::GatherCrowViewTargets(TArray<ABotCharacter*>& OutCrows) const
+{
+	OutCrows.Reset();
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	for (TActorIterator<ABotCharacter> It(World); It; ++It)
+	{
+		ABotCharacter* Crow = *It;
+		if (!IsValid(Crow) || !Crow->FindComponentByClass<UCameraComponent>())
+		{
+			continue;
+		}
+
+		OutCrows.Add(Crow);
+	}
+
+	OutCrows.Sort([this](const ABotCharacter& A, const ABotCharacter& B)
+	{
+		const float DistASq = FVector::DistSquared(GetActorLocation(), A.GetActorLocation());
+		const float DistBSq = FVector::DistSquared(GetActorLocation(), B.GetActorLocation());
+		if (!FMath::IsNearlyEqual(DistASq, DistBSq))
+		{
+			return DistASq < DistBSq;
+		}
+
+		return A.GetFName().LexicalLess(B.GetFName());
+	});
+}
+
+void AEagleEyeCharacter::SetCrowPOVTarget(AActor* CrowViewTarget)
+{
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	if (!PlayerController)
+	{
+		return;
+	}
+
+	if (!IsValid(CrowViewTarget))
+	{
+		UE_LOG(LogTemplateCharacter, Warning, TEXT("Crow POV: no crow view target found."));
+		return;
+	}
+
+	PlayerController->SetViewTargetWithBlend(CrowViewTarget, 0.25f);
+	CurrentCrowViewTarget = CrowViewTarget;
+	bViewingCrowPOV = true;
+}
+
+void AEagleEyeCharacter::StepCrowPOV(int32 Direction)
+{
+	TArray<ABotCharacter*> Crows;
+	GatherCrowViewTargets(Crows);
+	if (Crows.Num() == 0)
+	{
+		UE_LOG(LogTemplateCharacter, Warning, TEXT("Crow POV: no crows with cameras found."));
+		return;
+	}
+
+	if (!bViewingCrowPOV || !CurrentCrowViewTarget.IsValid())
+	{
+		SetCrowPOVTarget(Crows[0]);
+		return;
+	}
+
+	int32 CurrentIndex = Crows.IndexOfByKey(Cast<ABotCharacter>(CurrentCrowViewTarget.Get()));
+	if (CurrentIndex == INDEX_NONE)
+	{
+		CurrentIndex = 0;
+	}
+	else
+	{
+		CurrentIndex = (CurrentIndex + Direction) % Crows.Num();
+		if (CurrentIndex < 0)
+		{
+			CurrentIndex += Crows.Num();
+		}
+	}
+
+	SetCrowPOVTarget(Crows[CurrentIndex]);
 }

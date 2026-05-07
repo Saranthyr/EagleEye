@@ -50,39 +50,39 @@ DebugSet: RequiredTools UnrealFrontend-Linux-Debug EagleEyeEditor-Linux-Debug
 
 
 EagleEye-Android-DebugGame:
-	 $(BUILD) EagleEye Android DebugGame  -Project="/home/saranthyr/EagleEye/EagleEye.uproject" $(ARGS)
+	 $(BUILD) EagleEye Android DebugGame  -Project="/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject" $(ARGS)
 
 EagleEye-Android-Development:
-	 $(BUILD) EagleEye Android Development  -Project="/home/saranthyr/EagleEye/EagleEye.uproject" $(ARGS)
+	 $(BUILD) EagleEye Android Development  -Project="/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject" $(ARGS)
 
 EagleEye-Android-Shipping:
-	 $(BUILD) EagleEye Android Shipping  -Project="/home/saranthyr/EagleEye/EagleEye.uproject" $(ARGS)
+	 $(BUILD) EagleEye Android Shipping  -Project="/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject" $(ARGS)
 
 EagleEye-Linux-DebugGame:
-	 $(BUILD) EagleEye Linux DebugGame  -Project="/home/saranthyr/EagleEye/EagleEye.uproject" $(ARGS)
+	 $(BUILD) EagleEye Linux DebugGame  -Project="/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject" $(ARGS)
 
 EagleEye-Linux-Development:
-	 $(BUILD) EagleEye Linux Development  -Project="/home/saranthyr/EagleEye/EagleEye.uproject" $(ARGS)
+	 $(BUILD) EagleEye Linux Development  -Project="/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject" $(ARGS)
 
 EagleEye-Linux-Shipping:
-	 $(BUILD) EagleEye Linux Shipping  -Project="/home/saranthyr/EagleEye/EagleEye.uproject" $(ARGS)
+	 $(BUILD) EagleEye Linux Shipping  -Project="/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject" $(ARGS)
 
 EagleEye-LinuxArm64-DebugGame:
-	 $(BUILD) EagleEye LinuxArm64 DebugGame  -Project="/home/saranthyr/EagleEye/EagleEye.uproject" $(ARGS)
+	 $(BUILD) EagleEye LinuxArm64 DebugGame  -Project="/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject" $(ARGS)
 
 EagleEye-LinuxArm64-Development:
-	 $(BUILD) EagleEye LinuxArm64 Development  -Project="/home/saranthyr/EagleEye/EagleEye.uproject" $(ARGS)
+	 $(BUILD) EagleEye LinuxArm64 Development  -Project="/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject" $(ARGS)
 
 EagleEye-LinuxArm64-Shipping:
-	 $(BUILD) EagleEye LinuxArm64 Shipping  -Project="/home/saranthyr/EagleEye/EagleEye.uproject" $(ARGS)
+	 $(BUILD) EagleEye LinuxArm64 Shipping  -Project="/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject" $(ARGS)
 
 EagleEye: EagleEye-Linux-Development
 
 EagleEyeEditor-Linux-DebugGame:
-	 $(BUILD) EagleEyeEditor Linux DebugGame  -Project="/home/saranthyr/EagleEye/EagleEye.uproject" $(ARGS)
+	 $(BUILD) EagleEyeEditor Linux DebugGame  -Project="/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject" $(ARGS)
 
 EagleEyeEditor-Linux-Development:
-	 $(BUILD) EagleEyeEditor Linux Development  -Project="/home/saranthyr/EagleEye/EagleEye.uproject" $(ARGS)
+	 $(BUILD) EagleEyeEditor Linux Development  -Project="/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject" $(ARGS)
 
 EagleEyeEditor: EagleEyeEditor-Linux-Development
 
@@ -138,6 +138,6 @@ UnrealGame-LinuxArm64-Shipping:
 UnrealGame: UnrealGame-Linux-Development
 
 configure:
-	$(BUILD) -ProjectFiles -Project="/home/saranthyr/EagleEye/EagleEye.uproject" -Game 
+	$(BUILD) -ProjectFiles -Project="/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject" -Game 
 
 .PHONY: $(TARGETS)

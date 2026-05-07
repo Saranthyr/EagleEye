@@ -2,8 +2,11 @@
 
 #include "WorldGen.h"
 
+#include "AI/BotCharacter.h"
+#include "Algo/Unique.h"
 #include "Components/BrushComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "DrawDebugHelpers.h"
 #include "Kismet/GameplayStatics.h"
 #include "NavigationSystem.h"
 #include "NavMesh/NavMeshBoundsVolume.h"
@@ -12,25 +15,6 @@
 namespace
 {
 	constexpr float kMinStreamingInterval = 0.05f;
-
-	int32 LowerBoundInt(const TArray<int32>& Values, int32 Target)
-	{
-		int32 Low = 0;
-		int32 High = Values.Num();
-		while (Low < High)
-		{
-			const int32 Mid = Low + (High - Low) / 2;
-			if (Values[Mid] < Target)
-			{
-				Low = Mid + 1;
-			}
-			else
-			{
-				High = Mid;
-			}
-		}
-		return Low;
-	}
 }
 
 // Sets default values
@@ -56,6 +40,16 @@ AWorldGen::AWorldGen()
 void AWorldGen::BeginPlay()
 {
 	Super::BeginPlay();
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("WorldGen: Crow spawning %s. CrowClass=%s Min=%d Max=%d"),
+		bEnableCrowSpawning ? TEXT("enabled") : TEXT("disabled"),
+		CrowClass ? *CrowClass->GetName() : TEXT("None"),
+		MinCrowsPerSection,
+		MaxCrowsPerSection
+	);
 
 	InitializeFoliageComponents();
 
@@ -102,6 +96,8 @@ void AWorldGen::RegenerateAll()
 			{
 				DestroySectionNavBounds(Pair.Value);
 			}
+
+			DestroyCrowsForSection(Pair.Value);
 		}
 	}
 
@@ -167,16 +163,6 @@ void AWorldGen::UpdateStreamingInternal(bool bForce)
 	}
 
 	bool bSectionsChanged = false;
-	for (const FIntPoint& Section : DesiredSections)
-	{
-		if (!LoadedSections.Contains(Section))
-		{
-			const int32 PreviousLoadedCount = LoadedSections.Num();
-			CreateSection(Section);
-			bSectionsChanged |= (LoadedSections.Num() != PreviousLoadedCount);
-		}
-	}
-
 	TArray<FIntPoint> SectionsToRemove;
 	SectionsToRemove.Reserve(LoadedSections.Num());
 	for (const TPair<FIntPoint, FSectionData>& Pair : LoadedSections)
@@ -192,6 +178,16 @@ void AWorldGen::UpdateStreamingInternal(bool bForce)
 		const int32 PreviousLoadedCount = LoadedSections.Num();
 		DestroySection(Section);
 		bSectionsChanged |= (LoadedSections.Num() != PreviousLoadedCount);
+	}
+
+	for (const FIntPoint& Section : DesiredSections)
+	{
+		if (!LoadedSections.Contains(Section))
+		{
+			const int32 PreviousLoadedCount = LoadedSections.Num();
+			CreateSection(Section);
+			bSectionsChanged |= (LoadedSections.Num() != PreviousLoadedCount);
+		}
 	}
 
 	if (bSectionsChanged && bEnableNavMesh)
@@ -273,6 +269,11 @@ void AWorldGen::CreateSection(const FIntPoint& Section)
 		SpawnFoliageForSection(Section, SectionData);
 	}
 
+	if (bEnableCrowSpawning)
+	{
+		SpawnCrowsForSection(Section, SectionData);
+	}
+
 	LoadedSections.Add(Section, MoveTemp(SectionData));
 
 	if (bEnableNavMesh)
@@ -291,10 +292,9 @@ void AWorldGen::DestroySection(const FIntPoint& Section)
 
 	UE_LOG(LogTemp, Log, TEXT("WorldGen: Destroying section (%d, %d)"), Section.X, Section.Y);
 
-	if (bEnableFoliage)
-	{
-		RemoveFoliageForSection(Section, *SectionData);
-	}
+	DestroyCrowsForSection(*SectionData);
+
+	RemoveFoliageForSection(Section, *SectionData);
 
 	if (TerrainMesh && SectionData->MeshSectionIndex != INDEX_NONE)
 	{
@@ -517,6 +517,7 @@ void AWorldGen::InitializeFoliageComponents()
 		Component->SetMobility(EComponentMobility::Movable);
 		Component->SetCollisionEnabled(Config.bEnableCollision ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
 		Component->SetCanEverAffectNavigation(false);
+		AddInstanceComponent(Component);
 		Component->RegisterComponent();
 
 		FoliageComponents.Add(Component);
@@ -562,6 +563,8 @@ void AWorldGen::SpawnFoliageForSection(const FIntPoint& Section, FSectionData& S
 
 		TArray<int32>& InstanceIndices = SectionData.FoliageInstanceIndices[TypeIndex];
 		InstanceIndices.Reserve(NumInstances);
+		TArray<FTransform> PendingTransforms;
+		PendingTransforms.Reserve(NumInstances);
 
 		const bool bCanSnapToSurface = Config.bSnapToGeneratedSurface;
 		const float MinAllowedHeight = FMath::Min(Config.MinHeight, Config.MaxHeight);
@@ -615,15 +618,33 @@ void AWorldGen::SpawnFoliageForSection(const FIntPoint& Section, FSectionData& S
 				Rotation.Yaw += Rand.FRandRange(0.0f, 360.0f);
 
 				const float ScaleValue = Rand.FRandRange(Config.MinScale, Config.MaxScale);
-				const FTransform InstanceTransform(Rotation, PlacementLocation, FVector(ScaleValue));
+				PendingTransforms.Emplace(Rotation, PlacementLocation, FVector(ScaleValue));
+				++AddedCount;
+				break;
+			}
+		}
 
-				const int32 NewIndex = Component->AddInstance(InstanceTransform);
-				if (NewIndex != INDEX_NONE)
-				{
-					InstanceIndices.Add(NewIndex);
-					++AddedCount;
-					break;
-				}
+		if (PendingTransforms.Num() > 0)
+		{
+			InstanceIndices = Component->AddInstances(
+				PendingTransforms,
+				true,
+				false,
+				false
+			);
+
+			if (InstanceIndices.Num() != PendingTransforms.Num())
+			{
+				UE_LOG(
+					LogTemp,
+					Warning,
+					TEXT("WorldGen: Foliage type %d added %d transforms but received %d instance indices in section (%d, %d)"),
+					TypeIndex,
+					PendingTransforms.Num(),
+					InstanceIndices.Num(),
+					Section.X,
+					Section.Y
+				);
 			}
 		}
 
@@ -646,15 +667,16 @@ void AWorldGen::SpawnFoliageForSection(const FIntPoint& Section, FSectionData& S
 
 void AWorldGen::RemoveFoliageForSection(const FIntPoint& Section, FSectionData& SectionData)
 {
-	if (!bEnableFoliage || FoliageComponents.Num() == 0)
+	if (FoliageComponents.Num() == 0)
 	{
 		return;
 	}
 
-	for (int32 TypeIndex = 0; TypeIndex < FoliageTypes.Num(); ++TypeIndex)
+	const int32 TypeCount = FMath::Max(FoliageComponents.Num(), SectionData.FoliageInstanceIndices.Num());
+	for (int32 TypeIndex = 0; TypeIndex < TypeCount; ++TypeIndex)
 	{
 		UHierarchicalInstancedStaticMeshComponent* Component = FoliageComponents.IsValidIndex(TypeIndex) ? FoliageComponents[TypeIndex] : nullptr;
-		if (!Component)
+		if (!Component || !SectionData.FoliageInstanceIndices.IsValidIndex(TypeIndex))
 		{
 			continue;
 		}
@@ -666,18 +688,40 @@ void AWorldGen::RemoveFoliageForSection(const FIntPoint& Section, FSectionData& 
 		}
 
 		IndicesToRemove.Sort();
+		IndicesToRemove.SetNum(Algo::Unique(IndicesToRemove));
+
 		for (int32 Index = IndicesToRemove.Num() - 1; Index >= 0; --Index)
 		{
-			Component->RemoveInstance(IndicesToRemove[Index]);
+			const int32 InstanceIndex = IndicesToRemove[Index];
+			const int32 LastInstanceIndex = Component->GetInstanceCount() - 1;
+			if (InstanceIndex < 0 || InstanceIndex > LastInstanceIndex)
+			{
+				UE_LOG(
+					LogTemp,
+					Warning,
+					TEXT("WorldGen: Skipping invalid foliage instance index %d for type %d"),
+					InstanceIndex,
+					TypeIndex
+				);
+				continue;
+			}
+
+			if (Component->RemoveInstance(InstanceIndex))
+			{
+				if (InstanceIndex != LastInstanceIndex)
+				{
+					UpdateFoliageIndexAfterSwapRemoval(TypeIndex, LastInstanceIndex, InstanceIndex, Section);
+				}
+			}
 		}
 
-		AdjustFoliageIndicesAfterRemoval(TypeIndex, IndicesToRemove, Section);
+		IndicesToRemove.Reset();
 	}
 }
 
-void AWorldGen::AdjustFoliageIndicesAfterRemoval(int32 TypeIndex, const TArray<int32>& RemovedIndices, const FIntPoint& RemovedSection)
+void AWorldGen::UpdateFoliageIndexAfterSwapRemoval(int32 TypeIndex, int32 OldIndex, int32 NewIndex, const FIntPoint& RemovedSection)
 {
-	if (RemovedIndices.Num() == 0)
+	if (OldIndex == NewIndex)
 	{
 		return;
 	}
@@ -689,16 +733,234 @@ void AWorldGen::AdjustFoliageIndicesAfterRemoval(int32 TypeIndex, const TArray<i
 			continue;
 		}
 
+		if (!Pair.Value.FoliageInstanceIndices.IsValidIndex(TypeIndex))
+		{
+			continue;
+		}
+
 		TArray<int32>& Indices = Pair.Value.FoliageInstanceIndices[TypeIndex];
 		for (int32& Index : Indices)
 		{
-			const int32 Decrement = LowerBoundInt(RemovedIndices, Index);
-			if (Decrement > 0)
+			if (Index == OldIndex)
 			{
-				Index -= Decrement;
+				Index = NewIndex;
+				return;
 			}
 		}
 	}
+
+	UE_LOG(
+		LogTemp,
+		Verbose,
+		TEXT("WorldGen: Foliage swap update did not find moved instance. Type=%d OldIndex=%d NewIndex=%d"),
+		TypeIndex,
+		OldIndex,
+		NewIndex
+	);
+}
+
+void AWorldGen::SpawnCrowsForSection(const FIntPoint& Section, FSectionData& SectionData)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("WorldGen: Cannot spawn crows without a valid world."));
+		return;
+	}
+
+	if (!CrowClass)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("WorldGen: Crow spawning enabled, but CrowClass is not assigned."));
+		return;
+	}
+
+	const int32 MaxCount = FMath::Max(MaxCrowsPerSection, 0);
+	if (MaxCount <= 0)
+	{
+		UE_LOG(
+			LogTemp,
+			Log,
+			TEXT("WorldGen: Crow spawning skipped for section (%d, %d) because MaxCrowsPerSection is 0."),
+			Section.X,
+			Section.Y
+		);
+		return;
+	}
+
+	const int32 MinCount = FMath::Clamp(MinCrowsPerSection, 1, MaxCount);
+	if (xvertcnt < 2 || yvertcnt < 2)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("WorldGen: Crow spawning skipped for section (%d, %d) because terrain vertex counts are invalid. xvertcnt=%d yvertcnt=%d"),
+			Section.X,
+			Section.Y,
+			xvertcnt,
+			yvertcnt
+		);
+		return;
+	}
+
+	const float SectionSizeX = (xvertcnt - 1) * cellsize;
+	const float SectionSizeY = (yvertcnt - 1) * cellsize;
+	if (SectionSizeX <= KINDA_SMALL_NUMBER || SectionSizeY <= KINDA_SMALL_NUMBER)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("WorldGen: Crow spawning skipped for section (%d, %d) because section size is invalid. Size=(%0.2f, %0.2f)"),
+			Section.X,
+			Section.Y,
+			SectionSizeX,
+			SectionSizeY
+		);
+		return;
+	}
+
+	const uint32 SectionSeed = GetTypeHash(Section);
+	const uint32 Seed = HashCombine(SectionSeed, GetTypeHash(CrowSeedOffset));
+	FRandomStream Rand(static_cast<int32>(Seed));
+	const int32 NumCrows = Rand.RandRange(MinCount, MaxCount);
+	if (NumCrows <= 0)
+	{
+		return;
+	}
+
+	const float BaseX = Section.X * SectionSizeX;
+	const float BaseY = Section.Y * SectionSizeY;
+	const float PaddingX = FMath::Clamp(CrowSectionEdgePadding, 0.0f, SectionSizeX * 0.49f);
+	const float PaddingY = FMath::Clamp(CrowSectionEdgePadding, 0.0f, SectionSizeY * 0.49f);
+	const float MinAltitude = FMath::Min(CrowMinAltitudeAboveTerrain, CrowMaxAltitudeAboveTerrain);
+	const float MaxAltitude = FMath::Max(CrowMinAltitudeAboveTerrain, CrowMaxAltitudeAboveTerrain);
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = this;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	int32 SpawnedCount = 0;
+	SectionData.SpawnedCrows.Reserve(NumCrows);
+	for (int32 CrowIndex = 0; CrowIndex < NumCrows; ++CrowIndex)
+	{
+		const float WorldX = BaseX + Rand.FRandRange(PaddingX, SectionSizeX - PaddingX);
+		const float WorldY = BaseY + Rand.FRandRange(PaddingY, SectionSizeY - PaddingY);
+		const FVector2D SampleLocation(WorldX, WorldY);
+		const float TerrainZ = GetHeight(SampleLocation);
+		const float Altitude = Rand.FRandRange(MinAltitude, MaxAltitude);
+
+		const FVector SpawnLocation(WorldX, WorldY, TerrainZ + Altitude);
+		const FRotator SpawnRotation(0.0f, Rand.FRandRange(0.0f, 360.0f), 0.0f);
+
+		ABotCharacter* SpawnedCrow = World->SpawnActor<ABotCharacter>(CrowClass, SpawnLocation, SpawnRotation, SpawnParams);
+		if (SpawnedCrow)
+		{
+			const FName SectionTag(*FString::Printf(TEXT("CrowSection_%d_%d"), Section.X, Section.Y));
+			SpawnedCrow->Tags.AddUnique(SectionTag);
+
+			SectionData.SpawnedCrows.Add(SpawnedCrow);
+			++SpawnedCount;
+
+			if (bDebugCrowSpawning)
+			{
+				const FVector TerrainLocation(WorldX, WorldY, TerrainZ);
+				const FString DebugText = FString::Printf(
+					TEXT("Crow %d/%d\nSection (%d,%d)\nAlt %.0f"),
+					CrowIndex + 1,
+					NumCrows,
+					Section.X,
+					Section.Y,
+					Altitude
+				);
+
+				DrawDebugSphere(
+					World,
+					SpawnLocation,
+					CrowDebugSphereRadius,
+					16,
+					FColor::Cyan,
+					false,
+					CrowDebugDrawDuration,
+					0,
+					4.0f
+				);
+				DrawDebugLine(
+					World,
+					TerrainLocation,
+					SpawnLocation,
+					FColor::Yellow,
+					false,
+					CrowDebugDrawDuration,
+					0,
+					2.0f
+				);
+				DrawDebugString(
+					World,
+					SpawnLocation + FVector(0.0f, 0.0f, CrowDebugSphereRadius + 60.0f),
+					DebugText,
+					SpawnedCrow,
+					FColor::White,
+					CrowDebugDrawDuration,
+					true,
+					1.0f
+				);
+
+				UE_LOG(
+					LogTemp,
+					Log,
+					TEXT("WorldGen: Spawned crow %s in section (%d, %d) at %s terrainZ=%0.2f altitude=%0.2f tag=%s"),
+					*SpawnedCrow->GetName(),
+					Section.X,
+					Section.Y,
+					*SpawnLocation.ToCompactString(),
+					TerrainZ,
+					Altitude,
+					*SectionTag.ToString()
+				);
+			}
+		}
+		else
+		{
+			UE_LOG(
+				LogTemp,
+				Warning,
+				TEXT("WorldGen: Failed to spawn crow %d/%d in section (%d, %d) at %s using class %s."),
+				CrowIndex + 1,
+				NumCrows,
+				Section.X,
+				Section.Y,
+				*SpawnLocation.ToCompactString(),
+				*CrowClass->GetName()
+			);
+		}
+	}
+
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("WorldGen: Spawned %d/%d crows in section (%d, %d)"),
+		SpawnedCount,
+		NumCrows,
+		Section.X,
+		Section.Y
+	);
+}
+
+void AWorldGen::DestroyCrowsForSection(FSectionData& SectionData)
+{
+	for (TWeakObjectPtr<ABotCharacter>& CrowPtr : SectionData.SpawnedCrows)
+	{
+		if (ABotCharacter* Crow = CrowPtr.Get())
+		{
+			if (bDebugCrowSpawning)
+			{
+				UE_LOG(LogTemp, Log, TEXT("WorldGen: Destroying streamed crow %s at %s"), *Crow->GetName(), *Crow->GetActorLocation().ToCompactString());
+			}
+
+			Crow->Destroy();
+		}
+	}
+
+	SectionData.SpawnedCrows.Reset();
 }
 
 ANavMeshBoundsVolume* AWorldGen::ResolveNavBoundsTemplate()

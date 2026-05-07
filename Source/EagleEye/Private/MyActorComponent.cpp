@@ -3,6 +3,11 @@
 #include "MyActorComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
+#include "AI/CrowDetectionShareSubsystem.h"
+#include "AI/CrowVisionSubsystem.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
 #include "HAL/PlatformProcess.h"
 #include "Async/Async.h"
 #include "RHI.h"
@@ -11,6 +16,8 @@
 #include "Misc/ConfigCacheIni.h"
 #include "HAL/FileManager.h"
 #include "Math/UnrealMathUtility.h"
+#include "RenderingThread.h"
+#include "ScreenCaptureComponent.h"
 #include <algorithm>
 #include <NvInfer.h>
 #include <NvInferVersion.h>
@@ -171,6 +178,12 @@ UMyActorComponent::UMyActorComponent()
 	PrimaryComponentTick.bCanEverTick = true;
 
 	// ...
+}
+
+void UMyActorComponent::SetCaptureResolution(int32 InWidth, int32 InHeight)
+{
+    CaptureWidth = FMath::Max(160, InWidth);
+    CaptureHeight = FMath::Max(160, InHeight);
 }
 
 void UMyActorComponent::InitFrameTimingLog()
@@ -348,18 +361,71 @@ void UMyActorComponent::BeginPlay() {
 
     get_class_names();
     InitFrameTimingLog();
-    StartWorker();
+    if (!bUseSharedVisionModel)
+    {
+        StartWorker();
+    }
+
+    if (bUseOwnerCameraCapture)
+    {
+        if (UWorld* World = GetWorld())
+        {
+            if (UCrowDetectionShareSubsystem* ShareSubsystem = World->GetSubsystem<UCrowDetectionShareSubsystem>())
+            {
+                ShareSubsystem->RegisterDetector(GetOwner());
+            }
+            if (bUseSharedVisionModel)
+            {
+                if (UCrowVisionSubsystem* VisionSubsystem = World->GetSubsystem<UCrowVisionSubsystem>())
+                {
+                    VisionSubsystem->RegisterModelHost(this);
+                }
+            }
+        }
+    }
 
     const float ClampedCaptureFPS = FMath::Clamp(CaptureFPS, 1.0f, 120.0f);
     const float CaptureInterval = 1.0f / ClampedCaptureFPS;
+    float InitialDelay = 0.f;
+    if (bStaggerInitialCapture)
+    {
+        FRandomStream DelayStream(static_cast<int32>(GetUniqueID()));
+        InitialDelay = DelayStream.FRandRange(0.f, FMath::Max(CaptureInterval, MaxInitialCaptureDelay));
+    }
+
     GetWorld()->GetTimerManager().SetTimer(
         TimerHandle_Capture, this, &UMyActorComponent::TickCapture,
-        CaptureInterval, true, 0.0f
+        CaptureInterval, true, InitialDelay
     );
 }
 
 void UMyActorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
-    StopWorker();
+    if (bUseOwnerCameraCapture)
+    {
+        if (UWorld* World = GetWorld())
+        {
+            if (UCrowDetectionShareSubsystem* ShareSubsystem = World->GetSubsystem<UCrowDetectionShareSubsystem>())
+            {
+                ShareSubsystem->UnregisterDetector(GetOwner());
+            }
+            if (bUseSharedVisionModel)
+            {
+                if (UCrowVisionSubsystem* VisionSubsystem = World->GetSubsystem<UCrowVisionSubsystem>())
+                {
+                    VisionSubsystem->UnregisterModelHost(this);
+                }
+            }
+        }
+    }
+
+    if (!bUseSharedVisionModel)
+    {
+        StopWorker();
+    }
+    else
+    {
+        FlushFrameTimingLog(true);
+    }
     Super::EndPlay(EndPlayReason);
 }
 
@@ -367,11 +433,22 @@ void UMyActorComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAct
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
+    if (bUseSharedVisionModel)
+    {
+        return;
+    }
+
     // Pull latest detections every frame to minimize overlay latency.
     CopyResultsFromWorker();
 }
 
 void UMyActorComponent::TickCapture() {
+    if (bUseOwnerCameraCapture && ShouldSkipOwnerCameraCapture())
+    {
+        ClearPublishedResults();
+        return;
+    }
+
     // If the worker hasn't consumed the last captured frame yet, don't capture another.
     {
         FScopeLock Lock(&FrameMutex);
@@ -422,13 +499,318 @@ bool UMyActorComponent::CaptureViewportToPixels(TArray<FColor>& OutPixels, int32
     return true;
 }
 
+bool UMyActorComponent::EnsureOwnerCameraCapture()
+{
+    AActor* Owner = GetOwner();
+    if (!Owner)
+    {
+        return false;
+    }
+
+    UCameraComponent* OwnerCamera = Owner->FindComponentByClass<UCameraComponent>();
+    if (!OwnerCamera)
+    {
+        return false;
+    }
+
+    if (!OwnerCaptureRenderTarget)
+    {
+        OwnerCaptureRenderTarget = NewObject<UTextureRenderTarget2D>(this, TEXT("OwnerCameraDetectionRenderTarget"));
+        OwnerCaptureRenderTarget->RenderTargetFormat = RTF_RGBA8;
+        OwnerCaptureRenderTarget->ClearColor = FLinearColor::Black;
+        OwnerCaptureRenderTarget->InitAutoFormat(FMath::Max(160, CaptureWidth), FMath::Max(160, CaptureHeight));
+        OwnerCaptureRenderTarget->UpdateResourceImmediate(true);
+    }
+
+    if (!OwnerSceneCapture)
+    {
+        OwnerSceneCapture = NewObject<UScreenCaptureComponent>(Owner, TEXT("OwnerCameraDetectionCapture"));
+        OwnerSceneCapture->SetupAttachment(OwnerCamera);
+        OwnerSceneCapture->RegisterComponent();
+        OwnerSceneCapture->SetRelativeTransform(FTransform::Identity);
+        OwnerSceneCapture->TextureTarget = OwnerCaptureRenderTarget;
+        OwnerSceneCapture->bCaptureEveryFrame = false;
+        OwnerSceneCapture->bCaptureOnMovement = false;
+        OwnerSceneCapture->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
+    }
+
+    OwnerSceneCapture->FOVAngle = OwnerCamera->FieldOfView;
+    OwnerSceneCapture->SetWorldLocationAndRotation(OwnerCamera->GetComponentLocation(), OwnerCamera->GetComponentRotation());
+    OwnerSceneCapture->TextureTarget = OwnerCaptureRenderTarget;
+    return true;
+}
+
+bool UMyActorComponent::ShouldSkipOwnerCameraCapture() const
+{
+    const AActor* Owner = GetOwner();
+    if (!Owner)
+    {
+        return false;
+    }
+
+    if (const UWorld* World = GetWorld())
+    {
+        if (const UCrowDetectionShareSubsystem* ShareSubsystem = World->GetSubsystem<UCrowDetectionShareSubsystem>())
+        {
+            return !ShareSubsystem->ShouldRunDetector(
+                const_cast<AActor*>(Owner),
+                MaxActiveOwnerCameraCaptures,
+                MaxOwnerCameraCaptureDistance);
+        }
+    }
+
+    if (MaxOwnerCameraCaptureDistance <= 0.f)
+    {
+        return false;
+    }
+
+    const UWorld* World = GetWorld();
+    if (!World)
+    {
+        return false;
+    }
+    const APlayerController* PlayerController = UGameplayStatics::GetPlayerController(World, 0);
+    const APawn* PlayerPawn = PlayerController ? PlayerController->GetPawn() : nullptr;
+    if (!PlayerPawn)
+    {
+        return false;
+    }
+
+    return FVector::DistSquared(Owner->GetActorLocation(), PlayerPawn->GetActorLocation())
+        > FMath::Square(MaxOwnerCameraCaptureDistance);
+}
+
+void UMyActorComponent::ClearPublishedResults()
+{
+    {
+        FScopeLock ResultsLock(&ResultsMutex);
+        ResultsShared.Reset();
+        ResultsSourceWidth = 0;
+        ResultsSourceHeight = 0;
+        ++ResultsSequence;
+    }
+
+    LastFrameDetections.Reset();
+    LastFrameSourceWidth = 0;
+    LastFrameSourceHeight = 0;
+    ++LastFrameSequence;
+}
+
+bool UMyActorComponent::CaptureSceneToPixels(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight)
+{
+    const double CaptureStartSeconds = FPlatformTime::Seconds();
+    OutWidth = 0;
+    OutHeight = 0;
+
+    double EnsureMs = 0.0;
+    double SceneCaptureMs = 0.0;
+    double ReadPixelsMs = 0.0;
+
+    const double EnsureStartSeconds = FPlatformTime::Seconds();
+    if (!EnsureOwnerCameraCapture() || !OwnerSceneCapture || !OwnerCaptureRenderTarget)
+    {
+        return false;
+    }
+    EnsureMs = (FPlatformTime::Seconds() - EnsureStartSeconds) * 1000.0;
+
+    const double SceneCaptureStartSeconds = FPlatformTime::Seconds();
+    OwnerSceneCapture->CaptureScene();
+    SceneCaptureMs = (FPlatformTime::Seconds() - SceneCaptureStartSeconds) * 1000.0;
+
+    FTextureRenderTargetResource* Resource = OwnerCaptureRenderTarget->GameThread_GetRenderTargetResource();
+    if (!Resource)
+    {
+        return false;
+    }
+
+    TArray<FColor> LocalPixels;
+    FReadSurfaceDataFlags ReadFlags(RCM_UNorm);
+    ReadFlags.SetLinearToGamma(false);
+    const double ReadPixelsStartSeconds = FPlatformTime::Seconds();
+    if (!Resource->ReadPixels(LocalPixels, ReadFlags))
+    {
+        return false;
+    }
+    ReadPixelsMs = (FPlatformTime::Seconds() - ReadPixelsStartSeconds) * 1000.0;
+
+    if (LocalPixels.Num() != OwnerCaptureRenderTarget->SizeX * OwnerCaptureRenderTarget->SizeY)
+    {
+        return false;
+    }
+
+    OutWidth = OwnerCaptureRenderTarget->SizeX;
+    OutHeight = OwnerCaptureRenderTarget->SizeY;
+    OutPixels = MoveTemp(LocalPixels);
+
+    if (bLogFrameTimings)
+    {
+        const double TotalMs = (FPlatformTime::Seconds() - CaptureStartSeconds) * 1000.0;
+        UE_LOG(LogTemp, Log, TEXT("DetectionCapture[%s]: total=%.2fms ensure=%.2fms capture=%.2fms readback=%.2fms size=%dx%d"),
+            *GetNameSafe(GetOwner()),
+            TotalMs,
+            EnsureMs,
+            SceneCaptureMs,
+            ReadPixelsMs,
+            OutWidth,
+            OutHeight);
+    }
+
+    return true;
+}
+
+bool UMyActorComponent::PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight)
+{
+    OutWidth = 0;
+    OutHeight = 0;
+
+    if (!PendingOwnerCameraReadback.IsValid() || !PendingOwnerCameraReadback->IsReady())
+    {
+        return false;
+    }
+
+    const double PollStartSeconds = FPlatformTime::Seconds();
+    int32 RowPitchInPixels = 0;
+    int32 BufferHeight = 0;
+    const FColor* SourcePixels = static_cast<const FColor*>(
+        PendingOwnerCameraReadback->Lock(RowPitchInPixels, &BufferHeight));
+    if (!SourcePixels)
+    {
+        PendingOwnerCameraReadback->Unlock();
+        PendingOwnerCameraReadback.Reset();
+        return false;
+    }
+
+    OutWidth = PendingOwnerCameraReadbackWidth;
+    OutHeight = PendingOwnerCameraReadbackHeight;
+    OutPixels.SetNumUninitialized(OutWidth * OutHeight);
+
+    for (int32 Y = 0; Y < OutHeight; ++Y)
+    {
+        const FColor* SourceRow = SourcePixels + (Y * RowPitchInPixels);
+        FColor* DestRow = OutPixels.GetData() + (Y * OutWidth);
+        FMemory::Memcpy(DestRow, SourceRow, sizeof(FColor) * OutWidth);
+    }
+
+    PendingOwnerCameraReadback->Unlock();
+    PendingOwnerCameraReadback.Reset();
+
+    if (bLogFrameTimings)
+    {
+        const double NowSeconds = FPlatformTime::Seconds();
+        UE_LOG(LogTemp, Log, TEXT("AsyncReadbackPoll[%s]: lock+copy=%.2fms latency=%.2fms row_pitch=%d buffer_h=%d size=%dx%d"),
+            *GetNameSafe(GetOwner()),
+            (NowSeconds - PollStartSeconds) * 1000.0,
+            (NowSeconds - PendingOwnerCameraReadbackSubmitTimeSeconds) * 1000.0,
+            RowPitchInPixels,
+            BufferHeight,
+            OutWidth,
+            OutHeight);
+    }
+
+    PendingOwnerCameraReadbackWidth = 0;
+    PendingOwnerCameraReadbackHeight = 0;
+    PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
+    return true;
+}
+
+bool UMyActorComponent::EnqueueAsyncOwnerCameraReadback()
+{
+    const double EnqueueStartSeconds = FPlatformTime::Seconds();
+    if (PendingOwnerCameraReadback.IsValid())
+    {
+        return false;
+    }
+
+    if (!EnsureOwnerCameraCapture() || !OwnerSceneCapture || !OwnerCaptureRenderTarget)
+    {
+        return false;
+    }
+
+    const double SceneCaptureStartSeconds = FPlatformTime::Seconds();
+    OwnerSceneCapture->CaptureScene();
+    const double SceneCaptureMs = (FPlatformTime::Seconds() - SceneCaptureStartSeconds) * 1000.0;
+
+    FTextureRenderTargetResource* Resource = OwnerCaptureRenderTarget->GameThread_GetRenderTargetResource();
+    if (!Resource)
+    {
+        return false;
+    }
+
+    const FTextureRHIRef TextureRHI = Resource->GetRenderTargetTexture();
+    if (!TextureRHI.IsValid())
+    {
+        return false;
+    }
+
+    PendingOwnerCameraReadback = MakeUnique<FRHIGPUTextureReadback>(TEXT("CrowOwnerCameraReadback"));
+    PendingOwnerCameraReadbackWidth = OwnerCaptureRenderTarget->SizeX;
+    PendingOwnerCameraReadbackHeight = OwnerCaptureRenderTarget->SizeY;
+    PendingOwnerCameraReadbackSubmitTimeSeconds = FPlatformTime::Seconds();
+    FRHIGPUTextureReadback* Readback = PendingOwnerCameraReadback.Get();
+    const FIntVector ReadbackSize(PendingOwnerCameraReadbackWidth, PendingOwnerCameraReadbackHeight, 1);
+
+    ENQUEUE_RENDER_COMMAND(EnqueueCrowOwnerCameraReadback)(
+        [Readback, TextureRHI, ReadbackSize](FRHICommandListImmediate& RHICmdList)
+        {
+            Readback->EnqueueCopy(RHICmdList, TextureRHI, FIntVector::ZeroValue, 0, ReadbackSize);
+        });
+
+    if (bLogFrameTimings)
+    {
+        UE_LOG(LogTemp, Log, TEXT("AsyncReadbackEnqueue[%s]: total=%.2fms capture=%.2fms size=%dx%d"),
+            *GetNameSafe(GetOwner()),
+            (FPlatformTime::Seconds() - EnqueueStartSeconds) * 1000.0,
+            SceneCaptureMs,
+            PendingOwnerCameraReadbackWidth,
+            PendingOwnerCameraReadbackHeight);
+    }
+
+    return true;
+}
+
 void UMyActorComponent::CaptureAndEnqueue(int Threshold)
 {
+    const double CaptureAndEnqueueStartSeconds = FPlatformTime::Seconds();
     TArray<FColor> Pixels;
     int32 SourceWidth = 0;
     int32 SourceHeight = 0;
-    if (!CaptureViewportToPixels(Pixels, SourceWidth, SourceHeight))
+
+    bool bCaptured = false;
+    if (bUseOwnerCameraCapture && bUseAsyncOwnerCameraReadback)
     {
+        bCaptured = PollAsyncOwnerCameraReadback(Pixels, SourceWidth, SourceHeight);
+        EnqueueAsyncOwnerCameraReadback();
+    }
+    else
+    {
+        bCaptured = bUseOwnerCameraCapture
+            ? CaptureSceneToPixels(Pixels, SourceWidth, SourceHeight)
+            : CaptureViewportToPixels(Pixels, SourceWidth, SourceHeight);
+    }
+
+    if (!bCaptured)
+    {
+        return;
+    }
+
+    if (bUseSharedVisionModel)
+    {
+        if (UWorld* World = GetWorld())
+        {
+            if (UCrowVisionSubsystem* VisionSubsystem = World->GetSubsystem<UCrowVisionSubsystem>())
+            {
+                VisionSubsystem->SubmitFrame(this, MoveTemp(Pixels), SourceWidth, SourceHeight, Threshold);
+                if (bLogFrameTimings)
+                {
+                    const double TotalMs = (FPlatformTime::Seconds() - CaptureAndEnqueueStartSeconds) * 1000.0;
+                    UE_LOG(LogTemp, Log, TEXT("DetectionSubmit[%s]: capture+submit=%.2fms size=%dx%d"),
+                        *GetNameSafe(GetOwner()),
+                        TotalMs,
+                        SourceWidth,
+                        SourceHeight);
+                }
+            }
+        }
         return;
     }
 
@@ -442,6 +824,16 @@ void UMyActorComponent::CaptureAndEnqueue(int Threshold)
         FScopeLock Lock(&FrameMutex);
         LatestFrame = Frame;
     }
+
+    if (bLogFrameTimings)
+    {
+        const double TotalMs = (FPlatformTime::Seconds() - CaptureAndEnqueueStartSeconds) * 1000.0;
+        UE_LOG(LogTemp, Log, TEXT("DetectionEnqueue[%s]: capture+enqueue=%.2fms size=%dx%d"),
+            *GetNameSafe(GetOwner()),
+            TotalMs,
+            SourceWidth,
+            SourceHeight);
+    }
 }
 
 void UMyActorComponent::StartWorker()
@@ -453,12 +845,6 @@ void UMyActorComponent::StartWorker()
     {
         try
         {
-            if (!LoadYOLO())
-            {
-                bWorkerRunning.store(false);
-                return;
-            }
-
             while (bWorkerRunning.load())
             {
                 TSharedPtr<FFrameData> Frame;
@@ -479,7 +865,14 @@ void UMyActorComponent::StartWorker()
                 const double FrameT0 = FPlatformTime::Seconds();
                 try
                 {
+                    if (!bIsModelLoaded && !LoadYOLO())
+                    {
+                        Det.Reset();
+                    }
+                    else
+                    {
                     Det = ProcessWithOpenCV_BG(Frame->Pixels, Frame->Width, Frame->Height, Frame->Threshold, &FrameInferMs);
+                    }
                 }
                 catch (const cv::Exception& e)
                 {
@@ -584,6 +977,65 @@ void UMyActorComponent::CopyResultsFromWorker()
     LastFrameSourceWidth = SourceWidth;
     LastFrameSourceHeight = SourceHeight;
     LastFrameSequence = Sequence;
+}
+
+TArray<FDetectionResult> UMyActorComponent::ProcessSharedVisionFrame(
+    const TArray<FColor>& Bitmap,
+    int32 Width,
+    int32 Height,
+    int32 Threshold,
+    double* OutInferenceMs)
+{
+    if (!bIsModelLoaded && !LoadYOLO())
+    {
+        return {};
+    }
+
+    const double StartSeconds = FPlatformTime::Seconds();
+    TArray<FDetectionResult> Detections = ProcessWithOpenCV_BG(Bitmap, Width, Height, Threshold, OutInferenceMs);
+
+    if (bLogFrameTimings)
+    {
+        UE_LOG(LogTemp, Log, TEXT("SharedInferenceHost[%s]: total=%.2fms infer=%.2fms detections=%d size=%dx%d"),
+            *GetNameSafe(GetOwner()),
+            (FPlatformTime::Seconds() - StartSeconds) * 1000.0,
+            OutInferenceMs ? *OutInferenceMs : -1.0,
+            Detections.Num(),
+            Width,
+            Height);
+    }
+
+    return Detections;
+}
+
+void UMyActorComponent::ConsumeSharedVisionResult(
+    TArray<FDetectionResult>&& Detections,
+    int32 SourceWidth,
+    int32 SourceHeight)
+{
+    if (SourceWidth <= 0 || SourceHeight <= 0)
+    {
+        LastFrameDetections.Reset();
+        LastFrameSourceWidth = 0;
+        LastFrameSourceHeight = 0;
+        ++LastFrameSequence;
+        return;
+    }
+
+    LastFrameDetections = MoveTemp(Detections);
+    LastFrameSourceWidth = SourceWidth;
+    LastFrameSourceHeight = SourceHeight;
+    ++LastFrameSequence;
+
+    if (bLogFrameTimings)
+    {
+        UE_LOG(LogTemp, Log, TEXT("SharedResult[%s]: detections=%d size=%dx%d seq=%d"),
+            *GetNameSafe(GetOwner()),
+            LastFrameDetections.Num(),
+            SourceWidth,
+            SourceHeight,
+            LastFrameSequence);
+    }
 }
 
 	bool UMyActorComponent::LoadYOLO()

@@ -12,6 +12,7 @@
 
 class UHierarchicalInstancedStaticMeshComponent;
 class ANavMeshBoundsVolume;
+class ABotCharacter;
 class UStaticMesh;
 class UMaterialInterface;
 
@@ -108,6 +109,39 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Foliage")
 	bool bEnableFoliage = true;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows")
+	bool bEnableCrowSpawning = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows")
+	TSubclassOf<ABotCharacter> CrowClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows", meta=(ClampMin="0"))
+	int32 MinCrowsPerSection = 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows", meta=(ClampMin="0"))
+	int32 MaxCrowsPerSection = 2;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows", meta=(ClampMin="0.0"))
+	float CrowMinAltitudeAboveTerrain = 800.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows", meta=(ClampMin="0.0"))
+	float CrowMaxAltitudeAboveTerrain = 1600.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows", meta=(ClampMin="0.0"))
+	float CrowSectionEdgePadding = 300.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows")
+	int32 CrowSeedOffset = 9173;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows|Debug")
+	bool bDebugCrowSpawning = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows|Debug", meta=(ClampMin="0.0"))
+	float CrowDebugDrawDuration = 15.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows|Debug", meta=(ClampMin="1.0"))
+	float CrowDebugSphereRadius = 120.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Navigation")
 	bool bEnableNavMesh = true;
 
@@ -159,6 +193,7 @@ private:
 		FBox Bounds;
 		TArray<TArray<int32>> FoliageInstanceIndices;
 		TWeakObjectPtr<ANavMeshBoundsVolume> NavBoundsVolume;
+		TArray<TWeakObjectPtr<ABotCharacter>> SpawnedCrows;
 	};
 
 	void UpdateStreaming();
@@ -170,7 +205,9 @@ private:
 	void InitializeFoliageComponents();
 	void SpawnFoliageForSection(const FIntPoint& Section, FSectionData& SectionData);
 	void RemoveFoliageForSection(const FIntPoint& Section, FSectionData& SectionData);
-	void AdjustFoliageIndicesAfterRemoval(int32 TypeIndex, const TArray<int32>& RemovedIndices, const FIntPoint& RemovedSection);
+	void UpdateFoliageIndexAfterSwapRemoval(int32 TypeIndex, int32 OldIndex, int32 NewIndex, const FIntPoint& RemovedSection);
+	void SpawnCrowsForSection(const FIntPoint& Section, FSectionData& SectionData);
+	void DestroyCrowsForSection(FSectionData& SectionData);
 	ANavMeshBoundsVolume* ResolveNavBoundsTemplate();
 	ANavMeshBoundsVolume* CreateSectionNavBounds(const FBox& WorldBounds);
 	void DestroySectionNavBounds(FSectionData& SectionData);

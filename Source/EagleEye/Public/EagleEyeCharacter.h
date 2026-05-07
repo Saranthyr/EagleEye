@@ -11,6 +11,7 @@ class USpringArmComponent;
 class UCameraComponent;
 class UInputMappingContext;
 class UInputAction;
+class ABotCharacter;
 struct FInputActionValue;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogTemplateCharacter, Log, All);
@@ -44,6 +45,16 @@ class AEagleEyeCharacter : public ACharacter
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input, meta = (AllowPrivateAccess = "true"))
 	UInputAction* LookAction;
 
+	/** Toggle between player camera and crow camera without possessing the crow. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input, meta = (AllowPrivateAccess = "true"))
+	UInputAction* ToggleCrowViewAction;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input, meta = (AllowPrivateAccess = "true"))
+	UInputAction* NextCrowViewAction;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input, meta = (AllowPrivateAccess = "true"))
+	UInputAction* PreviousCrowViewAction;
+
 public:
 	AEagleEyeCharacter();
 	
@@ -55,6 +66,26 @@ protected:
 
 	/** Called for looking input */
 	void Look(const FInputActionValue& Value);
+
+	UFUNCTION(BlueprintCallable, Exec, Category = "Camera")
+	void ToggleCrowPOV();
+
+	UFUNCTION(BlueprintCallable, Exec, Category = "Camera")
+	void NextCrowPOV();
+
+	UFUNCTION(BlueprintCallable, Exec, Category = "Camera")
+	void PreviousCrowPOV();
+
+	UFUNCTION(BlueprintCallable, Category = "Camera")
+	void SetCrowPOVEnabled(bool bEnabled);
+
+	AActor* FindCrowViewTarget() const;
+	void GatherCrowViewTargets(TArray<ABotCharacter*>& OutCrows) const;
+	void SetCrowPOVTarget(AActor* CrowViewTarget);
+	void StepCrowPOV(int32 Direction);
+
+	bool bViewingCrowPOV = false;
+	TWeakObjectPtr<AActor> CurrentCrowViewTarget;
 			
 
 protected:

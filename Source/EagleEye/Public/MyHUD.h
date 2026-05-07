@@ -91,5 +91,5 @@ private:
     void ResetStabilizationState();
 
     void UpdateStableTracks(const TArray<FDetectionResult>& NewDetections, int32 NewSourceWidth, int32 NewSourceHeight, int32 FrameSequence, float DeltaSeconds);
-    void DrawDetectionList(const TArray<FDetectionResult>& Detections, int32 SourceWidth, int32 SourceHeight, APawn* Pawn);
+    void DrawDetectionList(const TArray<FDetectionResult>& Detections, int32 SourceWidth, int32 SourceHeight, AActor* CameraActor);
 };

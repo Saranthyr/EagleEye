@@ -23,6 +23,7 @@
 #include "Engine/Texture2D.h"
 #include "RenderUtils.h"
 #include "DetectionResult.h"
+#include "RHIGPUReadback.h"
 #include <atomic>
 #include <cuda_runtime_api.h>
 #include "HAL/CriticalSection.h"
@@ -35,6 +36,8 @@ namespace nvinfer1
     class ICudaEngine;
     class IExecutionContext;
 }
+
+class USceneCaptureComponent2D;
 
 UENUM(BlueprintType)
 enum class EDetectionInferenceBackend : uint8
@@ -67,6 +70,23 @@ public:
     UFUNCTION()
     void TickCapture();
 
+    void SetUseOwnerCameraCapture(bool bEnabled) { bUseOwnerCameraCapture = bEnabled; }
+    void SetCaptureFPS(float InCaptureFPS) { CaptureFPS = InCaptureFPS; }
+    void SetCaptureResolution(int32 InWidth, int32 InHeight);
+    void SetMaxOwnerCameraCaptureDistance(float InDistance) { MaxOwnerCameraCaptureDistance = InDistance; }
+    void SetMaxActiveOwnerCameraCaptures(int32 InMaxActive) { MaxActiveOwnerCameraCaptures = InMaxActive; }
+    void SetUseSharedVisionModel(bool bEnabled) { bUseSharedVisionModel = bEnabled; }
+    bool ShouldLogFrameTimings() const { return bLogFrameTimings; }
+
+    TArray<FDetectionResult> ProcessSharedVisionFrame(
+        const TArray<FColor>& Bitmap,
+        int32 Width,
+        int32 Height,
+        int32 Threshold,
+        double* OutInferenceMs = nullptr);
+
+    void ConsumeSharedVisionResult(TArray<FDetectionResult>&& Detections, int32 SourceWidth, int32 SourceHeight);
+
 protected:
     virtual void BeginPlay() override;
     virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -78,6 +98,12 @@ private:
     void CaptureAndEnqueue(int Threshold);
     void CopyResultsFromWorker(); // game-thread copy from shared buffer
     bool CaptureViewportToPixels(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight);
+    bool CaptureSceneToPixels(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight);
+    bool PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight);
+    bool EnqueueAsyncOwnerCameraReadback();
+    bool EnsureOwnerCameraCapture();
+    bool ShouldSkipOwnerCameraCapture() const;
+    void ClearPublishedResults();
 
 
     // --- Frame container passed to worker ---
@@ -94,6 +120,47 @@ private:
 
     UPROPERTY(EditAnywhere, Category="Detection|Performance", meta=(ClampMin="160", ClampMax="1280"))
     int32 OnnxInputSize = 640;
+
+    UPROPERTY(EditAnywhere, Category="Detection|Capture")
+    bool bUseOwnerCameraCapture = false;
+
+    UPROPERTY(EditAnywhere, Category="Detection|Capture", meta=(ClampMin="160", ClampMax="1920"))
+    int32 CaptureWidth = 640;
+
+    UPROPERTY(EditAnywhere, Category="Detection|Capture", meta=(ClampMin="160", ClampMax="1080"))
+    int32 CaptureHeight = 640;
+
+    UPROPERTY(EditAnywhere, Category="Detection|Capture", meta=(ClampMin="0.0"))
+    float MaxOwnerCameraCaptureDistance = 0.f;
+
+    UPROPERTY(EditAnywhere, Category="Detection|Capture", meta=(ClampMin="0"))
+    int32 MaxActiveOwnerCameraCaptures = 0;
+
+    UPROPERTY(EditAnywhere, Category="Detection|Capture")
+    bool bUseAsyncOwnerCameraReadback = true;
+
+    UPROPERTY(EditAnywhere, Category="Detection|Shared Model")
+    bool bUseSharedVisionModel = false;
+
+    UPROPERTY(EditAnywhere, Category="Detection|Performance")
+    bool bLogFrameTimings = false;
+
+    UPROPERTY(EditAnywhere, Category="Detection|Performance")
+    bool bStaggerInitialCapture = true;
+
+    UPROPERTY(EditAnywhere, Category="Detection|Performance", meta=(ClampMin="0.0", ClampMax="5.0"))
+    float MaxInitialCaptureDelay = 0.75f;
+
+    UPROPERTY()
+    USceneCaptureComponent2D* OwnerSceneCapture = nullptr;
+
+    UPROPERTY()
+    UTextureRenderTarget2D* OwnerCaptureRenderTarget = nullptr;
+
+    TUniquePtr<FRHIGPUTextureReadback> PendingOwnerCameraReadback;
+    int32 PendingOwnerCameraReadbackWidth = 0;
+    int32 PendingOwnerCameraReadbackHeight = 0;
+    double PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
 
     // Single-latest-frame storage
     FCriticalSection FrameMutex;

@@ -337,7 +337,7 @@ void AMyHUD::UpdateStableTracks(const TArray<FDetectionResult>& NewDetections, i
     });
 }
 
-void AMyHUD::DrawDetectionList(const TArray<FDetectionResult>& Detections, int32 SourceWidth, int32 SourceHeight, APawn* Pawn)
+void AMyHUD::DrawDetectionList(const TArray<FDetectionResult>& Detections, int32 SourceWidth, int32 SourceHeight, AActor* CameraActor)
 {
     if (!Canvas || SourceWidth <= 0 || SourceHeight <= 0)
     {
@@ -349,9 +349,9 @@ void AMyHUD::DrawDetectionList(const TArray<FDetectionResult>& Detections, int32
     float DrawWidth = Canvas->ClipX;
     float DrawHeight = Canvas->ClipY;
 
-    if (Pawn)
+    if (CameraActor)
     {
-        if (const UCameraComponent* Camera = Pawn->FindComponentByClass<UCameraComponent>())
+        if (const UCameraComponent* Camera = CameraActor->FindComponentByClass<UCameraComponent>())
         {
             if (Camera->bConstrainAspectRatio && Camera->AspectRatio > KINDA_SMALL_NUMBER)
             {
@@ -418,13 +418,22 @@ void AMyHUD::DrawHUD()
         return;
     }
 
-    APawn* Pawn = PC->GetPawn();
-    if (!Pawn)
+    AActor* DetectionActor = PC->GetViewTarget();
+    if (!IsValid(DetectionActor))
     {
-        return;
+        DetectionActor = PC->GetPawn();
     }
 
-    UMyActorComponent* Comp = Pawn->FindComponentByClass<UMyActorComponent>();
+    UMyActorComponent* Comp = DetectionActor ? DetectionActor->FindComponentByClass<UMyActorComponent>() : nullptr;
+    if (!Comp)
+    {
+        if (APawn* Pawn = PC->GetPawn())
+        {
+            DetectionActor = Pawn;
+            Comp = Pawn->FindComponentByClass<UMyActorComponent>();
+        }
+    }
+
     if (!Comp)
     {
         return;
@@ -439,7 +448,7 @@ void AMyHUD::DrawHUD()
 
     if (!bEnableUniversalStabilization)
     {
-        DrawDetectionList(Comp->LastFrameDetections, SourceWidth, SourceHeight, Pawn);
+        DrawDetectionList(Comp->LastFrameDetections, SourceWidth, SourceHeight, DetectionActor);
         return;
     }
 
@@ -457,5 +466,5 @@ void AMyHUD::DrawHUD()
         }
     }
 
-    DrawDetectionList(DrawDetections, StableSourceWidth, StableSourceHeight, Pawn);
+    DrawDetectionList(DrawDetections, StableSourceWidth, StableSourceHeight, DetectionActor);
 }

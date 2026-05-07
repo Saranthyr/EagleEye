@@ -17,7 +17,9 @@ public class EagleEye : ModuleRules
             "EnhancedInput",
             "RenderCore",
             "ProceduralMeshComponent",
-            "NavigationSystem"
+            "NavigationSystem",
+            "AIModule",
+            "GameplayTasks"
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]
@@ -31,7 +33,9 @@ public class EagleEye : ModuleRules
             "RHICore",
             "OpenCV412",
             "ProceduralMeshComponent",
-            "NavigationSystem"
+            "NavigationSystem",
+            "AIModule",
+            "GameplayTasks"
         });
 
         if (Target.Platform == UnrealTargetPlatform.Win64)
