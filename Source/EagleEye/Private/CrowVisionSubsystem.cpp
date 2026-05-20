@@ -1,6 +1,8 @@
 #include "AI/CrowVisionSubsystem.h"
 
+#include "AI/DetectionModelHostActor.h"
 #include "Async/Async.h"
+#include "Engine/World.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/ScopeLock.h"
 #include "MyActorComponent.h"
@@ -57,14 +59,14 @@ void UCrowVisionSubsystem::SubmitFrame(
     UMyActorComponent* Requester,
     TArray<FColor>&& Pixels,
     int32 Width,
-    int32 Height,
-    int32 Threshold)
+    int32 Height)
 {
     if (!IsValid(Requester) || Width <= 0 || Height <= 0 || Pixels.Num() != Width * Height)
     {
         return;
     }
 
+    EnsureModelHostActor();
     StartWorker();
 
     TSharedPtr<FQueuedFrame> Frame = MakeShared<FQueuedFrame>();
@@ -72,7 +74,6 @@ void UCrowVisionSubsystem::SubmitFrame(
     Frame->Pixels = MoveTemp(Pixels);
     Frame->Width = Width;
     Frame->Height = Height;
-    Frame->Threshold = Threshold;
     Frame->SubmitTimeSeconds = FPlatformTime::Seconds();
 
     {
@@ -122,7 +123,6 @@ void UCrowVisionSubsystem::StartWorker()
                 Frame->Pixels,
                 Frame->Width,
                 Frame->Height,
-                Frame->Threshold,
                 &InferenceMs);
             const double WorkerTotalMs = (FPlatformTime::Seconds() - WorkerStartSeconds) * 1000.0;
 
@@ -159,6 +159,30 @@ void UCrowVisionSubsystem::StartWorker()
             });
         }
     });
+}
+
+void UCrowVisionSubsystem::EnsureModelHostActor()
+{
+    if (IsValid(ModelHostActor))
+    {
+        return;
+    }
+
+    UWorld* World = GetWorld();
+    if (!World || World->bIsTearingDown)
+    {
+        return;
+    }
+
+    FActorSpawnParameters SpawnParams;
+    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    ModelHostActor = World->SpawnActor<ADetectionModelHostActor>(
+        ADetectionModelHostActor::StaticClass(),
+        FVector::ZeroVector,
+        FRotator::ZeroRotator,
+        SpawnParams);
+
+    UE_LOG(LogTemp, Log, TEXT("Shared vision model host spawned by CrowVisionSubsystem: %s"), *GetNameSafe(ModelHostActor));
 }
 
 void UCrowVisionSubsystem::StopWorker()

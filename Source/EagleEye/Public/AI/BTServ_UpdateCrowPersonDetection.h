@@ -42,11 +42,29 @@ protected:
     UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="0.0"))
     float LosePersonAfterSeconds = 1.25f;
 
+    UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="0.0"))
+    float MaxDetectionFrameAgeSeconds = 0.4f;
+
+    UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="0.0", ClampMax="1.0"))
+    float MinAcceptedConfidence = 0.35f;
+
+    UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="1", ClampMax="10"))
+    int32 RequiredConsecutiveDetections = 2;
+
+    UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="0", ClampMax="10"))
+    int32 MaxConsecutiveDetectionMisses = 2;
+
+    UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="0.0"))
+    float TargetSmoothingSpeed = 8.0f;
+
     UPROPERTY(EditAnywhere, Category="Detection")
     bool bAlwaysFollowPlayerPawn = false;
 
     UPROPERTY(EditAnywhere, Category="Detection")
     bool bPreferPlayerPawnLocation = true;
+
+    UPROPERTY(EditAnywhere, Category="Detection", meta=(EditCondition="bPreferPlayerPawnLocation"))
+    bool bRequireRaySnapForPlayerPawnLocation = true;
 
     UPROPERTY(EditAnywhere, Category="Detection")
     FVector TargetLocationOffset = FVector(0.f, 0.f, 150.f);

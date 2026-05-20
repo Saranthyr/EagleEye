@@ -1,4 +1,7 @@
 using UnrealBuildTool;
+using System;
+using System.IO;
+using System.Collections.Generic;
 
 public class EagleEye : ModuleRules
 {
@@ -15,6 +18,7 @@ public class EagleEye : ModuleRules
             "OpenCV412",
             "InputCore",
             "EnhancedInput",
+            "DeveloperSettings",
             "RenderCore",
             "ProceduralMeshComponent",
             "NavigationSystem",
@@ -27,6 +31,7 @@ public class EagleEye : ModuleRules
             "Core",
             "CoreUObject",
             "Engine",
+            "DeveloperSettings",
             "Renderer",
             "RenderCore",
             "RHI",
@@ -41,22 +46,265 @@ public class EagleEye : ModuleRules
         if (Target.Platform == UnrealTargetPlatform.Win64)
         {
             PrivateDependencyModuleNames.Add("D3D12RHI");
+
+            string TensorRTRoot = Environment.GetEnvironmentVariable("TENSORRT_ROOT");
+            if (String.IsNullOrEmpty(TensorRTRoot))
+            {
+                TensorRTRoot = Environment.GetEnvironmentVariable("TENSORRT_PATH");
+            }
+
+            string TensorRTIncludePath = !String.IsNullOrEmpty(TensorRTRoot) ? Path.Combine(TensorRTRoot, "include") : null;
+            string TensorRTLibPath = !String.IsNullOrEmpty(TensorRTRoot) ? Path.Combine(TensorRTRoot, "lib") : null;
+            string TensorRTInferLib = !String.IsNullOrEmpty(TensorRTLibPath) ? Path.Combine(TensorRTLibPath, "nvinfer.lib") : null;
+            string TensorRTPluginLib = !String.IsNullOrEmpty(TensorRTLibPath) ? Path.Combine(TensorRTLibPath, "nvinfer_plugin.lib") : null;
+
+            string CudaRoot = Environment.GetEnvironmentVariable("CUDA_PATH");
+            if (String.IsNullOrEmpty(CudaRoot))
+            {
+                CudaRoot = Environment.GetEnvironmentVariable("CUDA_HOME");
+            }
+
+            string CudaIncludePath = !String.IsNullOrEmpty(CudaRoot) ? Path.Combine(CudaRoot, "include") : null;
+            string CudaRuntimeLib = !String.IsNullOrEmpty(CudaRoot) ? Path.Combine(CudaRoot, "lib", "x64", "cudart.lib") : null;
+
+            bool bWithTensorRT = Directory.Exists(TensorRTIncludePath) &&
+                File.Exists(TensorRTInferLib) &&
+                File.Exists(TensorRTPluginLib) &&
+                Directory.Exists(CudaIncludePath) &&
+                File.Exists(CudaRuntimeLib);
+
+            if (bWithTensorRT)
+            {
+                AddSystemIncludePath(TensorRTIncludePath);
+                AddImportLibrary(TensorRTInferLib);
+                AddImportLibrary(TensorRTPluginLib);
+                StageMatchingRuntimeFiles(Path.Combine(TensorRTRoot, "bin"), "nvinfer*.dll");
+                StageMatchingRuntimeFiles(Path.Combine(TensorRTRoot, "bin"), "nvinfer_plugin*.dll");
+                AddSystemIncludePath(CudaIncludePath);
+                AddImportLibrary(CudaRuntimeLib);
+                StageMatchingRuntimeFiles(Path.Combine(CudaRoot, "bin"), "cudart64*.dll");
+            }
+            PublicDefinitions.Add(bWithTensorRT ? "WITH_TENSORRT=1" : "WITH_TENSORRT=0");
         }
-        if (Target.Platform == UnrealTargetPlatform.Linux)
+        else if (Target.Platform == UnrealTargetPlatform.Linux)
         {
-            PublicSystemIncludePaths.Add("/usr/include/x86_64-linux-gnu");
-            PublicSystemIncludePaths.Add("/usr/local/cuda-12.4/include");
+            string TensorRTRoot = Environment.GetEnvironmentVariable("TENSORRT_ROOT");
+            if (String.IsNullOrEmpty(TensorRTRoot))
+            {
+                TensorRTRoot = Environment.GetEnvironmentVariable("TENSORRT_PATH");
+            }
 
-            PublicAdditionalLibraries.Add("/lib/x86_64-linux-gnu/libnvinfer.so");
-            PublicAdditionalLibraries.Add("/lib/x86_64-linux-gnu/libnvinfer_plugin.so");
-            PublicAdditionalLibraries.Add("/usr/local/cuda-12.4/lib64/libcudart.so");
+            string CudaRoot = Environment.GetEnvironmentVariable("CUDA_HOME");
+            if (String.IsNullOrEmpty(CudaRoot))
+            {
+                CudaRoot = Environment.GetEnvironmentVariable("CUDA_PATH");
+            }
+            if (String.IsNullOrEmpty(CudaRoot))
+            {
+                CudaRoot = "/usr/local/cuda-12.4";
+            }
 
-            RuntimeDependencies.Add("/lib/x86_64-linux-gnu/libnvinfer.so");
-            RuntimeDependencies.Add("/lib/x86_64-linux-gnu/libnvinfer_plugin.so");
-            RuntimeDependencies.Add("/usr/local/cuda-12.4/lib64/libcudart.so");
+            string TensorRTIncludePath = !String.IsNullOrEmpty(TensorRTRoot) ? Path.Combine(TensorRTRoot, "include") : "/usr/include/x86_64-linux-gnu";
+            string CudaIncludePath = Path.Combine(CudaRoot, "include");
+
+            List<string> TensorRTLibraryDirectories = new List<string>();
+            if (!String.IsNullOrEmpty(TensorRTRoot))
+            {
+                TensorRTLibraryDirectories.Add(Path.Combine(TensorRTRoot, "lib"));
+                TensorRTLibraryDirectories.Add(Path.Combine(TensorRTRoot, "lib64"));
+            }
+            TensorRTLibraryDirectories.Add("/lib/x86_64-linux-gnu");
+            TensorRTLibraryDirectories.Add("/usr/lib/x86_64-linux-gnu");
+
+            string TensorRTInferLib = FindFirstExistingFile(TensorRTLibraryDirectories, "libnvinfer.so");
+            string TensorRTPluginLib = FindFirstExistingFile(TensorRTLibraryDirectories, "libnvinfer_plugin.so");
+            string CudaRuntimeLib = FindFirstExistingFile(new List<string> { Path.Combine(CudaRoot, "lib64"), Path.Combine(CudaRoot, "lib") }, "libcudart.so");
+
+            bool bWithTensorRT = Directory.Exists(TensorRTIncludePath) &&
+                Directory.Exists(CudaIncludePath) &&
+                File.Exists(TensorRTInferLib) &&
+                File.Exists(TensorRTPluginLib) &&
+                File.Exists(CudaRuntimeLib);
+
+            if (bWithTensorRT)
+            {
+                AddSystemIncludePath(TensorRTIncludePath);
+                AddSystemIncludePath(CudaIncludePath);
+                AddNativeSharedLibrary(TensorRTInferLib);
+                AddNativeSharedLibrary(TensorRTPluginLib);
+                AddNativeSharedLibrary(CudaRuntimeLib);
+            }
+            PublicDefinitions.Add(bWithTensorRT ? "WITH_TENSORRT=1" : "WITH_TENSORRT=0");
+        }
+        else
+        {
+            PublicDefinitions.Add("WITH_TENSORRT=0");
         }
 
+        string OnnxRuntimeRoot = Environment.GetEnvironmentVariable("ONNXRUNTIME_ROOT");
+        if (String.IsNullOrEmpty(OnnxRuntimeRoot))
+        {
+            OnnxRuntimeRoot = Environment.GetEnvironmentVariable("ORT_ROOT");
+        }
+
+        bool bWithOnnxRuntime = false;
+        if (!String.IsNullOrEmpty(OnnxRuntimeRoot))
+        {
+            string OnnxIncludePath = FindFirstExistingDirectory(new List<string>
+            {
+                Path.Combine(OnnxRuntimeRoot, "include"),
+                Path.Combine(OnnxRuntimeRoot, "build", "native", "include")
+            });
+            List<string> OnnxLibDirs = Target.Platform == UnrealTargetPlatform.Win64
+                ? new List<string>
+                {
+                    Path.Combine(OnnxRuntimeRoot, "lib"),
+                    Path.Combine(OnnxRuntimeRoot, "lib", "x64"),
+                    Path.Combine(OnnxRuntimeRoot, "runtimes", "win-x64", "native"),
+                    Path.Combine(OnnxRuntimeRoot, "build", "native"),
+                    Path.Combine(OnnxRuntimeRoot, "build", "native", "lib"),
+                    Path.Combine(OnnxRuntimeRoot, "build", "native", "lib", "x64")
+                }
+                : new List<string>
+                {
+                    Path.Combine(OnnxRuntimeRoot, "lib"),
+                    Path.Combine(OnnxRuntimeRoot, "lib64")
+                };
+            string OnnxImportOrSharedLib = Target.Platform == UnrealTargetPlatform.Win64
+                ? FindFirstExistingFile(OnnxLibDirs, "onnxruntime.lib")
+                : FindFirstExistingFile(OnnxLibDirs, "libonnxruntime.so");
+
+            bWithOnnxRuntime = Directory.Exists(OnnxIncludePath) && File.Exists(OnnxImportOrSharedLib);
+            if (bWithOnnxRuntime)
+            {
+                AddSystemIncludePath(OnnxIncludePath);
+                AddSystemIncludePath(Path.Combine(OnnxIncludePath, "onnxruntime", "core", "session"));
+
+                if (Target.Platform == UnrealTargetPlatform.Win64)
+                {
+                    List<string> OnnxRuntimeDllDirs = new List<string>
+                    {
+                        Path.Combine(OnnxRuntimeRoot, "bin"),
+                        Path.Combine(OnnxRuntimeRoot, "lib"),
+                        Path.Combine(OnnxRuntimeRoot, "lib", "x64"),
+                        Path.Combine(OnnxRuntimeRoot, "runtimes", "win-x64", "native"),
+                        Path.Combine(OnnxRuntimeRoot, "build", "native"),
+                        Path.Combine(OnnxRuntimeRoot, "build", "native", "bin"),
+                        Path.Combine(OnnxRuntimeRoot, "build", "native", "bin", "x64")
+                    };
+                    PublicAdditionalLibraries.Add(OnnxImportOrSharedLib);
+                    foreach (string DllDir in OnnxRuntimeDllDirs)
+                    {
+                        StageMatchingRuntimeFiles(DllDir, "onnxruntime*.dll");
+                        StageMatchingRuntimeFiles(DllDir, "DirectML.dll");
+                    }
+                }
+                else if (Target.Platform == UnrealTargetPlatform.Linux)
+                {
+                    AddNativeSharedLibrary(OnnxImportOrSharedLib);
+                    foreach (string LibDir in OnnxLibDirs)
+                    {
+                        StageMatchingRuntimeFiles(LibDir, "libonnxruntime_providers*.so");
+                    }
+                }
+            }
+        }
+        PublicDefinitions.Add(bWithOnnxRuntime ? "WITH_ONNXRUNTIME=1" : "WITH_ONNXRUNTIME=0");
+        PublicDefinitions.Add((bWithOnnxRuntime && Target.Platform == UnrealTargetPlatform.Win64) ? "WITH_ONNXRUNTIME_DML=1" : "WITH_ONNXRUNTIME_DML=0");
+        PublicDefinitions.Add((bWithOnnxRuntime && Target.Platform == UnrealTargetPlatform.Linux) ? "WITH_ONNXRUNTIME_MIGRAPHX=1" : "WITH_ONNXRUNTIME_MIGRAPHX=0");
+
+        string[] RuntimeModelExtensions =
+        {
+            ".cfg",
+            ".names",
+            ".onnx",
+            ".plan",
+            ".weights"
+        };
+
+        foreach (string RuntimeModelFile in Directory.GetFiles(ModuleDirectory, "*.*", SearchOption.TopDirectoryOnly))
+        {
+            string Extension = Path.GetExtension(RuntimeModelFile).ToLowerInvariant();
+            if (Array.IndexOf(RuntimeModelExtensions, Extension) >= 0)
+            {
+                RuntimeDependencies.Add(
+                    Path.Combine("$(TargetOutputDir)", "Models", Path.GetFileName(RuntimeModelFile)),
+                    RuntimeModelFile,
+                    StagedFileType.NonUFS);
+            }
+        }
 
         bEnableExceptions = true;
+    }
+
+    private void AddSystemIncludePath(string IncludePath)
+    {
+        if (Directory.Exists(IncludePath))
+        {
+            PublicSystemIncludePaths.Add(IncludePath);
+        }
+    }
+
+    private void AddImportLibrary(string LibraryPath)
+    {
+        if (File.Exists(LibraryPath))
+        {
+            PublicAdditionalLibraries.Add(LibraryPath);
+        }
+    }
+
+    private void AddNativeSharedLibrary(string LibraryPath)
+    {
+        if (!String.IsNullOrEmpty(LibraryPath) && File.Exists(LibraryPath))
+        {
+            PublicAdditionalLibraries.Add(LibraryPath);
+            RuntimeDependencies.Add(
+                Path.Combine("$(TargetOutputDir)", Path.GetFileName(LibraryPath)),
+                LibraryPath,
+                StagedFileType.NonUFS);
+        }
+    }
+
+    private void StageMatchingRuntimeFiles(string DirectoryPath, string Pattern)
+    {
+        if (!Directory.Exists(DirectoryPath))
+        {
+            return;
+        }
+
+        foreach (string RuntimeFile in Directory.GetFiles(DirectoryPath, Pattern, SearchOption.TopDirectoryOnly))
+        {
+            RuntimeDependencies.Add(
+                Path.Combine("$(TargetOutputDir)", Path.GetFileName(RuntimeFile)),
+                RuntimeFile,
+                StagedFileType.NonUFS);
+        }
+    }
+
+    private static string FindFirstExistingFile(List<string> Directories, string FileName)
+    {
+        foreach (string DirectoryPath in Directories)
+        {
+            string CandidatePath = Path.Combine(DirectoryPath, FileName);
+            if (File.Exists(CandidatePath))
+            {
+                return CandidatePath;
+            }
+        }
+
+        return null;
+    }
+
+    private static string FindFirstExistingDirectory(List<string> Directories)
+    {
+        foreach (string DirectoryPath in Directories)
+        {
+            if (Directory.Exists(DirectoryPath))
+            {
+                return DirectoryPath;
+            }
+        }
+
+        return null;
     }
 }

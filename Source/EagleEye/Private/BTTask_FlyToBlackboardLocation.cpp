@@ -1,6 +1,7 @@
 #include "AI/BTTask_FlyToBlackboardLocation.h"
 
 #include "AIController.h"
+#include "AI/BotCharacter.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "DrawDebugHelpers.h"
@@ -8,6 +9,8 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Pawn.h"
+#include "Navigation/PathFollowingComponent.h"
+#include "NavigationSystem.h"
 
 UBTTask_FlyToBlackboardLocation::UBTTask_FlyToBlackboardLocation()
 {
@@ -56,15 +59,45 @@ void UBTTask_FlyToBlackboardLocation::TickTask(
         return;
     }
 
+    const ABotCharacter* BotCharacter = Cast<ABotCharacter>(ControlledPawn);
+    const bool bUseFlyingMovement = !BotCharacter || BotCharacter->IsFlyingBot();
     const FVector TargetLocation = Blackboard->GetValueAsVector(TargetLocationKey.SelectedKeyName);
-    const FVector ToTarget = TargetLocation - ControlledPawn->GetActorLocation();
+    FVector ToTarget = TargetLocation - ControlledPawn->GetActorLocation();
+    if (!bUseFlyingMovement)
+    {
+        ToTarget.Z = 0.f;
+    }
     const float Distance = ToTarget.Size();
     const FVector DirectionToTarget = ToTarget.GetSafeNormal();
 
-    if (bRotateTowardTarget && !DirectionToTarget.IsNearlyZero())
+    float HoldRadius = AcceptanceRadius;
+    FVector MoveDirection = DirectionToTarget;
+    if (bMaintainDistanceFromTarget)
     {
-        FRotator DesiredRotation = DirectionToTarget.Rotation() + RotationOffset;
-        if (!bUsePitchRotation)
+        const float DistanceError = Distance - DesiredTargetDistance;
+        HoldRadius = DistanceTolerance;
+
+        if (FMath::Abs(DistanceError) > DistanceTolerance)
+        {
+            MoveDirection = DistanceError > 0.f ? DirectionToTarget : -DirectionToTarget;
+            if (MoveDirection.IsNearlyZero())
+            {
+                MoveDirection = -ControlledPawn->GetActorForwardVector().GetSafeNormal();
+            }
+        }
+        else
+        {
+            MoveDirection = FVector::ZeroVector;
+        }
+    }
+
+    const FVector RotationDirection = (!bUseFlyingMovement && bRotateWalkingTowardMoveDirection && !MoveDirection.IsNearlyZero())
+        ? MoveDirection
+        : DirectionToTarget;
+    if (bRotateTowardTarget && !RotationDirection.IsNearlyZero())
+    {
+        FRotator DesiredRotation = RotationDirection.Rotation() + RotationOffset;
+        if (!bUsePitchRotation || !bUseFlyingMovement)
         {
             DesiredRotation.Pitch = 0.f;
         }
@@ -78,14 +111,29 @@ void UBTTask_FlyToBlackboardLocation::TickTask(
         ControlledPawn->SetActorRotation(NewRotation);
     }
 
-    if (ToTarget.SizeSquared() <= FMath::Square(AcceptanceRadius))
+    const bool bShouldHold = MoveDirection.IsNearlyZero()
+        || (!bMaintainDistanceFromTarget && ToTarget.SizeSquared() <= FMath::Square(HoldRadius));
+    if (bShouldHold)
     {
         if (ACharacter* Character = Cast<ACharacter>(ControlledPawn))
         {
             if (UCharacterMovementComponent* MovementComponent = Character->GetCharacterMovement())
             {
-                MovementComponent->Velocity = FVector::ZeroVector;
+                if (bUseFlyingMovement)
+                {
+                    MovementComponent->Velocity = FVector::ZeroVector;
+                }
+                else
+                {
+                    MovementComponent->Velocity.X = 0.f;
+                    MovementComponent->Velocity.Y = 0.f;
+                }
             }
+        }
+
+        if (!bUseFlyingMovement && AIController)
+        {
+            AIController->StopMovement();
         }
 
         if (bDrawDebug && GEngine)
@@ -94,33 +142,85 @@ void UBTTask_FlyToBlackboardLocation::TickTask(
                 reinterpret_cast<uint64>(this),
                 0.2f,
                 FColor::Cyan,
-                FString::Printf(TEXT("Fly task: holding target dist %.0f"), Distance));
+                FString::Printf(
+                    TEXT("Fly task: holding target dist %.0f desired %.0f"),
+                    Distance,
+                    bMaintainDistanceFromTarget ? DesiredTargetDistance : 0.f));
         }
         return;
     }
 
-    const FVector MoveDirection = DirectionToTarget;
     if (ACharacter* Character = Cast<ACharacter>(ControlledPawn))
     {
         if (UCharacterMovementComponent* MovementComponent = Character->GetCharacterMovement())
         {
-            if (MovementComponent->MovementMode != MOVE_Flying)
+            if (bUseFlyingMovement && MovementComponent->MovementMode != MOVE_Flying)
             {
                 MovementComponent->SetMovementMode(MOVE_Flying);
             }
+            else if (!bUseFlyingMovement && MovementComponent->MovementMode == MOVE_Flying)
+            {
+                MovementComponent->SetMovementMode(MOVE_Walking);
+            }
 
-            const float MovementSpeed = FMath::Max(MinFlySpeed, MovementComponent->GetMaxSpeed() * MovementScale);
-            MovementComponent->Velocity = MoveDirection * MovementSpeed;
+            if (bUseFlyingMovement)
+            {
+                const float MovementSpeed = FMath::Max(MinFlySpeed, MovementComponent->GetMaxSpeed() * MovementScale);
+                MovementComponent->Velocity = MoveDirection * MovementSpeed;
+            }
+            else
+            {
+                bool bMovedWithNavMesh = false;
+                if (bUseNavMeshForWalking && AIController)
+                {
+                    FVector MoveGoal = TargetLocation;
+                    if (bMaintainDistanceFromTarget)
+                    {
+                        MoveGoal = TargetLocation - (DirectionToTarget * DesiredTargetDistance);
+                    }
+                    MoveGoal.Z = ControlledPawn->GetActorLocation().Z;
+
+                    if (UWorld* World = ControlledPawn->GetWorld())
+                    {
+                        if (UNavigationSystemV1* NavSystem = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World))
+                        {
+                            FNavLocation ProjectedGoal;
+                            if (NavSystem->ProjectPointToNavigation(MoveGoal, ProjectedGoal, NavProjectionExtent))
+                            {
+                                const EPathFollowingRequestResult::Type MoveResult = AIController->MoveToLocation(
+                                    ProjectedGoal.Location,
+                                    WalkingMoveAcceptanceRadius,
+                                    false,
+                                    true,
+                                    false,
+                                    true,
+                                    nullptr,
+                                    bAllowPartialNavPath);
+                                bMovedWithNavMesh = MoveResult != EPathFollowingRequestResult::Failed;
+                            }
+                        }
+                    }
+                }
+
+                if (!bMovedWithNavMesh && bFallbackToDirectWalkingWhenNavMoveFails)
+                {
+                    ControlledPawn->AddMovementInput(MoveDirection, MovementScale, true);
+                }
+            }
         }
     }
     else
     {
-        ControlledPawn->AddMovementInput(MoveDirection, MovementScale);
+        ControlledPawn->AddMovementInput(MoveDirection, MovementScale, true);
     }
 
-    if (AIController && bUpdateFocus)
+    if (AIController && bUpdateFocus && (bUseFlyingMovement || !bRotateWalkingTowardMoveDirection))
     {
         AIController->SetFocalPoint(TargetLocation);
+    }
+    else if (AIController && !bUseFlyingMovement && bRotateWalkingTowardMoveDirection)
+    {
+        AIController->ClearFocus(EAIFocusPriority::Gameplay);
     }
 
     if (bDrawDebug)
@@ -140,7 +240,11 @@ void UBTTask_FlyToBlackboardLocation::TickTask(
 
         if (UWorld* World = ControlledPawn->GetWorld())
         {
-            DrawDebugSphere(World, TargetLocation, AcceptanceRadius, 12, FColor::Cyan, false, 0.2f);
+            DrawDebugSphere(World, TargetLocation, HoldRadius, 12, FColor::Cyan, false, 0.2f);
+            if (bMaintainDistanceFromTarget)
+            {
+                DrawDebugSphere(World, TargetLocation, DesiredTargetDistance, 24, FColor::Emerald, false, 0.2f);
+            }
             DrawDebugLine(World, ControlledPawn->GetActorLocation(), TargetLocation, FColor::Cyan, false, 0.2f, 0, 2.f);
         }
     }
@@ -155,16 +259,27 @@ void UBTTask_FlyToBlackboardLocation::OnTaskFinished(
 
     AAIController* AIController = OwnerComp.GetAIOwner();
     APawn* ControlledPawn = AIController ? AIController->GetPawn() : nullptr;
+    const ABotCharacter* BotCharacter = Cast<ABotCharacter>(ControlledPawn);
+    const bool bUseFlyingMovement = !BotCharacter || BotCharacter->IsFlyingBot();
     if (ACharacter* Character = Cast<ACharacter>(ControlledPawn))
     {
         if (UCharacterMovementComponent* MovementComponent = Character->GetCharacterMovement())
         {
-            MovementComponent->Velocity = FVector::ZeroVector;
+            if (bUseFlyingMovement)
+            {
+                MovementComponent->Velocity = FVector::ZeroVector;
+            }
+            else
+            {
+                MovementComponent->Velocity.X = 0.f;
+                MovementComponent->Velocity.Y = 0.f;
+            }
         }
     }
 
     if (AIController)
     {
+        AIController->StopMovement();
         AIController->ClearFocus(EAIFocusPriority::Gameplay);
     }
 }

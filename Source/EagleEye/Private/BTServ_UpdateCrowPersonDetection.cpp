@@ -20,6 +20,9 @@ namespace
         FVector LastTargetLocation = FVector::ZeroVector;
         float LastDetectedTime = -FLT_MAX;
         float LastConfidence = 0.f;
+        int32 LastProcessedFrameSequence = 0;
+        int32 ConsecutiveDetections = 0;
+        int32 ConsecutiveMisses = 0;
         bool bHasLastTarget = false;
     };
 
@@ -76,11 +79,11 @@ namespace
         OutBox.Center = FVector2D((MinX + MaxX) * 0.5f, (MinY + MaxY) * 0.5f);
         OutBox.Size = Size;
         OutBox.Area = Size.X * Size.Y;
-        OutBox.Confidence = ParseConfidence(Detection.Label);
+        OutBox.Confidence = Detection.Confidence > 0.f ? Detection.Confidence : ParseConfidence(Detection.Label);
         return true;
     }
 
-    bool FindBestPersonDetection(const UMyActorComponent& Detector, FDetectionBox& OutBox)
+    bool FindBestPersonDetection(const UMyActorComponent& Detector, float MinAcceptedConfidence, FDetectionBox& OutBox)
     {
         bool bFound = false;
         float BestScore = -1.f;
@@ -94,6 +97,10 @@ namespace
 
             FDetectionBox Box;
             if (!DetectionToBox(Detection, Box))
+            {
+                continue;
+            }
+            if (Box.Confidence < MinAcceptedConfidence)
             {
                 continue;
             }
@@ -378,8 +385,9 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         return;
     }
 
-    FDetectionBox PersonBox;
-    if (!FindBestPersonDetection(*Detector, PersonBox))
+    const bool bHasFreshFrame = Detector->LastFrameSequence > 0
+        && (CurrentTime - Detector->LastFrameTimeSeconds) <= MaxDetectionFrameAgeSeconds;
+    if (!bHasFreshFrame)
     {
         if (bUseFlockSharedDetections && ApplySharedDetection(
             *Blackboard,
@@ -408,11 +416,87 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         PrintCrowDetectionDebug(
             *ControlledPawn,
             FString::Printf(
-                TEXT("detections=%d no person source=%dx%d seq=%d memory=%s"),
+                TEXT("stale frame seq=%d age=%.2f memory=%s"),
+                Detector->LastFrameSequence,
+                CurrentTime - Detector->LastFrameTimeSeconds,
+                Memory->bHasLastTarget ? TEXT("active") : TEXT("none")),
+            FColor::Yellow,
+            6,
+            bDrawDebug,
+            bLogDebug);
+        return;
+    }
+
+    if (Detector->LastFrameSequence == Memory->LastProcessedFrameSequence)
+    {
+        KeepMemoryActive(
+            *Blackboard,
+            HasPersonKey,
+            DetectedPersonLocationKey,
+            DetectionConfidenceKey,
+            *Memory,
+            CurrentTime,
+            LosePersonAfterSeconds);
+        return;
+    }
+    Memory->LastProcessedFrameSequence = Detector->LastFrameSequence;
+
+    FDetectionBox PersonBox;
+    if (!FindBestPersonDetection(*Detector, MinAcceptedConfidence, PersonBox))
+    {
+        Memory->ConsecutiveDetections = 0;
+        ++Memory->ConsecutiveMisses;
+
+        if (bUseFlockSharedDetections && ApplySharedDetection(
+            *Blackboard,
+            *ControlledPawn,
+            HasPersonKey,
+            DetectedPersonLocationKey,
+            DetectionConfidenceKey,
+            *Memory,
+            CurrentTime,
+            SharedDetectionMaxAgeSeconds,
+            SharedDetectionMaxReporterDistance,
+            bDrawDebug,
+            bLogDebug))
+        {
+            return;
+        }
+
+        if (Memory->ConsecutiveMisses > MaxConsecutiveDetectionMisses)
+        {
+            Blackboard->SetValueAsBool(HasPersonKey.SelectedKeyName, false);
+            PrintCrowDetectionDebug(
+                *ControlledPawn,
+                FString::Printf(
+                    TEXT("detections=%d no accepted person seq=%d misses=%d"),
+                    Detector->LastFrameDetections.Num(),
+                    Detector->LastFrameSequence,
+                    Memory->ConsecutiveMisses),
+                FColor::Red,
+                4,
+                bDrawDebug,
+                bLogDebug);
+            return;
+        }
+
+        KeepMemoryActive(
+            *Blackboard,
+            HasPersonKey,
+            DetectedPersonLocationKey,
+            DetectionConfidenceKey,
+            *Memory,
+            CurrentTime,
+            LosePersonAfterSeconds);
+        PrintCrowDetectionDebug(
+            *ControlledPawn,
+            FString::Printf(
+                TEXT("detections=%d no accepted person source=%dx%d seq=%d misses=%d memory=%s"),
                 Detector->LastFrameDetections.Num(),
                 Detector->LastFrameSourceWidth,
                 Detector->LastFrameSourceHeight,
                 Detector->LastFrameSequence,
+                Memory->ConsecutiveMisses,
                 Memory->bHasLastTarget ? TEXT("active") : TEXT("none")),
             FColor::Orange,
             4,
@@ -429,18 +513,27 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         Detector->LastFrameSourceHeight);
 
     FVector TargetLocation = FVector::ZeroVector;
-    if (bPreferPlayerPawnLocation && IsValid(PlayerPawn) && PlayerPawn != ControlledPawn)
-    {
-        TargetLocation = PlayerPawn->GetActorLocation();
-    }
-    else if (!TrySnapToPlayerOnRay(
+    FVector SnappedPlayerLocation = FVector::ZeroVector;
+    const bool bSnappedToPlayer = TrySnapToPlayerOnRay(
         ControlledPawn,
         *ControlledPawn,
         RayOrigin,
         RayDirection,
         TraceDistance,
         PlayerRaySnapRadius,
-        TargetLocation))
+        SnappedPlayerLocation);
+    if (bPreferPlayerPawnLocation &&
+        IsValid(PlayerPawn) &&
+        PlayerPawn != ControlledPawn &&
+        (!bRequireRaySnapForPlayerPawnLocation || bSnappedToPlayer))
+    {
+        TargetLocation = PlayerPawn->GetActorLocation();
+    }
+    else if (bSnappedToPlayer)
+    {
+        TargetLocation = SnappedPlayerLocation;
+    }
+    else
     {
         FHitResult Hit;
         FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(CrowPersonDetectionTrace), false, ControlledPawn);
@@ -457,13 +550,47 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
     }
 
     TargetLocation += TargetLocationOffset;
-    Memory->LastTargetLocation = TargetLocation;
+    ++Memory->ConsecutiveDetections;
+    Memory->ConsecutiveMisses = 0;
+
+    const bool bConfirmed = Memory->ConsecutiveDetections >= FMath::Max(1, RequiredConsecutiveDetections);
+    if (!bConfirmed)
+    {
+        KeepMemoryActive(
+            *Blackboard,
+            HasPersonKey,
+            DetectedPersonLocationKey,
+            DetectionConfidenceKey,
+            *Memory,
+            CurrentTime,
+            LosePersonAfterSeconds);
+        PrintCrowDetectionDebug(
+            *ControlledPawn,
+            FString::Printf(
+                TEXT("candidate target=%s conf=%.2f hits=%d/%d seq=%d"),
+                *TargetLocation.ToCompactString(),
+                PersonBox.Confidence,
+                Memory->ConsecutiveDetections,
+                FMath::Max(1, RequiredConsecutiveDetections),
+                Detector->LastFrameSequence),
+            FColor::Yellow,
+            5,
+            bDrawDebug,
+            bLogDebug);
+        return;
+    }
+
+    const FVector SmoothedTargetLocation = Memory->bHasLastTarget
+        ? FMath::VInterpTo(Memory->LastTargetLocation, TargetLocation, DeltaSeconds, TargetSmoothingSpeed)
+        : TargetLocation;
+
+    Memory->LastTargetLocation = SmoothedTargetLocation;
     Memory->LastDetectedTime = CurrentTime;
     Memory->LastConfidence = PersonBox.Confidence;
     Memory->bHasLastTarget = true;
 
     Blackboard->SetValueAsBool(HasPersonKey.SelectedKeyName, true);
-    Blackboard->SetValueAsVector(DetectedPersonLocationKey.SelectedKeyName, TargetLocation);
+    Blackboard->SetValueAsVector(DetectedPersonLocationKey.SelectedKeyName, SmoothedTargetLocation);
     Blackboard->SetValueAsFloat(DetectionConfidenceKey.SelectedKeyName, PersonBox.Confidence);
 
     if (bPublishDetectionsToFlock)
@@ -472,7 +599,7 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         {
             if (UCrowDetectionShareSubsystem* ShareSubsystem = World->GetSubsystem<UCrowDetectionShareSubsystem>())
             {
-                ShareSubsystem->PublishPersonDetection(ControlledPawn, TargetLocation, PersonBox.Confidence);
+                ShareSubsystem->PublishPersonDetection(ControlledPawn, SmoothedTargetLocation, PersonBox.Confidence);
             }
         }
     }
@@ -480,13 +607,14 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
     PrintCrowDetectionDebug(
         *ControlledPawn,
         FString::Printf(
-            TEXT("person target=%s conf=%.2f box=%s size=%s detections=%d seq=%d"),
-            *TargetLocation.ToCompactString(),
+            TEXT("person target=%s conf=%.2f box=%s size=%s detections=%d seq=%d hits=%d"),
+            *SmoothedTargetLocation.ToCompactString(),
             PersonBox.Confidence,
             *PersonBox.Center.ToString(),
             *PersonBox.Size.ToString(),
             Detector->LastFrameDetections.Num(),
-            Detector->LastFrameSequence),
+            Detector->LastFrameSequence,
+            Memory->ConsecutiveDetections),
         FColor::Green,
         5,
         bDrawDebug,
@@ -496,8 +624,8 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
     {
         if (UWorld* World = ControlledPawn->GetWorld())
         {
-            DrawDebugSphere(World, TargetLocation, 80.f, 12, FColor::Green, false, 0.15f);
-            DrawDebugLine(World, RayOrigin, TargetLocation, FColor::Green, false, 0.15f, 0, 2.f);
+            DrawDebugSphere(World, SmoothedTargetLocation, 80.f, 12, FColor::Green, false, 0.15f);
+            DrawDebugLine(World, RayOrigin, SmoothedTargetLocation, FColor::Green, false, 0.15f, 0, 2.f);
         }
     }
 }

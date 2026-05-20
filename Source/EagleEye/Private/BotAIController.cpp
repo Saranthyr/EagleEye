@@ -4,6 +4,8 @@
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "Engine/World.h"
+#include "Navigation/PathFollowingComponent.h"
+#include "NavigationSystem.h"
 #include "Perception/AIPerceptionComponent.h"
 #include "Perception/AIPerceptionTypes.h"
 #include "Perception/AISenseConfig_Sight.h"
@@ -75,11 +77,17 @@ void ABotAIController::OnPossess(APawn* InPawn)
     }
     PerceptionComponentRef->RequestStimuliListenerUpdate();
 
-    if (InPawn)
+    if (ShouldUseRandomFlight(InPawn))
     {
         FlightOrigin = InPawn->GetActorLocation();
         bHasFlightOrigin = true;
         PickRandomFlightDestination();
+    }
+    else if (ShouldUseRandomWalking(InPawn))
+    {
+        WalkOrigin = InPawn->GetActorLocation();
+        bHasWalkOrigin = true;
+        PickRandomWalkDestination();
     }
 
     StartBehaviorTreeForPawn(InPawn);
@@ -90,6 +98,7 @@ void ABotAIController::Tick(float DeltaSeconds)
     Super::Tick(DeltaSeconds);
 
     UpdateRandomFlight(DeltaSeconds);
+    UpdateRandomWalking(DeltaSeconds);
 
     UBlackboardComponent* BlackboardComponent = GetBlackboardComponent();
     if (!BlackboardComponent)
@@ -104,6 +113,11 @@ void ABotAIController::Tick(float DeltaSeconds)
     }
 
     BlackboardComponent->SetValueAsVector(TargetLocationKey, TargetActor->GetActorLocation());
+
+    if (ABotCharacter* BotCharacter = Cast<ABotCharacter>(GetPawn()))
+    {
+        BotCharacter->TryThrowProjectileAtActor(TargetActor);
+    }
 }
 
 void ABotAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulus Stimulus)
@@ -141,6 +155,43 @@ bool ABotAIController::IsPlayerTarget(const AActor* Actor) const
 {
     const APawn* Pawn = Cast<APawn>(Actor);
     return Pawn && Pawn->IsPlayerControlled();
+}
+
+bool ABotAIController::ShouldUseRandomFlight(const APawn* ControlledPawn) const
+{
+    if (!bEnableRandomFlight || !ControlledPawn)
+    {
+        return false;
+    }
+
+    const ABotCharacter* BotCharacter = Cast<ABotCharacter>(ControlledPawn);
+    return !BotCharacter || BotCharacter->IsFlyingBot();
+}
+
+bool ABotAIController::ShouldUseRandomWalking(const APawn* ControlledPawn) const
+{
+    if (!bEnableRandomWalking || !ControlledPawn)
+    {
+        return false;
+    }
+
+    const ABotCharacter* BotCharacter = Cast<ABotCharacter>(ControlledPawn);
+    return BotCharacter && BotCharacter->IsWalkingBot();
+}
+
+bool ABotAIController::IsBlackboardKeyBlockingRandomMovement(FName KeyName) const
+{
+    if (KeyName.IsNone())
+    {
+        return false;
+    }
+
+    if (const UBlackboardComponent* BlackboardComponent = GetBlackboardComponent())
+    {
+        return BlackboardComponent->GetValueAsBool(KeyName);
+    }
+
+    return false;
 }
 
 void ABotAIController::StartBehaviorTreeForPawn(APawn* InPawn)
@@ -193,26 +244,15 @@ void ABotAIController::UpdateBlackboardTarget(AActor* TargetActor, bool bHasLine
 
 void ABotAIController::UpdateRandomFlight(float DeltaSeconds)
 {
-    if (!bEnableRandomFlight)
-    {
-        return;
-    }
-
     APawn* ControlledPawn = GetPawn();
-    if (!ControlledPawn)
+    if (!ShouldUseRandomFlight(ControlledPawn))
     {
         return;
     }
 
-    if (!RandomFlightBlockedByKey.IsNone())
+    if (IsBlackboardKeyBlockingRandomMovement(RandomFlightBlockedByKey))
     {
-        if (const UBlackboardComponent* BlackboardComponent = GetBlackboardComponent())
-        {
-            if (BlackboardComponent->GetValueAsBool(RandomFlightBlockedByKey))
-            {
-                return;
-            }
-        }
+        return;
     }
 
     if (!bHasFlightOrigin)
@@ -239,7 +279,61 @@ void ABotAIController::UpdateRandomFlight(float DeltaSeconds)
         return;
     }
 
-    ControlledPawn->AddMovementInput(ToDestination.GetSafeNormal(), 1.f);
+    ControlledPawn->AddMovementInput(ToDestination.GetSafeNormal(), 1.f, true);
+}
+
+void ABotAIController::UpdateRandomWalking(float DeltaSeconds)
+{
+    APawn* ControlledPawn = GetPawn();
+    if (!ShouldUseRandomWalking(ControlledPawn))
+    {
+        return;
+    }
+
+    if (IsBlackboardKeyBlockingRandomMovement(RandomWalkingBlockedByKey))
+    {
+        return;
+    }
+
+    if (!bHasWalkOrigin)
+    {
+        WalkOrigin = ControlledPawn->GetActorLocation();
+        bHasWalkOrigin = true;
+    }
+
+    if (!bHasWalkDestination)
+    {
+        PickRandomWalkDestination();
+        if (!bHasWalkDestination)
+        {
+            return;
+        }
+    }
+
+    FVector ToDestination = CurrentWalkDestination - ControlledPawn->GetActorLocation();
+    ToDestination.Z = 0.f;
+
+    if (ToDestination.SizeSquared() <= FMath::Square(WalkAcceptanceRadius))
+    {
+        WalkDestinationHoldTimeRemaining -= DeltaSeconds;
+        if (WalkDestinationHoldTimeRemaining <= 0.f)
+        {
+            PickRandomWalkDestination();
+        }
+        return;
+    }
+
+    const EPathFollowingRequestResult::Type MoveResult = MoveToLocation(
+        CurrentWalkDestination,
+        WalkAcceptanceRadius,
+        false,
+        true,
+        true);
+    if (MoveResult == EPathFollowingRequestResult::Failed)
+    {
+        bHasWalkDestination = false;
+        StopMovement();
+    }
 }
 
 void ABotAIController::PickRandomFlightDestination()
@@ -261,6 +355,41 @@ void ABotAIController::PickRandomFlightDestination()
         DestinationHoldMinSeconds,
         FMath::Max(DestinationHoldMinSeconds, DestinationHoldMaxSeconds));
     bHasFlightDestination = true;
+}
+
+void ABotAIController::PickRandomWalkDestination()
+{
+    if (!bHasWalkOrigin)
+    {
+        return;
+    }
+
+    bHasWalkDestination = false;
+
+    if (UWorld* World = GetWorld())
+    {
+        if (UNavigationSystemV1* NavSystem = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World))
+        {
+            FNavLocation ProjectedOrigin;
+            if (!NavSystem->ProjectPointToNavigation(WalkOrigin, ProjectedOrigin, WalkingNavProjectionExtent))
+            {
+                return;
+            }
+
+            WalkOrigin = ProjectedOrigin.Location;
+
+            FNavLocation NavLocation;
+            if (NavSystem->GetRandomReachablePointInRadius(WalkOrigin, WalkRadius, NavLocation))
+            {
+                CurrentWalkDestination = NavLocation.Location;
+                WalkDestinationHoldTimeRemaining = FMath::FRandRange(
+                    WalkDestinationHoldMinSeconds,
+                    FMath::Max(WalkDestinationHoldMinSeconds, WalkDestinationHoldMaxSeconds));
+                bHasWalkDestination = true;
+                return;
+            }
+        }
+    }
 }
 
 void ABotAIController::ClearChaseTarget()

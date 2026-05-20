@@ -13,5 +13,8 @@ struct FDetectionResult {
     UPROPERTY()
     FString Label;               // "person: 0.92"
 
+    UPROPERTY()
+    float Confidence = 0.f;
+
     int32 ClassId = -1;
 };

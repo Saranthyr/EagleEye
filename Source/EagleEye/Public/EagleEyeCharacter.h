@@ -15,6 +15,8 @@ class ABotCharacter;
 struct FInputActionValue;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogTemplateCharacter, Log, All);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FPlayerHealthChangedSignature, float, CurrentHealth, float, MaxHealth);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FPlayerDiedSignature);
 
 UCLASS(config=Game)
 class AEagleEyeCharacter : public ACharacter
@@ -45,18 +47,44 @@ class AEagleEyeCharacter : public ACharacter
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input, meta = (AllowPrivateAccess = "true"))
 	UInputAction* LookAction;
 
-	/** Toggle between player camera and crow camera without possessing the crow. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input, meta = (AllowPrivateAccess = "true"))
-	UInputAction* ToggleCrowViewAction;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input, meta = (AllowPrivateAccess = "true"))
-	UInputAction* NextCrowViewAction;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input, meta = (AllowPrivateAccess = "true"))
-	UInputAction* PreviousCrowViewAction;
-
 public:
 	AEagleEyeCharacter();
+
+	virtual float TakeDamage(
+		float DamageAmount,
+		struct FDamageEvent const& DamageEvent,
+		class AController* EventInstigator,
+		AActor* DamageCauser) override;
+
+	UFUNCTION(BlueprintCallable, Exec, Category="Detection|Recording")
+	void StartNearestBotViewportRecording(float FPS = 8.0f, int32 Width = 416, int32 Height = 416);
+
+	UFUNCTION(BlueprintCallable, Exec, Category="Detection|Recording")
+	void StopBotViewportRecordings();
+
+	UFUNCTION(BlueprintCallable, Category="Gameplay|Health")
+	float ApplyHealthDamage(float DamageAmount, AController* EventInstigator = nullptr, AActor* DamageCauser = nullptr);
+
+	UFUNCTION(BlueprintCallable, Category="Gameplay|Health")
+	float Heal(float HealAmount);
+
+	UFUNCTION(BlueprintCallable, Category="Gameplay|Health")
+	void ResetHealth();
+
+	UFUNCTION(BlueprintPure, Category="Gameplay|Health")
+	float GetCurrentHealth() const { return CurrentHealth; }
+
+	UFUNCTION(BlueprintPure, Category="Gameplay|Health")
+	float GetMaxHealth() const { return MaxHealth; }
+
+	UFUNCTION(BlueprintPure, Category="Gameplay|Health")
+	bool IsDead() const { return bIsDead; }
+
+	UPROPERTY(BlueprintAssignable, Category="Gameplay|Health")
+	FPlayerHealthChangedSignature OnHealthChanged;
+
+	UPROPERTY(BlueprintAssignable, Category="Gameplay|Health")
+	FPlayerDiedSignature OnPlayerDied;
 	
 
 protected:
@@ -67,26 +95,21 @@ protected:
 	/** Called for looking input */
 	void Look(const FInputActionValue& Value);
 
-	UFUNCTION(BlueprintCallable, Exec, Category = "Camera")
-	void ToggleCrowPOV();
+	ABotCharacter* FindNearestBotForRecording() const;
 
-	UFUNCTION(BlueprintCallable, Exec, Category = "Camera")
-	void NextCrowPOV();
+	UFUNCTION(BlueprintImplementableEvent, Category="Gameplay|Health")
+	void K2_OnDeath(AController* EventInstigator, AActor* DamageCauser);
 
-	UFUNCTION(BlueprintCallable, Exec, Category = "Camera")
-	void PreviousCrowPOV();
+	void HandleDeath(AController* EventInstigator, AActor* DamageCauser);
 
-	UFUNCTION(BlueprintCallable, Category = "Camera")
-	void SetCrowPOVEnabled(bool bEnabled);
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Gameplay|Health", meta=(ClampMin="1.0"))
+	float MaxHealth = 100.f;
 
-	AActor* FindCrowViewTarget() const;
-	void GatherCrowViewTargets(TArray<ABotCharacter*>& OutCrows) const;
-	void SetCrowPOVTarget(AActor* CrowViewTarget);
-	void StepCrowPOV(int32 Direction);
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Gameplay|Health")
+	float CurrentHealth = 100.f;
 
-	bool bViewingCrowPOV = false;
-	TWeakObjectPtr<AActor> CurrentCrowViewTarget;
-			
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Gameplay|Health")
+	bool bIsDead = false;
 
 protected:
 	// APawn interface

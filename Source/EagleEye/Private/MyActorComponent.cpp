@@ -5,6 +5,7 @@
 #include "Engine/GameViewportClient.h"
 #include "AI/CrowDetectionShareSubsystem.h"
 #include "AI/CrowVisionSubsystem.h"
+#include "EagleEyeDetectionSettings.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
@@ -19,11 +20,21 @@
 #include "RenderingThread.h"
 #include "ScreenCaptureComponent.h"
 #include <algorithm>
+#include <array>
+#if WITH_TENSORRT
 #include <NvInfer.h>
 #include <NvInferVersion.h>
+#endif
+#if WITH_ONNXRUNTIME_DML
+#include <onnxruntime/core/providers/dml/dml_provider_factory.h>
+#endif
+#if WITH_ONNXRUNTIME_MIGRAPHX
+#include <onnxruntime/core/providers/migraphx/migraphx_provider_factory.h>
+#endif
 
 namespace
 {
+#if WITH_TENSORRT
     class FTrtLogger : public nvinfer1::ILogger
     {
     public:
@@ -87,6 +98,7 @@ namespace
         Out += TEXT("]");
         return Out;
     }
+#endif
 
     float CalcIoU(const cv::Rect& A, const cv::Rect& B)
     {
@@ -171,6 +183,145 @@ namespace
         Out += TEXT("]");
         return Out;
     }
+
+    void AddUniqueNormalizedDirectory(TArray<FString>& Directories, const FString& Directory)
+    {
+        if (Directory.IsEmpty())
+        {
+            return;
+        }
+
+        FString Normalized = FPaths::ConvertRelativePathToFull(Directory);
+        FPaths::NormalizeDirectoryName(Normalized);
+        Directories.AddUnique(Normalized);
+    }
+
+    TArray<FString> GetRuntimeModelSearchDirectories()
+    {
+        TArray<FString> Directories;
+
+        AddUniqueNormalizedDirectory(Directories, FPaths::Combine(FPlatformProcess::BaseDir(), TEXT("Models")));
+        AddUniqueNormalizedDirectory(Directories, FPaths::Combine(FPaths::LaunchDir(), TEXT("Models")));
+        AddUniqueNormalizedDirectory(Directories, FPaths::Combine(FPaths::ProjectDir(), TEXT("Models")));
+        AddUniqueNormalizedDirectory(Directories, FPaths::Combine(FPaths::ProjectContentDir(), TEXT("Models")));
+
+        // Editor/development fallback. Packaged builds receive these files through RuntimeDependencies.
+        AddUniqueNormalizedDirectory(Directories, FPaths::Combine(FPaths::ProjectDir(), TEXT("Source"), TEXT("EagleEye")));
+
+        return Directories;
+    }
+
+    bool RuntimeFileExists(const FString& Path)
+    {
+        return !Path.IsEmpty() && FPlatformFileManager::Get().GetPlatformFile().FileExists(*Path);
+    }
+
+    FString NormalizeRuntimeFilePath(const FString& Path)
+    {
+        FString Normalized = FPaths::ConvertRelativePathToFull(Path);
+        FPaths::NormalizeFilename(Normalized);
+        return Normalized;
+    }
+
+    FString ResolveRuntimeFilePath(const FString& RequestedPath)
+    {
+        if (RequestedPath.IsEmpty())
+        {
+            return FString();
+        }
+
+        if (!FPaths::IsRelative(RequestedPath))
+        {
+            return NormalizeRuntimeFilePath(RequestedPath);
+        }
+
+        const FString DirectPath = NormalizeRuntimeFilePath(RequestedPath);
+        if (RuntimeFileExists(DirectPath))
+        {
+            return DirectPath;
+        }
+
+        const FString CleanRequestedPath = RequestedPath.Replace(TEXT("\\"), TEXT("/"));
+        for (const FString& Directory : GetRuntimeModelSearchDirectories())
+        {
+            const FString CandidatePath = NormalizeRuntimeFilePath(FPaths::Combine(Directory, CleanRequestedPath));
+            if (RuntimeFileExists(CandidatePath))
+            {
+                return CandidatePath;
+            }
+        }
+
+        const FString FileName = FPaths::GetCleanFilename(CleanRequestedPath);
+        if (!FileName.Equals(CleanRequestedPath, ESearchCase::IgnoreCase))
+        {
+            for (const FString& Directory : GetRuntimeModelSearchDirectories())
+            {
+                const FString CandidatePath = NormalizeRuntimeFilePath(FPaths::Combine(Directory, FileName));
+                if (RuntimeFileExists(CandidatePath))
+                {
+                    return CandidatePath;
+                }
+            }
+        }
+
+        return DirectPath;
+    }
+
+    std::string ToUtf8Path(const FString& Path)
+    {
+        return std::string(TCHAR_TO_UTF8(*Path));
+    }
+
+    const TCHAR* BackendToString(EDetectionInferenceBackend Backend)
+    {
+        switch (Backend)
+        {
+        case EDetectionInferenceBackend::Auto:
+            return TEXT("Auto");
+        case EDetectionInferenceBackend::TensorRT:
+            return TEXT("TensorRT");
+        case EDetectionInferenceBackend::ONNXRuntime:
+            return TEXT("ONNX Runtime");
+        case EDetectionInferenceBackend::OpenCVDNN:
+            return TEXT("OpenCV DNN");
+        default:
+            return TEXT("Unknown");
+        }
+    }
+
+    const TCHAR* OnnxProviderToString(EOnnxRuntimeExecutionProvider Provider)
+    {
+        switch (Provider)
+        {
+        case EOnnxRuntimeExecutionProvider::Auto:
+            return TEXT("Auto");
+        case EOnnxRuntimeExecutionProvider::DirectML:
+            return TEXT("DirectML");
+        case EOnnxRuntimeExecutionProvider::MIGraphX:
+            return TEXT("MIGraphX");
+        case EOnnxRuntimeExecutionProvider::CPU:
+            return TEXT("CPU");
+        default:
+            return TEXT("Unknown");
+        }
+    }
+
+    bool IsLikelyNvidiaAdapter(const FString& AdapterName)
+    {
+        return AdapterName.Contains(TEXT("NVIDIA"), ESearchCase::IgnoreCase) ||
+            AdapterName.Contains(TEXT("GeForce"), ESearchCase::IgnoreCase) ||
+            AdapterName.Contains(TEXT("RTX"), ESearchCase::IgnoreCase);
+    }
+
+    bool IsLikelyAmdAdapter(const FString& AdapterName)
+    {
+        return AdapterName.Contains(TEXT("AMD"), ESearchCase::IgnoreCase) ||
+            AdapterName.Contains(TEXT("Radeon"), ESearchCase::IgnoreCase);
+    }
+
+    constexpr double FfmpegStopTimeoutSeconds = 3.0;
+    constexpr double FfmpegFastShutdownTimeoutSeconds = 1.0;
+    constexpr double FfmpegTerminateTimeoutSeconds = 0.5;
 }
 
 UMyActorComponent::UMyActorComponent()
@@ -184,6 +335,53 @@ void UMyActorComponent::SetCaptureResolution(int32 InWidth, int32 InHeight)
 {
     CaptureWidth = FMath::Max(160, InWidth);
     CaptureHeight = FMath::Max(160, InHeight);
+
+    if (OwnerCaptureRenderTarget &&
+        (OwnerCaptureRenderTarget->SizeX != CaptureWidth || OwnerCaptureRenderTarget->SizeY != CaptureHeight))
+    {
+        PendingOwnerCameraReadback.Reset();
+        PendingOwnerCameraReadbackWidth = 0;
+        PendingOwnerCameraReadbackHeight = 0;
+        PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
+
+        OwnerCaptureRenderTarget->ResizeTarget(CaptureWidth, CaptureHeight);
+        OwnerCaptureRenderTarget->UpdateResourceImmediate(true);
+    }
+}
+
+void UMyActorComponent::SetCaptureFPS(float InCaptureFPS)
+{
+    CaptureFPS = FMath::Clamp(InCaptureFPS, 1.0f, 120.0f);
+
+    UWorld* World = GetWorld();
+    if (!World || !TimerHandle_Capture.IsValid())
+    {
+        return;
+    }
+
+    const float CaptureInterval = 1.0f / CaptureFPS;
+    World->GetTimerManager().SetTimer(
+        TimerHandle_Capture,
+        this,
+        &UMyActorComponent::TickCapture,
+        CaptureInterval,
+        true,
+        CaptureInterval);
+}
+
+void UMyActorComponent::SetRecordOwnerCameraCaptureVideo(bool bEnabled)
+{
+    if (bRecordOwnerCameraCaptureVideo == bEnabled)
+    {
+        return;
+    }
+
+    bRecordOwnerCameraCaptureVideo = bEnabled;
+
+    if (!bRecordOwnerCameraCaptureVideo)
+    {
+        CloseOwnerCameraVideoWriter();
+    }
 }
 
 void UMyActorComponent::InitFrameTimingLog()
@@ -276,9 +474,7 @@ void UMyActorComponent::AppendFrameTimingLogLine(
         return;
     }
 
-    const FString BackendLabel = (InferenceBackend == EDetectionInferenceBackend::TensorRT)
-        ? TEXT("TensorRT")
-        : TEXT("OpenCVDNN");
+    const FString BackendLabel = BackendToString(EffectiveInferenceBackend);
     const FString Line = FString::Printf(
         TEXT("%d,%s,%d,%d,%.4f,%.4f,%d\n"),
         Sequence,
@@ -319,51 +515,60 @@ void UMyActorComponent::get_class_names() {
 
 void UMyActorComponent::BeginPlay() {
     Super::BeginPlay();
-    // LoadConfig();
 
-    // FString BackendFromIni;
-    // if (GConfig && GConfig->GetString(TEXT("/Script/EagleEye.MyActorComponent"), TEXT("InferenceBackend"), BackendFromIni, GGameIni))
-    // {
-    //     if (BackendFromIni.Equals(TEXT("OpenCVDNN"), ESearchCase::IgnoreCase))
-    //     {
-    //         InferenceBackend = EDetectionInferenceBackend::OpenCVDNN;
-    //     }
-    //     else if (BackendFromIni.Equals(TEXT("TensorRT"), ESearchCase::IgnoreCase))
-    //     {
-    //         InferenceBackend = EDetectionInferenceBackend::TensorRT;
-    //     }
-    // }
-
-    UE_LOG(LogTemp, Log, TEXT("Inference backend selected: %s"),
-        (InferenceBackend == EDetectionInferenceBackend::TensorRT) ? TEXT("TensorRT") : TEXT("OpenCVDNN"));
-
-    #if PLATFORM_WINDOWS
-        UMyActorComponent::NamesPath = "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Source\\EagleEye\\coco.names";
-        UMyActorComponent::WeightsPath = "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Source\\EagleEye\\yolov7.weights";
-        UMyActorComponent::CfgPath = "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Source\\EagleEye\\yolov7.cfg";
-    #elif PLATFORM_LINUX
-        UMyActorComponent::NamesPath = "/home/saranthyr/Documents/Unreal Projects/EagleEye/Source/EagleEye/coco.names";
-        UMyActorComponent::WeightsPath = "/home/saranthyr/Documents/Unreal Projects/EagleEye/Source/EagleEye/yolo11x.plan";
-    #endif
-
-    if (!ModelPathOverride.IsEmpty())
+    const bool bNeedsModelInitialization = !bUseSharedVisionModel || bSharedVisionModelHost;
+    if (bNeedsModelInitialization)
     {
-        WeightsPath = std::string(TCHAR_TO_UTF8(*ModelPathOverride));
+        ApplyProjectDetectionSettings();
+
+        UE_LOG(LogTemp, Log, TEXT("Inference backend requested: %s (ONNX provider: %s, RHI adapter: %s, host=%s)"),
+            BackendToString(InferenceBackend),
+            OnnxProviderToString(OnnxRuntimeExecutionProvider),
+            *GRHIAdapterName,
+            bSharedVisionModelHost ? TEXT("true") : TEXT("false"));
+
+        FString ResolvedNamesPath = ResolveRuntimeFilePath(TEXT("coco.names"));
+        FString ResolvedModelPath = ResolveRuntimeFilePath(TEXT("yolo11x.plan"));
+        FString ResolvedCfgPath = ResolveRuntimeFilePath(TEXT("yolov7.cfg"));
+
+        if (!ModelPathOverride.IsEmpty())
+        {
+            ResolvedModelPath = ResolveRuntimeFilePath(ModelPathOverride);
+        }
+        if (!DarknetCfgPathOverride.IsEmpty())
+        {
+            ResolvedCfgPath = ResolveRuntimeFilePath(DarknetCfgPathOverride);
+        }
+        if (!NamesPathOverride.IsEmpty())
+        {
+            ResolvedNamesPath = ResolveRuntimeFilePath(NamesPathOverride);
+        }
+
+        NamesPath = ToUtf8Path(ResolvedNamesPath);
+        WeightsPath = ToUtf8Path(ResolvedModelPath);
+        CfgPath = ToUtf8Path(ResolvedCfgPath);
+
+        UE_LOG(LogTemp, Log, TEXT("Detection model path: %s"), *ResolvedModelPath);
+        UE_LOG(LogTemp, Log, TEXT("Detection names path: %s"), *ResolvedNamesPath);
+
+        get_class_names();
+        InitFrameTimingLog();
+        if (!bUseSharedVisionModel && !bSharedVisionModelHost)
+        {
+            StartWorker();
+        }
     }
-    if (!DarknetCfgPathOverride.IsEmpty())
-    {
-        CfgPath = std::string(TCHAR_TO_UTF8(*DarknetCfgPathOverride));
-    }
-    if (!NamesPathOverride.IsEmpty())
-    {
-        NamesPath = std::string(TCHAR_TO_UTF8(*NamesPathOverride));
-    }
 
-    get_class_names();
-    InitFrameTimingLog();
-    if (!bUseSharedVisionModel)
+    if (bSharedVisionModelHost)
     {
-        StartWorker();
+        if (UWorld* World = GetWorld())
+        {
+            if (UCrowVisionSubsystem* VisionSubsystem = World->GetSubsystem<UCrowVisionSubsystem>())
+            {
+                VisionSubsystem->RegisterModelHost(this);
+            }
+        }
+        return;
     }
 
     if (bUseOwnerCameraCapture)
@@ -373,13 +578,6 @@ void UMyActorComponent::BeginPlay() {
             if (UCrowDetectionShareSubsystem* ShareSubsystem = World->GetSubsystem<UCrowDetectionShareSubsystem>())
             {
                 ShareSubsystem->RegisterDetector(GetOwner());
-            }
-            if (bUseSharedVisionModel)
-            {
-                if (UCrowVisionSubsystem* VisionSubsystem = World->GetSubsystem<UCrowVisionSubsystem>())
-                {
-                    VisionSubsystem->RegisterModelHost(this);
-                }
             }
         }
     }
@@ -400,6 +598,27 @@ void UMyActorComponent::BeginPlay() {
 }
 
 void UMyActorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
+    if (UWorld* World = GetWorld())
+    {
+        World->GetTimerManager().ClearTimer(TimerHandle_Capture);
+    }
+
+    CloseOwnerCameraVideoWriter(false);
+
+    if (bSharedVisionModelHost)
+    {
+        if (UWorld* World = GetWorld())
+        {
+            if (UCrowVisionSubsystem* VisionSubsystem = World->GetSubsystem<UCrowVisionSubsystem>())
+            {
+                VisionSubsystem->UnregisterModelHost(this);
+            }
+        }
+        StopWorker();
+        Super::EndPlay(EndPlayReason);
+        return;
+    }
+
     if (bUseOwnerCameraCapture)
     {
         if (UWorld* World = GetWorld())
@@ -408,17 +627,10 @@ void UMyActorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
             {
                 ShareSubsystem->UnregisterDetector(GetOwner());
             }
-            if (bUseSharedVisionModel)
-            {
-                if (UCrowVisionSubsystem* VisionSubsystem = World->GetSubsystem<UCrowVisionSubsystem>())
-                {
-                    VisionSubsystem->UnregisterModelHost(this);
-                }
-            }
         }
     }
 
-    if (!bUseSharedVisionModel)
+    if (!bUseSharedVisionModel && !bSharedVisionModelHost)
     {
         StopWorker();
     }
@@ -433,7 +645,7 @@ void UMyActorComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAct
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-    if (bUseSharedVisionModel)
+    if (bUseSharedVisionModel || bSharedVisionModelHost)
     {
         return;
     }
@@ -443,7 +655,8 @@ void UMyActorComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAct
 }
 
 void UMyActorComponent::TickCapture() {
-    if (bUseOwnerCameraCapture && ShouldSkipOwnerCameraCapture())
+    const bool bSkipOwnerCameraDetection = bUseOwnerCameraCapture && ShouldSkipOwnerCameraCapture();
+    if (bSkipOwnerCameraDetection && !ShouldRecordOwnerCameraVideo())
     {
         ClearPublishedResults();
         return;
@@ -458,7 +671,7 @@ void UMyActorComponent::TickCapture() {
         }
     }
 
-    CaptureAndEnqueue(50);
+    CaptureAndEnqueue(!bSkipOwnerCameraDetection);
 }
 
 bool UMyActorComponent::CaptureViewportToPixels(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight)
@@ -513,12 +726,24 @@ bool UMyActorComponent::EnsureOwnerCameraCapture()
         return false;
     }
 
+    const int32 DesiredCaptureWidth = FMath::Max(160, CaptureWidth);
+    const int32 DesiredCaptureHeight = FMath::Max(160, CaptureHeight);
+
     if (!OwnerCaptureRenderTarget)
     {
         OwnerCaptureRenderTarget = NewObject<UTextureRenderTarget2D>(this, TEXT("OwnerCameraDetectionRenderTarget"));
         OwnerCaptureRenderTarget->RenderTargetFormat = RTF_RGBA8;
         OwnerCaptureRenderTarget->ClearColor = FLinearColor::Black;
-        OwnerCaptureRenderTarget->InitAutoFormat(FMath::Max(160, CaptureWidth), FMath::Max(160, CaptureHeight));
+        OwnerCaptureRenderTarget->InitAutoFormat(DesiredCaptureWidth, DesiredCaptureHeight);
+        OwnerCaptureRenderTarget->UpdateResourceImmediate(true);
+    }
+    else if (OwnerCaptureRenderTarget->SizeX != DesiredCaptureWidth || OwnerCaptureRenderTarget->SizeY != DesiredCaptureHeight)
+    {
+        PendingOwnerCameraReadback.Reset();
+        PendingOwnerCameraReadbackWidth = 0;
+        PendingOwnerCameraReadbackHeight = 0;
+        PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
+        OwnerCaptureRenderTarget->ResizeTarget(DesiredCaptureWidth, DesiredCaptureHeight);
         OwnerCaptureRenderTarget->UpdateResourceImmediate(true);
     }
 
@@ -537,7 +762,392 @@ bool UMyActorComponent::EnsureOwnerCameraCapture()
     OwnerSceneCapture->FOVAngle = OwnerCamera->FieldOfView;
     OwnerSceneCapture->SetWorldLocationAndRotation(OwnerCamera->GetComponentLocation(), OwnerCamera->GetComponentRotation());
     OwnerSceneCapture->TextureTarget = OwnerCaptureRenderTarget;
+    ConfigureOwnerCaptureVisibility(Owner);
     return true;
+}
+
+void UMyActorComponent::ConfigureOwnerCaptureVisibility(AActor* Owner)
+{
+    if (!OwnerSceneCapture || !Owner)
+    {
+        return;
+    }
+
+    if (bHideOwnerFromOwnerCameraCapture)
+    {
+        OwnerSceneCapture->HiddenActors.AddUnique(Owner);
+    }
+    else
+    {
+        OwnerSceneCapture->HiddenActors.Remove(Owner);
+    }
+}
+
+void UMyActorComponent::ApplyProjectDetectionSettings()
+{
+    const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
+    if (!Settings)
+    {
+        return;
+    }
+
+    InferenceBackend = Settings->InferenceBackend;
+    OnnxRuntimeExecutionProvider = Settings->OnnxRuntimeExecutionProvider;
+    ModelPathOverride = Settings->ModelPathOverride;
+    DarknetCfgPathOverride = Settings->DarknetCfgPathOverride;
+    NamesPathOverride = Settings->NamesPathOverride;
+    bOpenCVDNNPreferCUDA = Settings->bOpenCVDNNPreferCUDA;
+    bOpenCVDNNUseFP16 = Settings->bOpenCVDNNUseFP16;
+    OnnxInputSize = FMath::Clamp(Settings->OnnxInputSize, 160, 1280);
+    bUseLetterbox = Settings->bUseLetterbox;
+    LetterboxValue = FMath::Clamp(Settings->LetterboxValue, 0, 255);
+    ConfidenceThreshold = FMath::Clamp(Settings->ConfidenceThreshold, 0.01f, 0.99f);
+    NmsThreshold = FMath::Clamp(Settings->NmsThreshold, 0.01f, 0.99f);
+    bRecordFrameTimes = Settings->bRecordFrameTimes;
+    FrameTimeCsvPath = Settings->FrameTimeCsvPath;
+    bResetFrameTimeLogOnBeginPlay = Settings->bResetFrameTimeLogOnBeginPlay;
+    FrameTimeFlushInterval = FMath::Clamp(Settings->FrameTimeFlushInterval, 1, 600);
+}
+
+FString UMyActorComponent::ResolveOwnerCameraVideoPath() const
+{
+    if (!OwnerCameraVideoOutputPath.IsEmpty())
+    {
+        FString NormalizedPath = NormalizeRuntimeFilePath(OwnerCameraVideoOutputPath);
+        if (FPaths::GetExtension(NormalizedPath).IsEmpty())
+        {
+            NormalizedPath += TEXT(".ts");
+        }
+        return NormalizedPath;
+    }
+
+    FString OwnerName = GetNameSafe(GetOwner());
+    const TCHAR* InvalidChars[] = { TEXT(" "), TEXT(":"), TEXT("/"), TEXT("\\"), TEXT("."), TEXT("'"), TEXT("\"") };
+    for (const TCHAR* InvalidChar : InvalidChars)
+    {
+        OwnerName.ReplaceInline(InvalidChar, TEXT("_"));
+    }
+
+    const FString Timestamp = FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S"));
+    return FPaths::Combine(
+        FPaths::VideoCaptureDir(),
+        FString::Printf(TEXT("BotViewport_%s_%s.ts"), *OwnerName, *Timestamp));
+}
+
+bool UMyActorComponent::EnsureOwnerCameraVideoWriter(int32 Width, int32 Height)
+{
+    if (Width <= 0 || Height <= 0 || bOwnerCameraVideoWriterFailed)
+    {
+        return false;
+    }
+
+    if (OwnerCameraVideoProcess.IsValid() && OwnerCameraVideoPipeWrite &&
+        OwnerCameraVideoWidth == Width && OwnerCameraVideoHeight == Height)
+    {
+        return true;
+    }
+
+    FinalizeOwnerCameraVideoWriter(!bOwnerCameraVideoFastShutdown.load());
+
+    ActiveOwnerCameraVideoPath = ResolveOwnerCameraVideoPath();
+    if (ActiveOwnerCameraVideoPath.IsEmpty())
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to resolve bot viewport video path."));
+        bOwnerCameraVideoWriterFailed = true;
+        return false;
+    }
+
+    const FString OutputDirectory = FPaths::GetPath(ActiveOwnerCameraVideoPath);
+    if (!OutputDirectory.IsEmpty() && !IFileManager::Get().MakeDirectory(*OutputDirectory, true))
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to create bot viewport video directory: %s"), *OutputDirectory);
+        ActiveOwnerCameraVideoPath.Reset();
+        bOwnerCameraVideoWriterFailed = true;
+        return false;
+    }
+
+    void* ChildStdInReadPipe = nullptr;
+    void* LocalStdInWritePipe = nullptr;
+    if (!FPlatformProcess::CreatePipe(ChildStdInReadPipe, LocalStdInWritePipe, true))
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to create FFmpeg stdin pipe for bot viewport recording."));
+        ActiveOwnerCameraVideoPath.Reset();
+        bOwnerCameraVideoWriterFailed = true;
+        return false;
+    }
+
+    OwnerCameraVideoWidth = Width;
+    OwnerCameraVideoHeight = Height;
+    OwnerCameraVideoFPS = FMath::Clamp(FMath::RoundToInt(CaptureFPS), 1, 120);
+    OwnerCameraVideoFrameCount = 0;
+
+    const FString FfmpegArguments = FString::Printf(
+        TEXT("-y -nostats -loglevel error -f rawvideo -pix_fmt bgra -s %dx%d -r %d -i - -an -c:v libx264 -preset ultrafast -tune zerolatency -g %d -keyint_min %d -sc_threshold 0 -pix_fmt yuv420p -f mpegts \"%s\""),
+        Width,
+        Height,
+        OwnerCameraVideoFPS,
+        OwnerCameraVideoFPS,
+        OwnerCameraVideoFPS,
+        *ActiveOwnerCameraVideoPath);
+
+    uint32 ProcessId = 0;
+    OwnerCameraVideoProcess = FPlatformProcess::CreateProc(
+        *OwnerCameraVideoEncoderPath,
+        *FfmpegArguments,
+        false,
+        true,
+        true,
+        &ProcessId,
+        0,
+        nullptr,
+        nullptr,
+        ChildStdInReadPipe,
+        nullptr);
+
+    FPlatformProcess::ClosePipe(ChildStdInReadPipe, nullptr);
+    ChildStdInReadPipe = nullptr;
+
+    if (!OwnerCameraVideoProcess.IsValid())
+    {
+        FPlatformProcess::ClosePipe(nullptr, LocalStdInWritePipe);
+        UE_LOG(LogTemp, Error,
+            TEXT("Failed to start FFmpeg for bot viewport recording. Install ffmpeg or set OwnerCameraVideoEncoderPath. Command: %s %s"),
+            *OwnerCameraVideoEncoderPath,
+            *FfmpegArguments);
+        ActiveOwnerCameraVideoPath.Reset();
+        bOwnerCameraVideoWriterFailed = true;
+        return false;
+    }
+
+    OwnerCameraVideoPipeWrite = LocalStdInWritePipe;
+
+    UE_LOG(LogTemp, Log, TEXT("Recording bot viewport video through FFmpeg: %s (%dx%d @ %d fps)"),
+        *ActiveOwnerCameraVideoPath,
+        Width,
+        Height,
+        OwnerCameraVideoFPS);
+    return true;
+}
+
+void UMyActorComponent::RecordOwnerCameraVideoFrame(const TArray<FColor>& Pixels, int32 Width, int32 Height)
+{
+    if (!bRecordOwnerCameraCaptureVideo || !bUseOwnerCameraCapture || Pixels.Num() != Width * Height)
+    {
+        return;
+    }
+
+    if (PendingOwnerCameraVideoFrames.load() >= FMath::Max(1, MaxQueuedOwnerCameraVideoFrames))
+    {
+        ++DroppedOwnerCameraVideoFrames;
+        return;
+    }
+
+    StartOwnerCameraVideoWorker();
+
+    TSharedPtr<FOwnerCameraVideoFrame> Frame = MakeShared<FOwnerCameraVideoFrame>();
+    Frame->Pixels = Pixels;
+    Frame->Width = Width;
+    Frame->Height = Height;
+    PendingOwnerCameraVideoFrames.fetch_add(1);
+    OwnerCameraVideoQueue.Enqueue(Frame);
+}
+
+void UMyActorComponent::StartOwnerCameraVideoWorker()
+{
+    if (bOwnerCameraVideoWorkerRunning.load())
+    {
+        return;
+    }
+
+    bOwnerCameraVideoWorkerRunning.store(true);
+    OwnerCameraVideoFuture = Async(EAsyncExecution::Thread, [this]()
+    {
+        OwnerCameraVideoWorkerLoop();
+    });
+}
+
+void UMyActorComponent::OwnerCameraVideoWorkerLoop()
+{
+    while (bOwnerCameraVideoWorkerRunning.load() || PendingOwnerCameraVideoFrames.load() > 0)
+    {
+        TSharedPtr<FOwnerCameraVideoFrame> Frame;
+        if (!OwnerCameraVideoQueue.Dequeue(Frame))
+        {
+            FPlatformProcess::Sleep(0.002f);
+            continue;
+        }
+
+        PendingOwnerCameraVideoFrames.fetch_sub(1);
+        if (Frame.IsValid())
+        {
+            if (!bOwnerCameraVideoWorkerRunning.load())
+            {
+                ++DroppedOwnerCameraVideoFrames;
+                continue;
+            }
+
+            WriteOwnerCameraVideoFrameSync(Frame->Pixels, Frame->Width, Frame->Height);
+        }
+    }
+
+    FinalizeOwnerCameraVideoWriter(!bOwnerCameraVideoFastShutdown.load());
+}
+
+void UMyActorComponent::WriteOwnerCameraVideoFrameSync(const TArray<FColor>& Pixels, int32 Width, int32 Height)
+{
+    if (Pixels.Num() != Width * Height)
+    {
+        return;
+    }
+
+    if (!EnsureOwnerCameraVideoWriter(Width, Height))
+    {
+        return;
+    }
+
+    TArray<uint8> RawFrame;
+    RawFrame.SetNumUninitialized(Width * Height * 4);
+
+    uint8* Dest = RawFrame.GetData();
+    for (int32 Y = 0; Y < Height; ++Y)
+    {
+        const FColor* Source = Pixels.GetData() + (Y * Width);
+        for (int32 X = 0; X < Width; ++X)
+        {
+            FColor VideoColor = Source[X];
+            if (bApplyOwnerCameraVideoGammaCorrection)
+            {
+                const FLinearColor LinearColor(
+                    static_cast<float>(Source[X].R) / 255.0f,
+                    static_cast<float>(Source[X].G) / 255.0f,
+                    static_cast<float>(Source[X].B) / 255.0f,
+                    static_cast<float>(Source[X].A) / 255.0f);
+                VideoColor = LinearColor.ToFColorSRGB();
+            }
+
+            *Dest++ = VideoColor.B;
+            *Dest++ = VideoColor.G;
+            *Dest++ = VideoColor.R;
+            *Dest++ = VideoColor.A;
+        }
+    }
+
+    int32 BytesWrittenTotal = 0;
+    while (BytesWrittenTotal < RawFrame.Num())
+    {
+        int32 BytesWritten = 0;
+        const int32 BytesRemaining = RawFrame.Num() - BytesWrittenTotal;
+        if (!FPlatformProcess::WritePipe(
+            OwnerCameraVideoPipeWrite,
+            RawFrame.GetData() + BytesWrittenTotal,
+            BytesRemaining,
+            &BytesWritten) || BytesWritten <= 0)
+        {
+            UE_LOG(LogTemp, Error, TEXT("Failed to write bot viewport frame to FFmpeg stdin."));
+            bOwnerCameraVideoWriterFailed = true;
+            return;
+        }
+
+        BytesWrittenTotal += BytesWritten;
+    }
+
+    ++OwnerCameraVideoFrameCount;
+}
+
+void UMyActorComponent::CloseOwnerCameraVideoWriter(bool bWaitForEncoder)
+{
+    bOwnerCameraVideoFastShutdown.store(!bWaitForEncoder);
+    bOwnerCameraVideoWorkerRunning.store(false);
+
+    int32 DroppedOnClose = 0;
+    TSharedPtr<FOwnerCameraVideoFrame> DroppedFrame;
+    while (OwnerCameraVideoQueue.Dequeue(DroppedFrame))
+    {
+        ++DroppedOnClose;
+    }
+    if (DroppedOnClose > 0)
+    {
+        DroppedOwnerCameraVideoFrames += DroppedOnClose;
+    }
+    PendingOwnerCameraVideoFrames.store(0);
+
+    if (OwnerCameraVideoFuture.IsValid())
+    {
+        OwnerCameraVideoFuture.Wait();
+    }
+    else
+    {
+        FinalizeOwnerCameraVideoWriter(bWaitForEncoder);
+    }
+
+    if (DroppedOwnerCameraVideoFrames > 0)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Dropped %d bot viewport recording frames because the queue was full or recording stopped."),
+            DroppedOwnerCameraVideoFrames);
+        DroppedOwnerCameraVideoFrames = 0;
+    }
+}
+
+void UMyActorComponent::FinalizeOwnerCameraVideoWriter(bool bWaitForEncoder)
+{
+    if (OwnerCameraVideoPipeWrite)
+    {
+        FPlatformProcess::ClosePipe(nullptr, OwnerCameraVideoPipeWrite);
+        OwnerCameraVideoPipeWrite = nullptr;
+    }
+
+    if (OwnerCameraVideoProcess.IsValid())
+    {
+        const double ShutdownTimeoutSeconds = bWaitForEncoder
+            ? FfmpegStopTimeoutSeconds
+            : FfmpegFastShutdownTimeoutSeconds;
+        const double WaitStart = FPlatformTime::Seconds();
+        while (FPlatformProcess::IsProcRunning(OwnerCameraVideoProcess) &&
+            (FPlatformTime::Seconds() - WaitStart) < ShutdownTimeoutSeconds)
+        {
+            FPlatformProcess::Sleep(0.02f);
+        }
+
+        if (FPlatformProcess::IsProcRunning(OwnerCameraVideoProcess))
+        {
+            UE_LOG(LogTemp, Warning, TEXT("FFmpeg did not finish within %.1f seconds; terminating bot viewport recording process."),
+                ShutdownTimeoutSeconds);
+            FPlatformProcess::TerminateProc(OwnerCameraVideoProcess, false);
+
+            const double TerminateWaitStart = FPlatformTime::Seconds();
+            while (FPlatformProcess::IsProcRunning(OwnerCameraVideoProcess) &&
+                (FPlatformTime::Seconds() - TerminateWaitStart) < FfmpegTerminateTimeoutSeconds)
+            {
+                FPlatformProcess::Sleep(0.02f);
+            }
+        }
+
+        if (FPlatformProcess::IsProcRunning(OwnerCameraVideoProcess))
+        {
+            UE_LOG(LogTemp, Warning, TEXT("FFmpeg process is still running after terminate request; releasing handle without blocking PIE shutdown."));
+            OwnerCameraVideoProcess.Reset();
+        }
+        else
+        {
+            FPlatformProcess::CloseProc(OwnerCameraVideoProcess);
+            OwnerCameraVideoProcess.Reset();
+        }
+    }
+
+    if (!ActiveOwnerCameraVideoPath.IsEmpty() && OwnerCameraVideoFrameCount > 0)
+    {
+        UE_LOG(LogTemp, Log, TEXT("Finished bot viewport video: %s (%d frames)"),
+            *ActiveOwnerCameraVideoPath,
+            OwnerCameraVideoFrameCount);
+    }
+
+    ActiveOwnerCameraVideoPath.Reset();
+    OwnerCameraVideoWidth = 0;
+    OwnerCameraVideoHeight = 0;
+    OwnerCameraVideoFPS = 0;
+    OwnerCameraVideoFrameCount = 0;
+    bOwnerCameraVideoFastShutdown.store(false);
+    bOwnerCameraVideoWriterFailed = false;
 }
 
 bool UMyActorComponent::ShouldSkipOwnerCameraCapture() const
@@ -580,6 +1190,12 @@ bool UMyActorComponent::ShouldSkipOwnerCameraCapture() const
         > FMath::Square(MaxOwnerCameraCaptureDistance);
 }
 
+bool UMyActorComponent::ShouldRecordOwnerCameraVideo() const
+{
+    return bRecordOwnerCameraCaptureVideo && bUseOwnerCameraCapture &&
+        (!ShouldSkipOwnerCameraCapture() || bRecordOwnerCameraWhenDetectionSkipped);
+}
+
 void UMyActorComponent::ClearPublishedResults()
 {
     {
@@ -588,12 +1204,14 @@ void UMyActorComponent::ClearPublishedResults()
         ResultsSourceWidth = 0;
         ResultsSourceHeight = 0;
         ++ResultsSequence;
+        ResultsTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
     }
 
     LastFrameDetections.Reset();
     LastFrameSourceWidth = 0;
     LastFrameSourceHeight = 0;
     ++LastFrameSequence;
+    LastFrameTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
 }
 
 bool UMyActorComponent::CaptureSceneToPixels(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight)
@@ -768,7 +1386,7 @@ bool UMyActorComponent::EnqueueAsyncOwnerCameraReadback()
     return true;
 }
 
-void UMyActorComponent::CaptureAndEnqueue(int Threshold)
+void UMyActorComponent::CaptureAndEnqueue(bool bSubmitDetection)
 {
     const double CaptureAndEnqueueStartSeconds = FPlatformTime::Seconds();
     TArray<FColor> Pixels;
@@ -793,13 +1411,21 @@ void UMyActorComponent::CaptureAndEnqueue(int Threshold)
         return;
     }
 
+    RecordOwnerCameraVideoFrame(Pixels, SourceWidth, SourceHeight);
+
+    if (!bSubmitDetection)
+    {
+        ClearPublishedResults();
+        return;
+    }
+
     if (bUseSharedVisionModel)
     {
         if (UWorld* World = GetWorld())
         {
             if (UCrowVisionSubsystem* VisionSubsystem = World->GetSubsystem<UCrowVisionSubsystem>())
             {
-                VisionSubsystem->SubmitFrame(this, MoveTemp(Pixels), SourceWidth, SourceHeight, Threshold);
+                VisionSubsystem->SubmitFrame(this, MoveTemp(Pixels), SourceWidth, SourceHeight);
                 if (bLogFrameTimings)
                 {
                     const double TotalMs = (FPlatformTime::Seconds() - CaptureAndEnqueueStartSeconds) * 1000.0;
@@ -818,7 +1444,6 @@ void UMyActorComponent::CaptureAndEnqueue(int Threshold)
     Frame->Pixels = MoveTemp(Pixels);
     Frame->Width = SourceWidth;
     Frame->Height = SourceHeight;
-    Frame->Threshold = Threshold;
 
     {
         FScopeLock Lock(&FrameMutex);
@@ -871,7 +1496,7 @@ void UMyActorComponent::StartWorker()
                     }
                     else
                     {
-                    Det = ProcessWithOpenCV_BG(Frame->Pixels, Frame->Width, Frame->Height, Frame->Threshold, &FrameInferMs);
+                        Det = ProcessWithOpenCV_BG(Frame->Pixels, Frame->Width, Frame->Height, &FrameInferMs);
                     }
                 }
                 catch (const cv::Exception& e)
@@ -898,6 +1523,7 @@ void UMyActorComponent::StartWorker()
                     ResultsSourceWidth = Frame->Width;
                     ResultsSourceHeight = Frame->Height;
                     ++ResultsSequence;
+                    ResultsTimeSeconds = 0.f;
                     LoggedSequence = ResultsSequence;
                     LoggedDetectionCount = ResultsShared.Num();
                 }
@@ -941,12 +1567,15 @@ void UMyActorComponent::StopWorker()
         ResultsSourceWidth = 0;
         ResultsSourceHeight = 0;
         ResultsSequence = 0;
+        ResultsTimeSeconds = -FLT_MAX;
     }
     LastFrameDetections.Reset();
     LastFrameSourceWidth = 0;
     LastFrameSourceHeight = 0;
     LastFrameSequence = 0;
+    LastFrameTimeSeconds = -FLT_MAX;
     ReleaseTensorRT();
+    ReleaseOnnxRuntime();
     OpenCVDnnNet = cv::dnn::Net();
 }
 
@@ -956,12 +1585,14 @@ void UMyActorComponent::CopyResultsFromWorker()
     int32 SourceWidth = 0;
     int32 SourceHeight = 0;
     int32 Sequence = 0;
+    float ResultTimeSeconds = -FLT_MAX;
     {
         FScopeLock Lock(&ResultsMutex);
         LocalResults = ResultsShared;
         SourceWidth = ResultsSourceWidth;
         SourceHeight = ResultsSourceHeight;
         Sequence = ResultsSequence;
+        ResultTimeSeconds = ResultsTimeSeconds;
     }
 
     if (SourceWidth <= 0 || SourceHeight <= 0)
@@ -970,6 +1601,12 @@ void UMyActorComponent::CopyResultsFromWorker()
         LastFrameSourceWidth = 0;
         LastFrameSourceHeight = 0;
         LastFrameSequence = 0;
+        LastFrameTimeSeconds = -FLT_MAX;
+        return;
+    }
+
+    if (Sequence == LastFrameSequence)
+    {
         return;
     }
 
@@ -977,13 +1614,13 @@ void UMyActorComponent::CopyResultsFromWorker()
     LastFrameSourceWidth = SourceWidth;
     LastFrameSourceHeight = SourceHeight;
     LastFrameSequence = Sequence;
+    LastFrameTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : ResultTimeSeconds;
 }
 
 TArray<FDetectionResult> UMyActorComponent::ProcessSharedVisionFrame(
     const TArray<FColor>& Bitmap,
     int32 Width,
     int32 Height,
-    int32 Threshold,
     double* OutInferenceMs)
 {
     if (!bIsModelLoaded && !LoadYOLO())
@@ -992,7 +1629,7 @@ TArray<FDetectionResult> UMyActorComponent::ProcessSharedVisionFrame(
     }
 
     const double StartSeconds = FPlatformTime::Seconds();
-    TArray<FDetectionResult> Detections = ProcessWithOpenCV_BG(Bitmap, Width, Height, Threshold, OutInferenceMs);
+    TArray<FDetectionResult> Detections = ProcessWithOpenCV_BG(Bitmap, Width, Height, OutInferenceMs);
 
     if (bLogFrameTimings)
     {
@@ -1019,6 +1656,7 @@ void UMyActorComponent::ConsumeSharedVisionResult(
         LastFrameSourceWidth = 0;
         LastFrameSourceHeight = 0;
         ++LastFrameSequence;
+        LastFrameTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
         return;
     }
 
@@ -1026,6 +1664,7 @@ void UMyActorComponent::ConsumeSharedVisionResult(
     LastFrameSourceWidth = SourceWidth;
     LastFrameSourceHeight = SourceHeight;
     ++LastFrameSequence;
+    LastFrameTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
 
     if (bLogFrameTimings)
     {
@@ -1038,6 +1677,137 @@ void UMyActorComponent::ConsumeSharedVisionResult(
     }
 }
 
+void UMyActorComponent::ResetInferenceOutputState()
+{
+    TrtInputHost.Reset();
+    TrtOutputHost.Reset();
+    TrtInputElements = 0;
+    TrtOutputElements = 0;
+    TrtOutputChannels = 0;
+    TrtOutputDetections = 0;
+}
+
+EDetectionInferenceBackend UMyActorComponent::DetectAutomaticInferenceBackend(const FString& ModelPathUE) const
+{
+#if WITH_TENSORRT
+    if (ModelPathUE.EndsWith(TEXT(".plan"), ESearchCase::IgnoreCase))
+    {
+        return EDetectionInferenceBackend::TensorRT;
+    }
+#endif
+
+#if WITH_ONNXRUNTIME
+    if (ModelPathUE.EndsWith(TEXT(".onnx"), ESearchCase::IgnoreCase))
+    {
+        return EDetectionInferenceBackend::ONNXRuntime;
+    }
+#endif
+
+    if (ModelPathUE.EndsWith(TEXT(".onnx"), ESearchCase::IgnoreCase))
+    {
+        return EDetectionInferenceBackend::OpenCVDNN;
+    }
+
+    const FString AdapterName = GRHIAdapterName;
+
+#if PLATFORM_LINUX && WITH_TENSORRT
+    if (IsLikelyNvidiaAdapter(AdapterName))
+    {
+        return EDetectionInferenceBackend::TensorRT;
+    }
+#endif
+
+#if WITH_ONNXRUNTIME
+#if PLATFORM_WINDOWS && WITH_ONNXRUNTIME_DML
+    if (IsLikelyAmdAdapter(AdapterName))
+    {
+        return EDetectionInferenceBackend::ONNXRuntime;
+    }
+#elif PLATFORM_LINUX && WITH_ONNXRUNTIME_MIGRAPHX
+    if (IsLikelyAmdAdapter(AdapterName))
+    {
+        return EDetectionInferenceBackend::ONNXRuntime;
+    }
+#endif
+#endif
+
+    return EDetectionInferenceBackend::OpenCVDNN;
+}
+
+EDetectionInferenceBackend UMyActorComponent::ResolveEffectiveInferenceBackend(const FString& ModelPathUE) const
+{
+    EDetectionInferenceBackend RequestedBackend = InferenceBackend;
+    if (RequestedBackend == EDetectionInferenceBackend::Auto)
+    {
+        RequestedBackend = DetectAutomaticInferenceBackend(ModelPathUE);
+    }
+
+    if (RequestedBackend == EDetectionInferenceBackend::TensorRT)
+    {
+#if WITH_TENSORRT
+        return EDetectionInferenceBackend::TensorRT;
+#else
+        UE_LOG(LogTemp, Warning, TEXT("TensorRT backend requested but this build was compiled without TensorRT. Falling back."));
+        RequestedBackend = EDetectionInferenceBackend::Auto;
+#endif
+    }
+
+    if (RequestedBackend == EDetectionInferenceBackend::ONNXRuntime)
+    {
+#if WITH_ONNXRUNTIME
+        return EDetectionInferenceBackend::ONNXRuntime;
+#else
+        UE_LOG(LogTemp, Warning, TEXT("ONNX Runtime backend requested but this build was compiled without ONNX Runtime. Falling back to OpenCV DNN."));
+        return EDetectionInferenceBackend::OpenCVDNN;
+#endif
+    }
+
+    if (RequestedBackend == EDetectionInferenceBackend::Auto)
+    {
+        return DetectAutomaticInferenceBackend(ModelPathUE);
+    }
+
+    return EDetectionInferenceBackend::OpenCVDNN;
+}
+
+FString UMyActorComponent::ResolveModelPathForBackend(const FString& ModelPathUE, EDetectionInferenceBackend Backend) const
+{
+    if (Backend == EDetectionInferenceBackend::TensorRT &&
+        ModelPathUE.EndsWith(TEXT(".onnx"), ESearchCase::IgnoreCase))
+    {
+        const FString CandidatePlanPath = FPaths::ChangeExtension(ModelPathUE, TEXT("plan"));
+        if (RuntimeFileExists(CandidatePlanPath))
+        {
+            return CandidatePlanPath;
+        }
+    }
+
+    if ((Backend == EDetectionInferenceBackend::ONNXRuntime || Backend == EDetectionInferenceBackend::OpenCVDNN) &&
+        ModelPathUE.EndsWith(TEXT(".plan"), ESearchCase::IgnoreCase))
+    {
+        const FString CandidateOnnxPath = FPaths::ChangeExtension(ModelPathUE, TEXT("onnx"));
+        if (RuntimeFileExists(CandidateOnnxPath))
+        {
+            return CandidateOnnxPath;
+        }
+
+        FString BaseName = FPaths::GetBaseFilename(ModelPathUE);
+        const FString DirPath = FPaths::GetPath(ModelPathUE);
+        if (BaseName.EndsWith(TEXT("_fp16")) || BaseName.EndsWith(TEXT("_fp32")) || BaseName.EndsWith(TEXT("_int8")))
+        {
+            BaseName = BaseName.LeftChop(5);
+        }
+
+        const FString AltOnnxPath = FPaths::Combine(DirPath, BaseName + TEXT(".onnx"));
+        if (RuntimeFileExists(AltOnnxPath))
+        {
+            return AltOnnxPath;
+        }
+    }
+
+    return ModelPathUE;
+}
+
 	bool UMyActorComponent::LoadYOLO()
 	{
 	    try
@@ -1046,34 +1816,34 @@ void UMyActorComponent::ConsumeSharedVisionResult(
 	        cv::setNumThreads(FPlatformMisc::NumberOfCoresIncludingHyperthreads());
 
 	        ReleaseTensorRT();
+            ReleaseOnnxRuntime();
 	        OpenCVDnnNet = cv::dnn::Net();
 
-            // Always resolve effective backend from merged config at model-load time.
-            // FString BackendFromIni;
-            // if (GConfig && GConfig->GetString(TEXT("/Script/EagleEye.MyActorComponent"), TEXT("InferenceBackend"), BackendFromIni, GGameIni))
-            // {
-            //     if (BackendFromIni.Equals(TEXT("OpenCVDNN"), ESearchCase::IgnoreCase))
-            //     {
-            //         InferenceBackend = EDetectionInferenceBackend::OpenCVDNN;
-            //     }
-            //     else if (BackendFromIni.Equals(TEXT("TensorRT"), ESearchCase::IgnoreCase))
-            //     {
-            //         InferenceBackend = EDetectionInferenceBackend::TensorRT;
-            //     }
-            // }
-
-            UE_LOG(LogTemp, Log, TEXT("LoadYOLO effective backend: %s"),
-                (InferenceBackend == EDetectionInferenceBackend::TensorRT) ? TEXT("TensorRT") : TEXT("OpenCVDNN"));
-
-	        const FString ModelPathUE = FString(WeightsPath.c_str());
+	        FString ModelPathUE = FString(WeightsPath.c_str());
 	        if (!FPlatformFileManager::Get().GetPlatformFile().FileExists(*ModelPathUE))
 	        {
 	            UE_LOG(LogTemp, Error, TEXT("Model file not found: %s"), *ModelPathUE);
 	            return false;
 	        }
 
-            if (InferenceBackend == EDetectionInferenceBackend::TensorRT)
+            EffectiveInferenceBackend = ResolveEffectiveInferenceBackend(ModelPathUE);
+            ModelPathUE = ResolveModelPathForBackend(ModelPathUE, EffectiveInferenceBackend);
+            UE_LOG(LogTemp, Log, TEXT("LoadYOLO selected backend: %s (requested=%s, ONNX provider=%s, adapter=%s, model=%s)"),
+                BackendToString(EffectiveInferenceBackend),
+                BackendToString(InferenceBackend),
+                OnnxProviderToString(OnnxRuntimeExecutionProvider),
+                *GRHIAdapterName,
+                *ModelPathUE);
+
+            if (!FPlatformFileManager::Get().GetPlatformFile().FileExists(*ModelPathUE))
             {
+                UE_LOG(LogTemp, Error, TEXT("Resolved model file not found: %s"), *ModelPathUE);
+                return false;
+            }
+
+            if (EffectiveInferenceBackend == EDetectionInferenceBackend::TensorRT)
+            {
+#if WITH_TENSORRT
                 bIsOnnxModel = ModelPathUE.EndsWith(TEXT(".onnx")) || ModelPathUE.EndsWith(TEXT(".plan"));
                 if (!ModelPathUE.EndsWith(TEXT(".plan")))
                 {
@@ -1174,15 +1944,24 @@ void UMyActorComponent::ConsumeSharedVisionResult(
                     *TrtDimsToString(InputDims), *TrtDimsToString(OutputDims), TrtOutputElements);
                 bIsModelLoaded = true;
                 return true;
+#else
+                UE_LOG(LogTemp, Error, TEXT("TensorRT backend selected but this build was compiled without TensorRT."));
+                return false;
+#endif
             }
 
-            if (InferenceBackend != EDetectionInferenceBackend::OpenCVDNN)
+            if (EffectiveInferenceBackend == EDetectionInferenceBackend::ONNXRuntime)
             {
-                UE_LOG(LogTemp, Error, TEXT("Unsupported inference backend value: %d"), static_cast<int32>(InferenceBackend));
+                return LoadOnnxRuntime(ModelPathUE);
+            }
+
+            if (EffectiveInferenceBackend != EDetectionInferenceBackend::OpenCVDNN)
+            {
+                UE_LOG(LogTemp, Error, TEXT("Unsupported inference backend value: %d"), static_cast<int32>(EffectiveInferenceBackend));
                 return false;
             }
 
-            FString OpenCvModelPath = ModelPathUE;
+            FString OpenCvModelPath = ResolveModelPathForBackend(ModelPathUE, EDetectionInferenceBackend::OpenCVDNN);
             if (OpenCvModelPath.EndsWith(TEXT(".plan")))
             {
                 const FString CandidateOnnxPath = FPaths::ChangeExtension(OpenCvModelPath, TEXT("onnx"));
@@ -1267,12 +2046,7 @@ void UMyActorComponent::ConsumeSharedVisionResult(
             const int32 ClampedInputSize = FMath::Clamp(OnnxInputSize, 160, 1280);
             ModelInputWidth = ClampedInputSize;
             ModelInputHeight = ClampedInputSize;
-            TrtInputElements = 0;
-            TrtOutputElements = 0;
-            TrtOutputChannels = 0;
-            TrtOutputDetections = 0;
-            TrtInputHost.Reset();
-            TrtOutputHost.Reset();
+            ResetInferenceOutputState();
 
             UE_LOG(LogTemp, Log, TEXT("OpenCV DNN model loaded: %s"), *OpenCvModelPath);
             bIsModelLoaded = true;
@@ -1282,6 +2056,7 @@ void UMyActorComponent::ConsumeSharedVisionResult(
 	    {
 	        UE_LOG(LogTemp, Error, TEXT("Model load failed: %s"), *FString(e.what()));
 	        ReleaseTensorRT();
+            ReleaseOnnxRuntime();
             OpenCVDnnNet = cv::dnn::Net();
 	        return false;
 	    }
@@ -1289,6 +2064,7 @@ void UMyActorComponent::ConsumeSharedVisionResult(
 	    {
 	        UE_LOG(LogTemp, Error, TEXT("Model load failed (unknown exception)"));
 	        ReleaseTensorRT();
+            ReleaseOnnxRuntime();
             OpenCVDnnNet = cv::dnn::Net();
 	        return false;
 	    }
@@ -1296,6 +2072,7 @@ void UMyActorComponent::ConsumeSharedVisionResult(
 
 void UMyActorComponent::ReleaseTensorRT()
 {
+#if WITH_TENSORRT
     if (TrtStream)
     {
         cudaStreamSynchronize(TrtStream);
@@ -1318,18 +2095,31 @@ void UMyActorComponent::ReleaseTensorRT()
     DestroyTrtObject(TrtContext);
     DestroyTrtObject(TrtEngine);
     DestroyTrtObject(TrtRuntime);
+#endif
 
-    TrtInputHost.Reset();
-    TrtOutputHost.Reset();
-    TrtInputElements = 0;
-    TrtOutputElements = 0;
-    TrtOutputChannels = 0;
-    TrtOutputDetections = 0;
+    ResetInferenceOutputState();
+    bIsModelLoaded = false;
+}
+
+void UMyActorComponent::ReleaseOnnxRuntime()
+{
+#if WITH_ONNXRUNTIME
+    OnnxRuntimeSession.Reset();
+    OnnxRuntimeSessionOptions.Reset();
+    OnnxRuntimeEnv.Reset();
+    OnnxRuntimeInputHost.Reset();
+    OnnxRuntimeInputShape.Reset();
+    OnnxRuntimeInputName.clear();
+    OnnxRuntimeOutputNames.Reset();
+    bOnnxRuntimeUsingGpuProvider = false;
+#endif
+    ResetInferenceOutputState();
     bIsModelLoaded = false;
 }
 
 bool UMyActorComponent::RunTensorRT()
 {
+#if WITH_TENSORRT
     if (!TrtContext || !TrtInputDevice || !TrtOutputDevice || TrtInputElements <= 0 || TrtOutputElements <= 0)
     {
         return false;
@@ -1377,10 +2167,15 @@ bool UMyActorComponent::RunTensorRT()
     }
 
     return true;
+#else
+    UE_LOG(LogTemp, Error, TEXT("TensorRT inference requested but this build was compiled without TensorRT."));
+    return false;
+#endif
 }
 
 bool UMyActorComponent::RunTensorRTInference_BG(const cv::Mat& ModelInputBGR)
 {
+#if WITH_TENSORRT
     cv::Mat imgRGB;
     cv::cvtColor(ModelInputBGR, imgRGB, cv::COLOR_BGR2RGB);
 
@@ -1422,11 +2217,299 @@ bool UMyActorComponent::RunTensorRTInference_BG(const cv::Mat& ModelInputBGR)
     }
 
     return true;
+#else
+    UE_LOG(LogTemp, Error, TEXT("TensorRT inference requested but this build was compiled without TensorRT."));
+    return false;
+#endif
+}
+
+bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
+{
+#if WITH_ONNXRUNTIME
+    if (!ModelPathUE.EndsWith(TEXT(".onnx"), ESearchCase::IgnoreCase))
+    {
+        UE_LOG(LogTemp, Error, TEXT("ONNX Runtime requires an .onnx model file, got: %s"), *ModelPathUE);
+        return false;
+    }
+
+    try
+    {
+        OnnxRuntimeEnv = MakeUnique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "EagleEye");
+        OnnxRuntimeSessionOptions = MakeUnique<Ort::SessionOptions>();
+        OnnxRuntimeSessionOptions->SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        OnnxRuntimeSessionOptions->SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
+        OnnxRuntimeSessionOptions->DisableMemPattern();
+
+        bool bProviderConfigured = false;
+        const bool bProviderAuto = OnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::Auto;
+
+#if WITH_ONNXRUNTIME_DML
+        if (OnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::DirectML || bProviderAuto)
+        {
+            if (OrtStatus* Status = OrtSessionOptionsAppendExecutionProvider_DML(*OnnxRuntimeSessionOptions, 0))
+            {
+                const FString ErrorMessage = UTF8_TO_TCHAR(Ort::GetApi().GetErrorMessage(Status));
+                Ort::GetApi().ReleaseStatus(Status);
+                if (OnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::DirectML)
+                {
+                    UE_LOG(LogTemp, Error, TEXT("Failed to configure ONNX Runtime DirectML provider: %s"), *ErrorMessage);
+                    return false;
+                }
+                UE_LOG(LogTemp, Warning, TEXT("ONNX Runtime DirectML provider unavailable, falling back to CPU: %s"), *ErrorMessage);
+            }
+            else
+            {
+                bProviderConfigured = true;
+                bOnnxRuntimeUsingGpuProvider = true;
+                UE_LOG(LogTemp, Log, TEXT("ONNX Runtime provider configured: DirectML"));
+            }
+        }
+#endif
+
+#if WITH_ONNXRUNTIME_MIGRAPHX
+        if (!bProviderConfigured && (OnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::MIGraphX || bProviderAuto))
+        {
+            if (OrtStatus* Status = OrtSessionOptionsAppendExecutionProvider_MIGraphX(*OnnxRuntimeSessionOptions, 0))
+            {
+                const FString ErrorMessage = UTF8_TO_TCHAR(Ort::GetApi().GetErrorMessage(Status));
+                Ort::GetApi().ReleaseStatus(Status);
+                if (OnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::MIGraphX)
+                {
+                    UE_LOG(LogTemp, Error, TEXT("Failed to configure ONNX Runtime MIGraphX provider: %s"), *ErrorMessage);
+                    return false;
+                }
+                UE_LOG(LogTemp, Warning, TEXT("ONNX Runtime MIGraphX provider unavailable, falling back to CPU: %s"), *ErrorMessage);
+            }
+            else
+            {
+                bProviderConfigured = true;
+                bOnnxRuntimeUsingGpuProvider = true;
+                UE_LOG(LogTemp, Log, TEXT("ONNX Runtime provider configured: MIGraphX"));
+            }
+        }
+#endif
+
+        if (!bProviderConfigured)
+        {
+            bOnnxRuntimeUsingGpuProvider = false;
+            UE_LOG(LogTemp, Log, TEXT("ONNX Runtime provider configured: CPU"));
+        }
+
+        OnnxRuntimeSession = MakeUnique<Ort::Session>(*OnnxRuntimeEnv, *ModelPathUE, *OnnxRuntimeSessionOptions);
+
+        Ort::AllocatorWithDefaultOptions Allocator;
+        if (OnnxRuntimeSession->GetInputCount() <= 0 || OnnxRuntimeSession->GetOutputCount() <= 0)
+        {
+            UE_LOG(LogTemp, Error, TEXT("ONNX Runtime model has no inputs or outputs: %s"), *ModelPathUE);
+            ReleaseOnnxRuntime();
+            return false;
+        }
+
+        Ort::AllocatedStringPtr InputName = OnnxRuntimeSession->GetInputNameAllocated(0, Allocator);
+        OnnxRuntimeInputName = InputName.get();
+
+        OnnxRuntimeOutputNames.Reset();
+        const size_t OutputCount = OnnxRuntimeSession->GetOutputCount();
+        for (size_t OutputIndex = 0; OutputIndex < OutputCount; ++OutputIndex)
+        {
+            Ort::AllocatedStringPtr OutputName = OnnxRuntimeSession->GetOutputNameAllocated(OutputIndex, Allocator);
+            OnnxRuntimeOutputNames.Add(std::string(OutputName.get()));
+        }
+
+        const Ort::TypeInfo InputTypeInfo = OnnxRuntimeSession->GetInputTypeInfo(0);
+        const Ort::TensorTypeAndShapeInfo InputTensorInfo = InputTypeInfo.GetTensorTypeAndShapeInfo();
+        std::vector<int64_t> InputShape = InputTensorInfo.GetShape();
+        if (InputShape.size() == 4)
+        {
+            if (InputShape[2] > 0)
+            {
+                ModelInputHeight = static_cast<int32>(InputShape[2]);
+            }
+            if (InputShape[3] > 0)
+            {
+                ModelInputWidth = static_cast<int32>(InputShape[3]);
+            }
+        }
+        else
+        {
+            const int32 ClampedInputSize = FMath::Clamp(OnnxInputSize, 160, 1280);
+            ModelInputWidth = ClampedInputSize;
+            ModelInputHeight = ClampedInputSize;
+        }
+
+        ModelInputWidth = FMath::Clamp(ModelInputWidth, 160, 1280);
+        ModelInputHeight = FMath::Clamp(ModelInputHeight, 160, 1280);
+        OnnxRuntimeInputShape.Reset();
+        OnnxRuntimeInputShape.Add(1);
+        OnnxRuntimeInputShape.Add(3);
+        OnnxRuntimeInputShape.Add(ModelInputHeight);
+        OnnxRuntimeInputShape.Add(ModelInputWidth);
+        TrtInputElements = ModelInputWidth * ModelInputHeight * 3;
+        OnnxRuntimeInputHost.SetNumUninitialized(TrtInputElements);
+        TrtOutputHost.Reset();
+        TrtOutputElements = 0;
+        TrtOutputChannels = 0;
+        TrtOutputDetections = 0;
+        bIsOnnxModel = true;
+        bIsModelLoaded = true;
+
+        UE_LOG(LogTemp, Log, TEXT("ONNX Runtime model loaded: %s (input=%dx%d, provider=%s%s)"),
+            *ModelPathUE,
+            ModelInputWidth,
+            ModelInputHeight,
+            OnnxProviderToString(OnnxRuntimeExecutionProvider),
+            bOnnxRuntimeUsingGpuProvider ? TEXT(", GPU") : TEXT(", CPU"));
+        return true;
+    }
+    catch (const Ort::Exception& e)
+    {
+        UE_LOG(LogTemp, Error, TEXT("ONNX Runtime model load failed: %s"), *FString(e.what()));
+        ReleaseOnnxRuntime();
+        return false;
+    }
+#else
+    UE_LOG(LogTemp, Error, TEXT("ONNX Runtime backend selected but this build was compiled without ONNX Runtime."));
+    return false;
+#endif
+}
+
+bool UMyActorComponent::RunOnnxRuntimeInference_BG(const cv::Mat& ModelInputBGR)
+{
+#if WITH_ONNXRUNTIME
+    if (!OnnxRuntimeSession || OnnxRuntimeInputName.empty() || OnnxRuntimeOutputNames.Num() == 0 || TrtInputElements <= 0)
+    {
+        UE_LOG(LogTemp, Error, TEXT("ONNX Runtime backend selected but session is not initialized"));
+        return false;
+    }
+
+    cv::Mat imgRGB;
+    cv::cvtColor(ModelInputBGR, imgRGB, cv::COLOR_BGR2RGB);
+
+    cv::Mat imgFloat;
+    imgRGB.convertTo(imgFloat, CV_32F, 1.0f / 255.0f);
+
+    const int32 PlaneSize = ModelInputWidth * ModelInputHeight;
+    if (OnnxRuntimeInputHost.Num() != PlaneSize * 3)
+    {
+        OnnxRuntimeInputHost.SetNumUninitialized(PlaneSize * 3);
+        TrtInputElements = PlaneSize * 3;
+    }
+
+    std::vector<cv::Mat> Channels;
+    cv::split(imgFloat, Channels);
+    if (Channels.size() != 3)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Unexpected channel count from preprocessing: %d"), Channels.size());
+        return false;
+    }
+
+    float* InputPtr = OnnxRuntimeInputHost.GetData();
+    for (int32 c = 0; c < 3; ++c)
+    {
+        const float* Src = Channels[c].ptr<float>();
+        FMemory::Memcpy(InputPtr + (c * PlaneSize), Src, PlaneSize * sizeof(float));
+    }
+
+    try
+    {
+        Ort::MemoryInfo MemoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+        Ort::Value InputTensor = Ort::Value::CreateTensor<float>(
+            MemoryInfo,
+            OnnxRuntimeInputHost.GetData(),
+            OnnxRuntimeInputHost.Num(),
+            OnnxRuntimeInputShape.GetData(),
+            OnnxRuntimeInputShape.Num());
+
+        const char* InputNames[] = { OnnxRuntimeInputName.c_str() };
+        TArray<const char*> OutputNamePtrs;
+        OutputNamePtrs.Reserve(OnnxRuntimeOutputNames.Num());
+        for (const std::string& OutputName : OnnxRuntimeOutputNames)
+        {
+            OutputNamePtrs.Add(OutputName.c_str());
+        }
+
+        std::vector<Ort::Value> Outputs = OnnxRuntimeSession->Run(
+            Ort::RunOptions{ nullptr },
+            InputNames,
+            &InputTensor,
+            1,
+            OutputNamePtrs.GetData(),
+            OutputNamePtrs.Num());
+
+        Ort::Value* ChosenOutput = nullptr;
+        int64 BestElementCount = -1;
+        for (Ort::Value& Output : Outputs)
+        {
+            if (!Output.IsTensor())
+            {
+                continue;
+            }
+
+            Ort::TensorTypeAndShapeInfo TensorInfo = Output.GetTensorTypeAndShapeInfo();
+            if (TensorInfo.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT)
+            {
+                continue;
+            }
+
+            const int64 ElementCount = static_cast<int64>(TensorInfo.GetElementCount());
+            if (ElementCount > BestElementCount)
+            {
+                BestElementCount = ElementCount;
+                ChosenOutput = &Output;
+            }
+        }
+
+        if (!ChosenOutput || BestElementCount <= 0)
+        {
+            UE_LOG(LogTemp, Error, TEXT("ONNX Runtime produced no usable float tensor output"));
+            return false;
+        }
+
+        Ort::TensorTypeAndShapeInfo OutputInfo = ChosenOutput->GetTensorTypeAndShapeInfo();
+        const std::vector<int64_t> OutputShape = OutputInfo.GetShape();
+        TrtOutputHost.SetNumUninitialized(static_cast<int32>(BestElementCount));
+        FMemory::Memcpy(
+            TrtOutputHost.GetData(),
+            ChosenOutput->GetTensorMutableData<float>(),
+            static_cast<size_t>(BestElementCount) * sizeof(float));
+        TrtOutputElements = static_cast<int32>(BestElementCount);
+
+        TArray<int32> NonSingletonDims;
+        for (int64_t Dim : OutputShape)
+        {
+            if (Dim > 1 && Dim <= TNumericLimits<int32>::Max())
+            {
+                NonSingletonDims.Add(static_cast<int32>(Dim));
+            }
+        }
+
+        if (NonSingletonDims.Num() >= 2)
+        {
+            TrtOutputChannels = NonSingletonDims[NonSingletonDims.Num() - 2];
+            TrtOutputDetections = NonSingletonDims[NonSingletonDims.Num() - 1];
+        }
+        else
+        {
+            UE_LOG(LogTemp, Error, TEXT("Unsupported ONNX Runtime output rank"));
+            return false;
+        }
+
+        return true;
+    }
+    catch (const Ort::Exception& e)
+    {
+        UE_LOG(LogTemp, Error, TEXT("ONNX Runtime inference failed: %s"), *FString(e.what()));
+        return false;
+    }
+#else
+    UE_LOG(LogTemp, Error, TEXT("ONNX Runtime inference requested but this build was compiled without ONNX Runtime."));
+    return false;
+#endif
 }
 
 bool UMyActorComponent::RunOpenCVDNNInference_BG(const cv::Mat& ModelInputBGR)
 {
-    if (InferenceBackend != EDetectionInferenceBackend::OpenCVDNN)
+    if (EffectiveInferenceBackend != EDetectionInferenceBackend::OpenCVDNN)
     {
         UE_LOG(LogTemp, Error, TEXT("RunOpenCVDNNInference_BG called while backend is not OpenCVDNN"));
         return false;
@@ -1614,7 +2697,7 @@ bool UMyActorComponent::RunOpenCVDNNInference_BG(const cv::Mat& ModelInputBGR)
     return true;
 }
 
-TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FColor>& Bitmap, int32 Width, int32 Height, int Threshold, double* OutInferenceMs)
+TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FColor>& Bitmap, int32 Width, int32 Height, double* OutInferenceMs)
 {
     if (OutInferenceMs)
     {
@@ -1664,17 +2747,21 @@ TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FC
 
     const double T0 = FPlatformTime::Seconds();
     bool bInferOk = false;
-    if (InferenceBackend == EDetectionInferenceBackend::TensorRT)
+    if (EffectiveInferenceBackend == EDetectionInferenceBackend::TensorRT)
     {
         bInferOk = RunTensorRTInference_BG(modelInputBGR);
     }
-    else if (InferenceBackend == EDetectionInferenceBackend::OpenCVDNN)
+    else if (EffectiveInferenceBackend == EDetectionInferenceBackend::ONNXRuntime)
+    {
+        bInferOk = RunOnnxRuntimeInference_BG(modelInputBGR);
+    }
+    else if (EffectiveInferenceBackend == EDetectionInferenceBackend::OpenCVDNN)
     {
         bInferOk = RunOpenCVDNNInference_BG(modelInputBGR);
     }
     else
     {
-        UE_LOG(LogTemp, Error, TEXT("Unknown inference backend value: %d"), static_cast<int32>(InferenceBackend));
+        UE_LOG(LogTemp, Error, TEXT("Unknown inference backend value: %d"), static_cast<int32>(EffectiveInferenceBackend));
         return {};
     }
 
@@ -1690,19 +2777,14 @@ TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FC
     }
     if (bLogPerf)
     {
-        const TCHAR* BackendLabel = (InferenceBackend == EDetectionInferenceBackend::TensorRT)
-            ? TEXT("TensorRT")
-            : TEXT("OpenCV DNN");
-        UE_LOG(LogTemp, Log, TEXT("%s forward: %.1f ms"), BackendLabel, InferMs);
+        UE_LOG(LogTemp, Log, TEXT("%s forward: %.1f ms"), BackendToString(EffectiveInferenceBackend), InferMs);
     }
 
     std::vector<cv::Rect> boxes;
     std::vector<float> confidences;
     std::vector<int> class_ids;
 
-    const float ConfThreshold = FMath::Clamp(
-        (ConfidenceThreshold > 0.0f) ? ConfidenceThreshold : static_cast<float>(Threshold) / 100.0f,
-        0.01f, 0.99f);
+    const float ConfThreshold = FMath::Clamp(ConfidenceThreshold, 0.01f, 0.99f);
     const float IoUThreshold = FMath::Clamp(NmsThreshold, 0.01f, 0.99f);
     const float* OutData = TrtOutputHost.GetData();
 
@@ -1926,7 +3008,7 @@ TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FC
     std::vector<int> indices;
     ApplyNms(boxes, confidences, ConfThreshold, IoUThreshold, indices);
 
-    if (InferenceBackend == EDetectionInferenceBackend::OpenCVDNN && indices.empty())
+    if (EffectiveInferenceBackend == EDetectionInferenceBackend::OpenCVDNN && indices.empty())
     {
         static int32 OpenCvEmptyLogDecimator = 0;
         if ((OpenCvEmptyLogDecimator++ % 30) == 0)
@@ -1967,6 +3049,7 @@ TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FC
         FDetectionResult det;
         det.Corners = corners;
         det.Label = label;
+        det.Confidence = confidences[idx];
         det.ClassId = class_ids[idx];
         Out.Add(det);
     }

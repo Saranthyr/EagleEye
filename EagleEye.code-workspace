@@ -486,11 +486,30 @@
 				],
 				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1",
 				"type": "cppdbg",
+				"miDebuggerArgs": "-iex=\"set debuginfod enabled off\" -iex=\"set debuginfod urls\"",
 				"visualizerFile": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
 				"showDisplayString": true,
+				"setupCommands": [
+					{
+						"description": "Disable GDB debuginfod network lookups",
+						"text": "set debuginfod enabled off",
+						"ignoreFailures": true
+					},
+					{
+						"description": "Clear GDB debuginfod URLs",
+						"text": "set debuginfod urls",
+						"ignoreFailures": true
+					},
+					{
+						"description": "Map Unreal Engine build source path",
+						"text": "set substitute-path /mnt/horde/++UE5/Sync /home/saranthyr/Unreal_Engine_5.6.1",
+						"ignoreFailures": true
+					}
+				],
 				"sourceFileMap": {
 					"/UEVFS/EagleEye": "/home/saranthyr/Documents/Unreal Projects/EagleEye",
-					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1",
+					"/mnt/horde/++UE5/Sync": "/home/saranthyr/Unreal_Engine_5.6.1"
 				}
 			},
 			{
@@ -502,11 +521,30 @@
 				],
 				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1",
 				"type": "cppdbg",
+				"miDebuggerArgs": "-iex=\"set debuginfod enabled off\" -iex=\"set debuginfod urls\"",
 				"visualizerFile": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
 				"showDisplayString": true,
+				"setupCommands": [
+					{
+						"description": "Disable GDB debuginfod network lookups",
+						"text": "set debuginfod enabled off",
+						"ignoreFailures": true
+					},
+					{
+						"description": "Clear GDB debuginfod URLs",
+						"text": "set debuginfod urls",
+						"ignoreFailures": true
+					},
+					{
+						"description": "Map Unreal Engine build source path",
+						"text": "set substitute-path /mnt/horde/++UE5/Sync /home/saranthyr/Unreal_Engine_5.6.1",
+						"ignoreFailures": true
+					}
+				],
 				"sourceFileMap": {
 					"/UEVFS/EagleEye": "/home/saranthyr/Documents/Unreal Projects/EagleEye",
-					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1",
+					"/mnt/horde/++UE5/Sync": "/home/saranthyr/Unreal_Engine_5.6.1"
 				}
 			},
 			{
@@ -518,11 +556,30 @@
 				],
 				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1",
 				"type": "cppdbg",
+				"miDebuggerArgs": "-iex=\"set debuginfod enabled off\" -iex=\"set debuginfod urls\"",
 				"visualizerFile": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
 				"showDisplayString": true,
+				"setupCommands": [
+					{
+						"description": "Disable GDB debuginfod network lookups",
+						"text": "set debuginfod enabled off",
+						"ignoreFailures": true
+					},
+					{
+						"description": "Clear GDB debuginfod URLs",
+						"text": "set debuginfod urls",
+						"ignoreFailures": true
+					},
+					{
+						"description": "Map Unreal Engine build source path",
+						"text": "set substitute-path /mnt/horde/++UE5/Sync /home/saranthyr/Unreal_Engine_5.6.1",
+						"ignoreFailures": true
+					}
+				],
 				"sourceFileMap": {
 					"/UEVFS/EagleEye": "/home/saranthyr/Documents/Unreal Projects/EagleEye",
-					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1",
+					"/mnt/horde/++UE5/Sync": "/home/saranthyr/Unreal_Engine_5.6.1"
 				}
 			},
 			{
@@ -535,11 +592,31 @@
 				],
 				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1",
 				"type": "cppdbg",
+				"externalConsole": false,
+				"miDebuggerArgs": "-iex=\"set debuginfod enabled off\" -iex=\"set debuginfod urls\"",
 				"visualizerFile": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
 				"showDisplayString": true,
+				"setupCommands": [
+					{
+						"description": "Disable GDB debuginfod network lookups",
+						"text": "set debuginfod enabled off",
+						"ignoreFailures": true
+					},
+					{
+						"description": "Clear GDB debuginfod URLs",
+						"text": "set debuginfod urls",
+						"ignoreFailures": true
+					},
+					{
+						"description": "Map Unreal Engine build source path",
+						"text": "set substitute-path /mnt/horde/++UE5/Sync /home/saranthyr/Unreal_Engine_5.6.1",
+						"ignoreFailures": true
+					}
+				],
 				"sourceFileMap": {
 					"/UEVFS/EagleEye": "/home/saranthyr/Documents/Unreal Projects/EagleEye",
-					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1",
+					"/mnt/horde/++UE5/Sync": "/home/saranthyr/Unreal_Engine_5.6.1"
 				}
 			},
 			{
@@ -552,11 +629,30 @@
 				],
 				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1",
 				"type": "cppdbg",
+				"miDebuggerArgs": "-iex=\"set debuginfod enabled off\" -iex=\"set debuginfod urls\"",
 				"visualizerFile": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
 				"showDisplayString": true,
+				"setupCommands": [
+					{
+						"description": "Disable GDB debuginfod network lookups",
+						"text": "set debuginfod enabled off",
+						"ignoreFailures": true
+					},
+					{
+						"description": "Clear GDB debuginfod URLs",
+						"text": "set debuginfod urls",
+						"ignoreFailures": true
+					},
+					{
+						"description": "Map Unreal Engine build source path",
+						"text": "set substitute-path /mnt/horde/++UE5/Sync /home/saranthyr/Unreal_Engine_5.6.1",
+						"ignoreFailures": true
+					}
+				],
 				"sourceFileMap": {
 					"/UEVFS/EagleEye": "/home/saranthyr/Documents/Unreal Projects/EagleEye",
-					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1",
+					"/mnt/horde/++UE5/Sync": "/home/saranthyr/Unreal_Engine_5.6.1"
 				}
 			},
 			{

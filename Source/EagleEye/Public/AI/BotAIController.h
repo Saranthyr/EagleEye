@@ -75,24 +75,55 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Flight")
     FName RandomFlightBlockedByKey = TEXT("HasDetectedPerson");
 
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Walking")
+    bool bEnableRandomWalking = true;
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Walking", meta=(ClampMin="0.0"))
+    float WalkRadius = 1200.f;
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Walking", meta=(ClampMin="0.0"))
+    float WalkAcceptanceRadius = 120.f;
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Walking")
+    FVector WalkingNavProjectionExtent = FVector(300.f, 300.f, 500.f);
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Walking", meta=(ClampMin="0.0"))
+    float WalkDestinationHoldMinSeconds = 0.5f;
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Walking", meta=(ClampMin="0.0"))
+    float WalkDestinationHoldMaxSeconds = 2.0f;
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Walking")
+    FName RandomWalkingBlockedByKey = TEXT("HasDetectedPerson");
+
 private:
     UFUNCTION()
     void HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulus Stimulus);
 
     bool IsPlayerTarget(const AActor* Actor) const;
+    bool ShouldUseRandomFlight(const APawn* ControlledPawn) const;
+    bool ShouldUseRandomWalking(const APawn* ControlledPawn) const;
+    bool IsBlackboardKeyBlockingRandomMovement(FName KeyName) const;
     void StartBehaviorTreeForPawn(APawn* InPawn);
     void UpdateBlackboardTarget(AActor* TargetActor, bool bHasLineOfSight);
     void UpdateRandomFlight(float DeltaSeconds);
+    void UpdateRandomWalking(float DeltaSeconds);
     void PickRandomFlightDestination();
+    void PickRandomWalkDestination();
     void ClearChaseTarget();
 
     TWeakObjectPtr<AActor> CurrentTargetActor;
     FVector LastKnownTargetLocation = FVector::ZeroVector;
     FVector FlightOrigin = FVector::ZeroVector;
     FVector CurrentFlightDestination = FVector::ZeroVector;
+    FVector WalkOrigin = FVector::ZeroVector;
+    FVector CurrentWalkDestination = FVector::ZeroVector;
     float LastTargetSeenTime = -1.f;
     float DestinationHoldTimeRemaining = 0.f;
+    float WalkDestinationHoldTimeRemaining = 0.f;
     bool bHasLastKnownTargetLocation = false;
     bool bHasFlightOrigin = false;
     bool bHasFlightDestination = false;
+    bool bHasWalkOrigin = false;
+    bool bHasWalkDestination = false;
 };

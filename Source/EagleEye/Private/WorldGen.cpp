@@ -5,6 +5,7 @@
 #include "AI/BotCharacter.h"
 #include "Algo/Unique.h"
 #include "Components/BrushComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Kismet/GameplayStatics.h"
@@ -44,11 +45,9 @@ void AWorldGen::BeginPlay()
 	UE_LOG(
 		LogTemp,
 		Log,
-		TEXT("WorldGen: Crow spawning %s. CrowClass=%s Min=%d Max=%d"),
-		bEnableCrowSpawning ? TEXT("enabled") : TEXT("disabled"),
-		CrowClass ? *CrowClass->GetName() : TEXT("None"),
-		MinCrowsPerSection,
-		MaxCrowsPerSection
+		TEXT("WorldGen: Bot spawning %s. Types=%d"),
+		bEnableBotSpawning ? TEXT("enabled") : TEXT("disabled"),
+		BotSpawnTypes.Num()
 	);
 
 	InitializeFoliageComponents();
@@ -97,7 +96,7 @@ void AWorldGen::RegenerateAll()
 				DestroySectionNavBounds(Pair.Value);
 			}
 
-			DestroyCrowsForSection(Pair.Value);
+			DestroyBotsForSection(Pair.Value);
 		}
 	}
 
@@ -269,9 +268,9 @@ void AWorldGen::CreateSection(const FIntPoint& Section)
 		SpawnFoliageForSection(Section, SectionData);
 	}
 
-	if (bEnableCrowSpawning)
+	if (bEnableBotSpawning)
 	{
-		SpawnCrowsForSection(Section, SectionData);
+		SpawnBotsForSection(Section, SectionData);
 	}
 
 	LoadedSections.Add(Section, MoveTemp(SectionData));
@@ -292,7 +291,7 @@ void AWorldGen::DestroySection(const FIntPoint& Section)
 
 	UE_LOG(LogTemp, Log, TEXT("WorldGen: Destroying section (%d, %d)"), Section.X, Section.Y);
 
-	DestroyCrowsForSection(*SectionData);
+	DestroyBotsForSection(*SectionData);
 
 	RemoveFoliageForSection(Section, *SectionData);
 
@@ -759,41 +758,21 @@ void AWorldGen::UpdateFoliageIndexAfterSwapRemoval(int32 TypeIndex, int32 OldInd
 	);
 }
 
-void AWorldGen::SpawnCrowsForSection(const FIntPoint& Section, FSectionData& SectionData)
+void AWorldGen::SpawnBotsForSection(const FIntPoint& Section, FSectionData& SectionData)
 {
 	UWorld* World = GetWorld();
 	if (!World)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("WorldGen: Cannot spawn crows without a valid world."));
+		UE_LOG(LogTemp, Warning, TEXT("WorldGen: Cannot spawn bots without a valid world."));
 		return;
 	}
 
-	if (!CrowClass)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("WorldGen: Crow spawning enabled, but CrowClass is not assigned."));
-		return;
-	}
-
-	const int32 MaxCount = FMath::Max(MaxCrowsPerSection, 0);
-	if (MaxCount <= 0)
-	{
-		UE_LOG(
-			LogTemp,
-			Log,
-			TEXT("WorldGen: Crow spawning skipped for section (%d, %d) because MaxCrowsPerSection is 0."),
-			Section.X,
-			Section.Y
-		);
-		return;
-	}
-
-	const int32 MinCount = FMath::Clamp(MinCrowsPerSection, 1, MaxCount);
 	if (xvertcnt < 2 || yvertcnt < 2)
 	{
 		UE_LOG(
 			LogTemp,
 			Warning,
-			TEXT("WorldGen: Crow spawning skipped for section (%d, %d) because terrain vertex counts are invalid. xvertcnt=%d yvertcnt=%d"),
+			TEXT("WorldGen: Bot spawning skipped for section (%d, %d) because terrain vertex counts are invalid. xvertcnt=%d yvertcnt=%d"),
 			Section.X,
 			Section.Y,
 			xvertcnt,
@@ -809,7 +788,7 @@ void AWorldGen::SpawnCrowsForSection(const FIntPoint& Section, FSectionData& Sec
 		UE_LOG(
 			LogTemp,
 			Warning,
-			TEXT("WorldGen: Crow spawning skipped for section (%d, %d) because section size is invalid. Size=(%0.2f, %0.2f)"),
+			TEXT("WorldGen: Bot spawning skipped for section (%d, %d) because section size is invalid. Size=(%0.2f, %0.2f)"),
 			Section.X,
 			Section.Y,
 			SectionSizeX,
@@ -818,55 +797,131 @@ void AWorldGen::SpawnCrowsForSection(const FIntPoint& Section, FSectionData& Sec
 		return;
 	}
 
+	if (BotSpawnTypes.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("WorldGen: Bot spawning enabled, but BotSpawnTypes is empty."));
+		return;
+	}
+
+	for (int32 TypeIndex = 0; TypeIndex < BotSpawnTypes.Num(); ++TypeIndex)
+	{
+		SpawnBotTypeForSection(
+			Section,
+			SectionData,
+			BotSpawnTypes[TypeIndex],
+			TypeIndex,
+			FString::Printf(TEXT("bot type %d"), TypeIndex),
+			SectionSizeX,
+			SectionSizeY);
+	}
+}
+
+void AWorldGen::SpawnBotTypeForSection(
+	const FIntPoint& Section,
+	FSectionData& SectionData,
+	const FBotSpawnTypeConfig& Config,
+	int32 TypeIndex,
+	const FString& DebugName,
+	float SectionSizeX,
+	float SectionSizeY)
+{
+	if (!Config.bEnabled)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	if (!Config.BotClass)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("WorldGen: %s spawning enabled, but BotClass is not assigned."), *DebugName);
+		return;
+	}
+	const ABotCharacter* BotDefaults = Config.BotClass->GetDefaultObject<ABotCharacter>();
+	const bool bSpawnAsWalkingBot = BotDefaults && BotDefaults->IsWalkingBot();
+
+	const int32 MaxCount = FMath::Max(Config.MaxBotsPerSection, 0);
+	if (MaxCount <= 0)
+	{
+		UE_LOG(
+			LogTemp,
+			Log,
+			TEXT("WorldGen: %s spawning skipped for section (%d, %d) because MaxBotsPerSection is 0."),
+			*DebugName,
+			Section.X,
+			Section.Y
+		);
+		return;
+	}
+
+	const int32 MinCount = FMath::Clamp(Config.MinBotsPerSection, 1, MaxCount);
+	const float AreaSqM = (SectionSizeX * SectionSizeY) / 10000.0f;
+	const int32 DensityCount = FMath::RoundToInt(FMath::Max(Config.DensityPerSqM, 0.0f) * AreaSqM);
+
 	const uint32 SectionSeed = GetTypeHash(Section);
-	const uint32 Seed = HashCombine(SectionSeed, GetTypeHash(CrowSeedOffset));
+	const uint32 TypeSeed = HashCombine(SectionSeed, GetTypeHash(TypeIndex));
+	const uint32 Seed = HashCombine(TypeSeed, GetTypeHash(Config.SeedOffset));
 	FRandomStream Rand(static_cast<int32>(Seed));
-	const int32 NumCrows = Rand.RandRange(MinCount, MaxCount);
-	if (NumCrows <= 0)
+	const int32 NumBots = Config.bUseDensityPerSqM
+		? FMath::Clamp(DensityCount, 0, MaxCount)
+		: Rand.RandRange(MinCount, MaxCount);
+	if (NumBots <= 0)
 	{
 		return;
 	}
 
 	const float BaseX = Section.X * SectionSizeX;
 	const float BaseY = Section.Y * SectionSizeY;
-	const float PaddingX = FMath::Clamp(CrowSectionEdgePadding, 0.0f, SectionSizeX * 0.49f);
-	const float PaddingY = FMath::Clamp(CrowSectionEdgePadding, 0.0f, SectionSizeY * 0.49f);
-	const float MinAltitude = FMath::Min(CrowMinAltitudeAboveTerrain, CrowMaxAltitudeAboveTerrain);
-	const float MaxAltitude = FMath::Max(CrowMinAltitudeAboveTerrain, CrowMaxAltitudeAboveTerrain);
+	const float PaddingX = FMath::Clamp(Config.SectionEdgePadding, 0.0f, SectionSizeX * 0.49f);
+	const float PaddingY = FMath::Clamp(Config.SectionEdgePadding, 0.0f, SectionSizeY * 0.49f);
+	const float MinAltitude = FMath::Min(Config.MinAltitudeAboveTerrain, Config.MaxAltitudeAboveTerrain);
+	const float MaxAltitude = FMath::Max(Config.MinAltitudeAboveTerrain, Config.MaxAltitudeAboveTerrain);
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.Owner = this;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
 	int32 SpawnedCount = 0;
-	SectionData.SpawnedCrows.Reserve(NumCrows);
-	for (int32 CrowIndex = 0; CrowIndex < NumCrows; ++CrowIndex)
+	SectionData.SpawnedBots.Reserve(SectionData.SpawnedBots.Num() + NumBots);
+	for (int32 BotIndex = 0; BotIndex < NumBots; ++BotIndex)
 	{
 		const float WorldX = BaseX + Rand.FRandRange(PaddingX, SectionSizeX - PaddingX);
 		const float WorldY = BaseY + Rand.FRandRange(PaddingY, SectionSizeY - PaddingY);
 		const FVector2D SampleLocation(WorldX, WorldY);
 		const float TerrainZ = GetHeight(SampleLocation);
-		const float Altitude = Rand.FRandRange(MinAltitude, MaxAltitude);
+		const float CapsuleHalfHeight = bSpawnAsWalkingBot && BotDefaults && BotDefaults->GetCapsuleComponent()
+			? BotDefaults->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()
+			: 0.f;
+		const float Altitude = bSpawnAsWalkingBot
+			? CapsuleHalfHeight + 5.f
+			: Rand.FRandRange(MinAltitude, MaxAltitude);
 
 		const FVector SpawnLocation(WorldX, WorldY, TerrainZ + Altitude);
 		const FRotator SpawnRotation(0.0f, Rand.FRandRange(0.0f, 360.0f), 0.0f);
 
-		ABotCharacter* SpawnedCrow = World->SpawnActor<ABotCharacter>(CrowClass, SpawnLocation, SpawnRotation, SpawnParams);
-		if (SpawnedCrow)
+		ABotCharacter* SpawnedBot = World->SpawnActor<ABotCharacter>(Config.BotClass, SpawnLocation, SpawnRotation, SpawnParams);
+		if (SpawnedBot)
 		{
-			const FName SectionTag(*FString::Printf(TEXT("CrowSection_%d_%d"), Section.X, Section.Y));
-			SpawnedCrow->Tags.AddUnique(SectionTag);
+			const FName SectionTag(*FString::Printf(TEXT("BotSection_%d_%d"), Section.X, Section.Y));
+			const FName TypeTag(*FString::Printf(TEXT("BotType_%d"), TypeIndex));
+			SpawnedBot->Tags.AddUnique(SectionTag);
+			SpawnedBot->Tags.AddUnique(TypeTag);
 
-			SectionData.SpawnedCrows.Add(SpawnedCrow);
+			SectionData.SpawnedBots.Add(SpawnedBot);
 			++SpawnedCount;
 
-			if (bDebugCrowSpawning)
+			if (bDebugBotSpawning)
 			{
 				const FVector TerrainLocation(WorldX, WorldY, TerrainZ);
 				const FString DebugText = FString::Printf(
-					TEXT("Crow %d/%d\nSection (%d,%d)\nAlt %.0f"),
-					CrowIndex + 1,
-					NumCrows,
+					TEXT("%s %d/%d\nSection (%d,%d)\nAlt %.0f"),
+					*DebugName,
+					BotIndex + 1,
+					NumBots,
 					Section.X,
 					Section.Y,
 					Altitude
@@ -875,11 +930,11 @@ void AWorldGen::SpawnCrowsForSection(const FIntPoint& Section, FSectionData& Sec
 				DrawDebugSphere(
 					World,
 					SpawnLocation,
-					CrowDebugSphereRadius,
+					BotDebugSphereRadius,
 					16,
 					FColor::Cyan,
 					false,
-					CrowDebugDrawDuration,
+					BotDebugDrawDuration,
 					0,
 					4.0f
 				);
@@ -889,17 +944,17 @@ void AWorldGen::SpawnCrowsForSection(const FIntPoint& Section, FSectionData& Sec
 					SpawnLocation,
 					FColor::Yellow,
 					false,
-					CrowDebugDrawDuration,
+					BotDebugDrawDuration,
 					0,
 					2.0f
 				);
 				DrawDebugString(
 					World,
-					SpawnLocation + FVector(0.0f, 0.0f, CrowDebugSphereRadius + 60.0f),
+					SpawnLocation + FVector(0.0f, 0.0f, BotDebugSphereRadius + 60.0f),
 					DebugText,
-					SpawnedCrow,
+					SpawnedBot,
 					FColor::White,
-					CrowDebugDrawDuration,
+					BotDebugDrawDuration,
 					true,
 					1.0f
 				);
@@ -907,14 +962,16 @@ void AWorldGen::SpawnCrowsForSection(const FIntPoint& Section, FSectionData& Sec
 				UE_LOG(
 					LogTemp,
 					Log,
-					TEXT("WorldGen: Spawned crow %s in section (%d, %d) at %s terrainZ=%0.2f altitude=%0.2f tag=%s"),
-					*SpawnedCrow->GetName(),
+					TEXT("WorldGen: Spawned %s %s in section (%d, %d) at %s terrainZ=%0.2f altitude=%0.2f tag=%s class=%s"),
+					*DebugName,
+					*SpawnedBot->GetName(),
 					Section.X,
 					Section.Y,
 					*SpawnLocation.ToCompactString(),
 					TerrainZ,
 					Altitude,
-					*SectionTag.ToString()
+					*SectionTag.ToString(),
+					*Config.BotClass->GetName()
 				);
 			}
 		}
@@ -923,13 +980,14 @@ void AWorldGen::SpawnCrowsForSection(const FIntPoint& Section, FSectionData& Sec
 			UE_LOG(
 				LogTemp,
 				Warning,
-				TEXT("WorldGen: Failed to spawn crow %d/%d in section (%d, %d) at %s using class %s."),
-				CrowIndex + 1,
-				NumCrows,
+				TEXT("WorldGen: Failed to spawn %s %d/%d in section (%d, %d) at %s using class %s."),
+				*DebugName,
+				BotIndex + 1,
+				NumBots,
 				Section.X,
 				Section.Y,
 				*SpawnLocation.ToCompactString(),
-				*CrowClass->GetName()
+				*Config.BotClass->GetName()
 			);
 		}
 	}
@@ -937,30 +995,31 @@ void AWorldGen::SpawnCrowsForSection(const FIntPoint& Section, FSectionData& Sec
 	UE_LOG(
 		LogTemp,
 		Log,
-		TEXT("WorldGen: Spawned %d/%d crows in section (%d, %d)"),
+		TEXT("WorldGen: Spawned %d/%d %s bots in section (%d, %d)"),
 		SpawnedCount,
-		NumCrows,
+		NumBots,
+		*DebugName,
 		Section.X,
 		Section.Y
 	);
 }
 
-void AWorldGen::DestroyCrowsForSection(FSectionData& SectionData)
+void AWorldGen::DestroyBotsForSection(FSectionData& SectionData)
 {
-	for (TWeakObjectPtr<ABotCharacter>& CrowPtr : SectionData.SpawnedCrows)
+	for (TWeakObjectPtr<ABotCharacter>& BotPtr : SectionData.SpawnedBots)
 	{
-		if (ABotCharacter* Crow = CrowPtr.Get())
+		if (ABotCharacter* Bot = BotPtr.Get())
 		{
-			if (bDebugCrowSpawning)
+			if (bDebugBotSpawning)
 			{
-				UE_LOG(LogTemp, Log, TEXT("WorldGen: Destroying streamed crow %s at %s"), *Crow->GetName(), *Crow->GetActorLocation().ToCompactString());
+				UE_LOG(LogTemp, Log, TEXT("WorldGen: Destroying streamed bot %s at %s"), *Bot->GetName(), *Bot->GetActorLocation().ToCompactString());
 			}
 
-			Crow->Destroy();
+			Bot->Destroy();
 		}
 	}
 
-	SectionData.SpawnedCrows.Reset();
+	SectionData.SpawnedBots.Reset();
 }
 
 ANavMeshBoundsVolume* AWorldGen::ResolveNavBoundsTemplate()

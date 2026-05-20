@@ -60,6 +60,104 @@ void AEagleEyeCharacter::BeginPlay()
 {
 	// Call the base class  
 	Super::BeginPlay();
+
+	ResetHealth();
+}
+
+float AEagleEyeCharacter::TakeDamage(
+	float DamageAmount,
+	FDamageEvent const& DamageEvent,
+	AController* EventInstigator,
+	AActor* DamageCauser)
+{
+	const float DamageAppliedByParent = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+	const float DamageToApply = DamageAppliedByParent > 0.f ? DamageAppliedByParent : DamageAmount;
+	return ApplyHealthDamage(DamageToApply, EventInstigator, DamageCauser);
+}
+
+float AEagleEyeCharacter::ApplyHealthDamage(float DamageAmount, AController* EventInstigator, AActor* DamageCauser)
+{
+	if (bIsDead || DamageAmount <= 0.f)
+	{
+		return 0.f;
+	}
+
+	const float PreviousHealth = CurrentHealth;
+	CurrentHealth = FMath::Clamp(CurrentHealth - DamageAmount, 0.f, MaxHealth);
+	const float AppliedDamage = PreviousHealth - CurrentHealth;
+
+	if (AppliedDamage <= 0.f)
+	{
+		return 0.f;
+	}
+
+	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+
+	if (CurrentHealth <= 0.f)
+	{
+		HandleDeath(EventInstigator, DamageCauser);
+	}
+
+	return AppliedDamage;
+}
+
+float AEagleEyeCharacter::Heal(float HealAmount)
+{
+	if (bIsDead || HealAmount <= 0.f)
+	{
+		return 0.f;
+	}
+
+	const float PreviousHealth = CurrentHealth;
+	CurrentHealth = FMath::Clamp(CurrentHealth + HealAmount, 0.f, MaxHealth);
+	const float AppliedHeal = CurrentHealth - PreviousHealth;
+	if (AppliedHeal > 0.f)
+	{
+		OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+	}
+
+	return AppliedHeal;
+}
+
+void AEagleEyeCharacter::ResetHealth()
+{
+	MaxHealth = FMath::Max(1.f, MaxHealth);
+	CurrentHealth = MaxHealth;
+	bIsDead = false;
+
+	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	{
+		MoveComp->SetMovementMode(MOVE_Walking);
+	}
+
+	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+}
+
+void AEagleEyeCharacter::HandleDeath(AController* EventInstigator, AActor* DamageCauser)
+{
+	if (bIsDead)
+	{
+		return;
+	}
+
+	bIsDead = true;
+
+	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+	{
+		MoveComp->DisableMovement();
+	}
+
+	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
+	{
+		DisableInput(PlayerController);
+	}
+
+	OnPlayerDied.Broadcast();
+	K2_OnDeath(EventInstigator, DamageCauser);
+
+	UE_LOG(LogTemplateCharacter, Log, TEXT("%s died. DamageCauser=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(DamageCauser));
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -89,20 +187,6 @@ void AEagleEyeCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputC
 		// Looking
 		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &AEagleEyeCharacter::Look);
 
-		if (ToggleCrowViewAction)
-		{
-			EnhancedInputComponent->BindAction(ToggleCrowViewAction, ETriggerEvent::Started, this, &AEagleEyeCharacter::ToggleCrowPOV);
-		}
-
-		if (NextCrowViewAction)
-		{
-			EnhancedInputComponent->BindAction(NextCrowViewAction, ETriggerEvent::Started, this, &AEagleEyeCharacter::NextCrowPOV);
-		}
-
-		if (PreviousCrowViewAction)
-		{
-			EnhancedInputComponent->BindAction(PreviousCrowViewAction, ETriggerEvent::Started, this, &AEagleEyeCharacter::PreviousCrowPOV);
-		}
 	}
 	else
 	{
@@ -146,129 +230,84 @@ void AEagleEyeCharacter::Look(const FInputActionValue& Value)
 	}
 }
 
-void AEagleEyeCharacter::ToggleCrowPOV()
+ABotCharacter* AEagleEyeCharacter::FindNearestBotForRecording() const
 {
-	SetCrowPOVEnabled(!bViewingCrowPOV);
-}
-
-void AEagleEyeCharacter::NextCrowPOV()
-{
-	StepCrowPOV(1);
-}
-
-void AEagleEyeCharacter::PreviousCrowPOV()
-{
-	StepCrowPOV(-1);
-}
-
-void AEagleEyeCharacter::SetCrowPOVEnabled(bool bEnabled)
-{
-	APlayerController* PlayerController = Cast<APlayerController>(GetController());
-	if (!PlayerController)
+	UWorld* World = GetWorld();
+	if (!World)
 	{
+		return nullptr;
+	}
+
+	ABotCharacter* BestBot = nullptr;
+	float BestDistSq = TNumericLimits<float>::Max();
+	for (TActorIterator<ABotCharacter> It(World); It; ++It)
+	{
+		ABotCharacter* Bot = *It;
+		if (!IsValid(Bot))
+		{
+			continue;
+		}
+
+		const float DistSq = FVector::DistSquared(GetActorLocation(), Bot->GetActorLocation());
+		if (DistSq < BestDistSq)
+		{
+			BestDistSq = DistSq;
+			BestBot = Bot;
+		}
+	}
+
+	return BestBot;
+}
+
+void AEagleEyeCharacter::StartNearestBotViewportRecording(float FPS, int32 Width, int32 Height)
+{
+	ABotCharacter* Bot = FindNearestBotForRecording();
+	if (!Bot)
+	{
+		UE_LOG(LogTemplateCharacter, Warning, TEXT("Bot viewport recording: no bot found."));
 		return;
 	}
 
-	if (bEnabled)
+	if (UWorld* World = GetWorld())
 	{
-		SetCrowPOVTarget(FindCrowViewTarget());
-		return;
+		for (TActorIterator<ABotCharacter> It(World); It; ++It)
+		{
+			ABotCharacter* OtherBot = *It;
+			if (IsValid(OtherBot) && OtherBot != Bot)
+			{
+				OtherBot->StopBotViewportRecording();
+			}
+		}
 	}
 
-	PlayerController->SetViewTargetWithBlend(this, 0.25f);
-	bViewingCrowPOV = false;
-	CurrentCrowViewTarget = nullptr;
+	Bot->StartBotViewportRecordingWithSettings(FPS, Width, Height);
+	UE_LOG(LogTemplateCharacter, Log, TEXT("Bot viewport recording requested for nearest bot %s (%dx%d @ %.2f fps)."),
+		*GetNameSafe(Bot),
+		FMath::Clamp(Width, 160, 1920),
+		FMath::Clamp(Height, 160, 1080),
+		FMath::Clamp(FPS, 1.0f, 120.0f));
 }
 
-AActor* AEagleEyeCharacter::FindCrowViewTarget() const
+void AEagleEyeCharacter::StopBotViewportRecordings()
 {
-	TArray<ABotCharacter*> Crows;
-	GatherCrowViewTargets(Crows);
-	return Crows.Num() > 0 ? Crows[0] : nullptr;
-}
-
-void AEagleEyeCharacter::GatherCrowViewTargets(TArray<ABotCharacter*>& OutCrows) const
-{
-	OutCrows.Reset();
-
 	UWorld* World = GetWorld();
 	if (!World)
 	{
 		return;
 	}
 
+	int32 StoppedCount = 0;
 	for (TActorIterator<ABotCharacter> It(World); It; ++It)
 	{
-		ABotCharacter* Crow = *It;
-		if (!IsValid(Crow) || !Crow->FindComponentByClass<UCameraComponent>())
+		ABotCharacter* Bot = *It;
+		if (!IsValid(Bot))
 		{
 			continue;
 		}
 
-		OutCrows.Add(Crow);
+		Bot->StopBotViewportRecording();
+		++StoppedCount;
 	}
 
-	OutCrows.Sort([this](const ABotCharacter& A, const ABotCharacter& B)
-	{
-		const float DistASq = FVector::DistSquared(GetActorLocation(), A.GetActorLocation());
-		const float DistBSq = FVector::DistSquared(GetActorLocation(), B.GetActorLocation());
-		if (!FMath::IsNearlyEqual(DistASq, DistBSq))
-		{
-			return DistASq < DistBSq;
-		}
-
-		return A.GetFName().LexicalLess(B.GetFName());
-	});
-}
-
-void AEagleEyeCharacter::SetCrowPOVTarget(AActor* CrowViewTarget)
-{
-	APlayerController* PlayerController = Cast<APlayerController>(GetController());
-	if (!PlayerController)
-	{
-		return;
-	}
-
-	if (!IsValid(CrowViewTarget))
-	{
-		UE_LOG(LogTemplateCharacter, Warning, TEXT("Crow POV: no crow view target found."));
-		return;
-	}
-
-	PlayerController->SetViewTargetWithBlend(CrowViewTarget, 0.25f);
-	CurrentCrowViewTarget = CrowViewTarget;
-	bViewingCrowPOV = true;
-}
-
-void AEagleEyeCharacter::StepCrowPOV(int32 Direction)
-{
-	TArray<ABotCharacter*> Crows;
-	GatherCrowViewTargets(Crows);
-	if (Crows.Num() == 0)
-	{
-		UE_LOG(LogTemplateCharacter, Warning, TEXT("Crow POV: no crows with cameras found."));
-		return;
-	}
-
-	if (!bViewingCrowPOV || !CurrentCrowViewTarget.IsValid())
-	{
-		SetCrowPOVTarget(Crows[0]);
-		return;
-	}
-
-	int32 CurrentIndex = Crows.IndexOfByKey(Cast<ABotCharacter>(CurrentCrowViewTarget.Get()));
-	if (CurrentIndex == INDEX_NONE)
-	{
-		CurrentIndex = 0;
-	}
-	else
-	{
-		CurrentIndex = (CurrentIndex + Direction) % Crows.Num();
-		if (CurrentIndex < 0)
-		{
-			CurrentIndex += Crows.Num();
-		}
-	}
-
-	SetCrowPOVTarget(Crows[CurrentIndex]);
+	UE_LOG(LogTemplateCharacter, Log, TEXT("Bot viewport recording stopped for %d bots."), StoppedCount);
 }

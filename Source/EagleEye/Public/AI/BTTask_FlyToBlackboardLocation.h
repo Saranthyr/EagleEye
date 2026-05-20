@@ -24,6 +24,15 @@ protected:
     UPROPERTY(EditAnywhere, Category="Flight", meta=(ClampMin="0.0"))
     float AcceptanceRadius = 220.f;
 
+    UPROPERTY(EditAnywhere, Category="Flight")
+    bool bMaintainDistanceFromTarget = true;
+
+    UPROPERTY(EditAnywhere, Category="Flight", meta=(ClampMin="0.0", EditCondition="bMaintainDistanceFromTarget"))
+    float DesiredTargetDistance = 1200.f;
+
+    UPROPERTY(EditAnywhere, Category="Flight", meta=(ClampMin="0.0", EditCondition="bMaintainDistanceFromTarget"))
+    float DistanceTolerance = 150.f;
+
     UPROPERTY(EditAnywhere, Category="Flight", meta=(ClampMin="0.0", ClampMax="1.0"))
     float MovementScale = 1.f;
 
@@ -39,8 +48,26 @@ protected:
     UPROPERTY(EditAnywhere, Category="Flight")
     bool bUpdateFocus = false;
 
+    UPROPERTY(EditAnywhere, Category="Navigation")
+    bool bUseNavMeshForWalking = true;
+
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(ClampMin="0.0", EditCondition="bUseNavMeshForWalking"))
+    float WalkingMoveAcceptanceRadius = 120.f;
+
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(EditCondition="bUseNavMeshForWalking"))
+    FVector NavProjectionExtent = FVector(300.f, 300.f, 500.f);
+
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(EditCondition="bUseNavMeshForWalking"))
+    bool bAllowPartialNavPath = true;
+
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(EditCondition="bUseNavMeshForWalking"))
+    bool bFallbackToDirectWalkingWhenNavMoveFails = true;
+
     UPROPERTY(EditAnywhere, Category="Rotation")
     bool bRotateTowardTarget = true;
+
+    UPROPERTY(EditAnywhere, Category="Rotation")
+    bool bRotateWalkingTowardMoveDirection = true;
 
     UPROPERTY(EditAnywhere, Category="Rotation")
     bool bUsePitchRotation = true;

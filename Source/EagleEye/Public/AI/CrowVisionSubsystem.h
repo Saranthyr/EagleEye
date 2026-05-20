@@ -7,6 +7,7 @@
 #include "CrowVisionSubsystem.generated.h"
 
 class UMyActorComponent;
+class ADetectionModelHostActor;
 
 UCLASS()
 class EAGLEEYE_API UCrowVisionSubsystem : public UWorldSubsystem
@@ -23,8 +24,7 @@ public:
         UMyActorComponent* Requester,
         TArray<FColor>&& Pixels,
         int32 Width,
-        int32 Height,
-        int32 Threshold);
+        int32 Height);
 
 private:
     struct FQueuedFrame
@@ -33,12 +33,12 @@ private:
         TArray<FColor> Pixels;
         int32 Width = 0;
         int32 Height = 0;
-        int32 Threshold = 0;
         double SubmitTimeSeconds = 0.0;
     };
 
     void StartWorker();
     void StopWorker();
+    void EnsureModelHostActor();
     UMyActorComponent* ResolveModelHost();
 
     FCriticalSection QueueMutex;
@@ -46,6 +46,9 @@ private:
 
     FCriticalSection HostsMutex;
     TArray<TWeakObjectPtr<UMyActorComponent>> ModelHosts;
+
+    UPROPERTY()
+    TObjectPtr<ADetectionModelHostActor> ModelHostActor;
 
     TFuture<void> WorkerFuture;
     std::atomic<bool> bWorkerRunning{false};

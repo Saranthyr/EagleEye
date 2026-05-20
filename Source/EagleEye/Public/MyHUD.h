@@ -26,70 +26,28 @@ public:
     UFUNCTION(BlueprintPure, Category="Detection|HUD")
     bool IsDetectionHudEnabled() const { return bDetectionHudEnabled; }
 	
-	UPROPERTY()
-    class UMyActorComponent* ActorComponentRef;
-
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|HUD")
     bool bDetectionHudEnabled = true;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Stabilization")
-    bool bEnableUniversalStabilization = true;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|HUD")
+    bool bHealthHudEnabled = true;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Stabilization", meta=(ClampMin="0.00", ClampMax="1.00"))
-    float TrackMatchIoU = 0.08f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|HUD", meta=(ClampMin="1.0"))
+    float HealthBarWidth = 260.f;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Stabilization", meta=(ClampMin="1.0", ClampMax="300.0"))
-    float CenterMatchPx = 120.0f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|HUD", meta=(ClampMin="1.0"))
+    float HealthBarHeight = 22.f;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Stabilization", meta=(ClampMin="0.0", ClampMax="30.0"))
-    float PositionDeadzonePx = 4.0f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|HUD")
+    FVector2D HealthBarScreenOffset = FVector2D(32.f, 32.f);
 
-    UPROPERTY(EditAnywhere, Category="Detection|Stabilization", meta=(ClampMin="0.0", ClampMax="40.0"))
-    float SizeDeadzonePx = 6.0f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|HUD")
+    FLinearColor HealthBarFillColor = FLinearColor(0.05f, 0.85f, 0.22f, 1.f);
 
-    UPROPERTY(EditAnywhere, Category="Detection|Stabilization", meta=(ClampMin="0.05", ClampMax="1.00"))
-    float BaseSmoothingAlpha = 0.14f;
-
-    UPROPERTY(EditAnywhere, Category="Detection|Stabilization", meta=(ClampMin="0.05", ClampMax="1.00"))
-    float MaxSmoothingAlpha = 0.55f;
-
-    UPROPERTY(EditAnywhere, Category="Detection|Stabilization", meta=(ClampMin="1.0", ClampMax="300.0"))
-    float FastShiftPixels = 80.0f;
-
-    UPROPERTY(EditAnywhere, Category="Detection|Stabilization", meta=(ClampMin="0.05", ClampMax="1.00"))
-    float VelocityBlendAlpha = 0.20f;
-
-    UPROPERTY(EditAnywhere, Category="Detection|Stabilization", meta=(ClampMin="0.10", ClampMax="2.00"))
-    float DynamicGateByBox = 0.90f;
-
-    UPROPERTY(EditAnywhere, Category="Detection|Stabilization", meta=(ClampMin="20.0", ClampMax="1000.0"))
-    float MaxPredictionShiftPx = 140.0f;
-
-    UPROPERTY(EditAnywhere, Category="Detection|Stabilization", meta=(ClampMin="0", ClampMax="20"))
-    int32 MaxTrackMissedFrames = 8;
-
-    UPROPERTY(EditAnywhere, Category="Detection|Stabilization", meta=(ClampMin="1", ClampMax="10"))
-    int32 MinTrackConfirmedFrames = 2;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|HUD")
+    FLinearColor HealthBarLowFillColor = FLinearColor(0.95f, 0.08f, 0.04f, 1.f);
 
 private:
-    struct FTrackedDetection
-    {
-        FDetectionResult Det;
-        FVector2D Center = FVector2D::ZeroVector;
-        FVector2D Size = FVector2D::ZeroVector;
-        FVector2D Velocity = FVector2D::ZeroVector;
-        int32 ClassId = -1;
-        int32 MissedFrames = 0;
-        int32 SeenFrames = 0;
-    };
-
-    TArray<FTrackedDetection> StableTracks;
-    int32 StableSourceWidth = 0;
-    int32 StableSourceHeight = 0;
-    int32 LastProcessedSequence = 0;
-
-    void ResetStabilizationState();
-
-    void UpdateStableTracks(const TArray<FDetectionResult>& NewDetections, int32 NewSourceWidth, int32 NewSourceHeight, int32 FrameSequence, float DeltaSeconds);
+    void DrawPlayerHealth();
     void DrawDetectionList(const TArray<FDetectionResult>& Detections, int32 SourceWidth, int32 SourceHeight, AActor* CameraActor);
 };

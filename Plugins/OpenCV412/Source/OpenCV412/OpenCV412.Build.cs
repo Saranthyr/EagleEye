@@ -11,8 +11,10 @@ public class OpenCV412 : ModuleRules
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 		
 		string ThirdPartyPath = Path.Combine(ModuleDirectory, "ThirdParty", "OpenCV");
+		string ProjectThirdPartyPath = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "..", "..", "ThirdParty", "OpenCV"));
 		string LinuxCudaPath = Path.Combine(ThirdPartyPath, "LinuxCuda");
 		string IncludePath = Path.Combine(ThirdPartyPath, "include");
+		string ProjectIncludePath = Path.Combine(ProjectThirdPartyPath, "include");
 
 		// Prefer the headers that match the platform-specific binaries (cmake installs to include/opencv4).
 		if (Target.Platform == UnrealTargetPlatform.Linux)
@@ -33,6 +35,10 @@ public class OpenCV412 : ModuleRules
 			{
 				PublicIncludePaths.Add(IncludePath);
 			}
+		}
+		else if (Target.Platform == UnrealTargetPlatform.Win64 && Directory.Exists(ProjectIncludePath))
+		{
+			PublicIncludePaths.Add(ProjectIncludePath);
 		}
 		else if (Directory.Exists(IncludePath))
 		{
@@ -143,6 +149,34 @@ public class OpenCV412 : ModuleRules
 			{
 				// Keep these for consumers even if LibPath doesn't exist.
 				PublicSystemLibraries.AddRange(new[] { "pthread", "dl", "m" });
+			}
+		}
+		else if (Target.Platform == UnrealTargetPlatform.Win64)
+		{
+			string Win64LibPath = Path.Combine(ProjectThirdPartyPath, "Libraries", "Win64");
+			string OpenCVLib = Path.Combine(Win64LibPath, "opencv_world4100.lib");
+			string OpenCVDll = Path.Combine(Win64LibPath, "opencv_world4100.dll");
+			string OpenCVFfmpegDll = Path.Combine(Win64LibPath, "opencv_videoio_ffmpeg4100_64.dll");
+
+			if (File.Exists(OpenCVLib))
+			{
+				PublicAdditionalLibraries.Add(OpenCVLib);
+			}
+
+			if (File.Exists(OpenCVDll))
+			{
+				RuntimeDependencies.Add(
+					Path.Combine("$(TargetOutputDir)", Path.GetFileName(OpenCVDll)),
+					OpenCVDll,
+					StagedFileType.NonUFS);
+			}
+
+			if (File.Exists(OpenCVFfmpegDll))
+			{
+				RuntimeDependencies.Add(
+					Path.Combine("$(TargetOutputDir)", Path.GetFileName(OpenCVFfmpegDll)),
+					OpenCVFfmpegDll,
+					StagedFileType.NonUFS);
 			}
 		}
 

@@ -61,6 +61,42 @@ struct FFoliageTypeConfig
 	int32 SeedOffset = 0;
 };
 
+USTRUCT(BlueprintType)
+struct FBotSpawnTypeConfig
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bot")
+	TSubclassOf<ABotCharacter> BotClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bot")
+	bool bEnabled = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bot", meta=(ClampMin="0"))
+	int32 MinBotsPerSection = 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bot", meta=(ClampMin="0"))
+	int32 MaxBotsPerSection = 2;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bot")
+	bool bUseDensityPerSqM = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bot", meta=(ClampMin="0.0", EditCondition="bUseDensityPerSqM"))
+	float DensityPerSqM = 0.003f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bot", meta=(ClampMin="0.0"))
+	float MinAltitudeAboveTerrain = 800.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bot", meta=(ClampMin="0.0"))
+	float MaxAltitudeAboveTerrain = 1600.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bot", meta=(ClampMin="0.0"))
+	float SectionEdgePadding = 300.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bot")
+	int32 SeedOffset = 9173;
+};
+
 UCLASS() 
 class EAGLEEYE_API AWorldGen : public AActor
 {
@@ -109,38 +145,20 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Foliage")
 	bool bEnableFoliage = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows")
-	bool bEnableCrowSpawning = false;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bots")
+	bool bEnableBotSpawning = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows")
-	TSubclassOf<ABotCharacter> CrowClass;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bots")
+	TArray<FBotSpawnTypeConfig> BotSpawnTypes;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows", meta=(ClampMin="0"))
-	int32 MinCrowsPerSection = 1;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bots|Debug")
+	bool bDebugBotSpawning = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows", meta=(ClampMin="0"))
-	int32 MaxCrowsPerSection = 2;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bots|Debug", meta=(ClampMin="0.0"))
+	float BotDebugDrawDuration = 15.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows", meta=(ClampMin="0.0"))
-	float CrowMinAltitudeAboveTerrain = 800.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows", meta=(ClampMin="0.0"))
-	float CrowMaxAltitudeAboveTerrain = 1600.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows", meta=(ClampMin="0.0"))
-	float CrowSectionEdgePadding = 300.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows")
-	int32 CrowSeedOffset = 9173;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows|Debug")
-	bool bDebugCrowSpawning = false;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows|Debug", meta=(ClampMin="0.0"))
-	float CrowDebugDrawDuration = 15.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Crows|Debug", meta=(ClampMin="1.0"))
-	float CrowDebugSphereRadius = 120.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bots|Debug", meta=(ClampMin="1.0"))
+	float BotDebugSphereRadius = 120.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Navigation")
 	bool bEnableNavMesh = true;
@@ -193,7 +211,7 @@ private:
 		FBox Bounds;
 		TArray<TArray<int32>> FoliageInstanceIndices;
 		TWeakObjectPtr<ANavMeshBoundsVolume> NavBoundsVolume;
-		TArray<TWeakObjectPtr<ABotCharacter>> SpawnedCrows;
+		TArray<TWeakObjectPtr<ABotCharacter>> SpawnedBots;
 	};
 
 	void UpdateStreaming();
@@ -206,8 +224,16 @@ private:
 	void SpawnFoliageForSection(const FIntPoint& Section, FSectionData& SectionData);
 	void RemoveFoliageForSection(const FIntPoint& Section, FSectionData& SectionData);
 	void UpdateFoliageIndexAfterSwapRemoval(int32 TypeIndex, int32 OldIndex, int32 NewIndex, const FIntPoint& RemovedSection);
-	void SpawnCrowsForSection(const FIntPoint& Section, FSectionData& SectionData);
-	void DestroyCrowsForSection(FSectionData& SectionData);
+	void SpawnBotsForSection(const FIntPoint& Section, FSectionData& SectionData);
+	void SpawnBotTypeForSection(
+		const FIntPoint& Section,
+		FSectionData& SectionData,
+		const FBotSpawnTypeConfig& Config,
+		int32 TypeIndex,
+		const FString& DebugName,
+		float SectionSizeX,
+		float SectionSizeY);
+	void DestroyBotsForSection(FSectionData& SectionData);
 	ANavMeshBoundsVolume* ResolveNavBoundsTemplate();
 	ANavMeshBoundsVolume* CreateSectionNavBounds(const FBox& WorldBounds);
 	void DestroySectionNavBounds(FSectionData& SectionData);
