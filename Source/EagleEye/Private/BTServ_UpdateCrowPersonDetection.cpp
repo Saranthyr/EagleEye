@@ -15,23 +15,29 @@
 
 namespace
 {
-    struct FCrowPersonDetectionMemory
-    {
-        FVector LastTargetLocation = FVector::ZeroVector;
-        float LastDetectedTime = -FLT_MAX;
-        float LastConfidence = 0.f;
-        int32 LastProcessedFrameSequence = 0;
-        int32 ConsecutiveDetections = 0;
-        int32 ConsecutiveMisses = 0;
-        bool bHasLastTarget = false;
-    };
-
     struct FDetectionBox
     {
         FVector2D Center = FVector2D::ZeroVector;
         FVector2D Size = FVector2D::ZeroVector;
         float Confidence = 0.f;
         float Area = 0.f;
+    };
+
+    struct FCrowPersonDetectionMemory
+    {
+        FVector LastTargetLocation = FVector::ZeroVector;
+        FVector LastRawTargetLocation = FVector::ZeroVector;
+        FVector TargetVelocity = FVector::ZeroVector;
+        FDetectionBox LastTrackedBox;
+        float LastRawTargetTime = -FLT_MAX;
+        float LastDetectedTime = -FLT_MAX;
+        float LastConfidence = 0.f;
+        int32 LastProcessedFrameSequence = 0;
+        int32 ConsecutiveDetections = 0;
+        int32 ConsecutiveMisses = 0;
+        bool bHasLastTarget = false;
+        bool bHasRawTarget = false;
+        bool bHasTrackedBox = false;
     };
 
     bool IsPersonDetection(const FDetectionResult& Detection)
@@ -83,10 +89,79 @@ namespace
         return true;
     }
 
-    bool FindBestPersonDetection(const UMyActorComponent& Detector, float MinAcceptedConfidence, FDetectionBox& OutBox)
+    FVector2D GetBoxMin(const FDetectionBox& Box)
     {
-        bool bFound = false;
-        float BestScore = -1.f;
+        return Box.Center - (Box.Size * 0.5f);
+    }
+
+    FVector2D GetBoxMax(const FDetectionBox& Box)
+    {
+        return Box.Center + (Box.Size * 0.5f);
+    }
+
+    float CalculateBoxIoU(const FDetectionBox& A, const FDetectionBox& B)
+    {
+        const FVector2D AMin = GetBoxMin(A);
+        const FVector2D AMax = GetBoxMax(A);
+        const FVector2D BMin = GetBoxMin(B);
+        const FVector2D BMax = GetBoxMax(B);
+
+        const float InterMinX = FMath::Max(AMin.X, BMin.X);
+        const float InterMinY = FMath::Max(AMin.Y, BMin.Y);
+        const float InterMaxX = FMath::Min(AMax.X, BMax.X);
+        const float InterMaxY = FMath::Min(AMax.Y, BMax.Y);
+        const float InterWidth = FMath::Max(0.f, InterMaxX - InterMinX);
+        const float InterHeight = FMath::Max(0.f, InterMaxY - InterMinY);
+        const float InterArea = InterWidth * InterHeight;
+        const float UnionArea = FMath::Max(A.Area + B.Area - InterArea, KINDA_SMALL_NUMBER);
+        return InterArea / UnionArea;
+    }
+
+    float CalculateNormalizedCenterDistance(const FDetectionBox& A, const FDetectionBox& B, int32 SourceWidth, int32 SourceHeight)
+    {
+        const float Diagonal = FMath::Sqrt(
+            FMath::Square(FMath::Max(static_cast<float>(SourceWidth), 1.f)) +
+            FMath::Square(FMath::Max(static_cast<float>(SourceHeight), 1.f)));
+        return FVector2D::Distance(A.Center, B.Center) / FMath::Max(Diagonal, 1.f);
+    }
+
+    FDetectionBox SmoothBox(const FDetectionBox& PreviousBox, const FDetectionBox& CurrentBox, float DeltaSeconds, float SmoothingSpeed)
+    {
+        FDetectionBox SmoothedBox = CurrentBox;
+        if (SmoothingSpeed > 0.f)
+        {
+            SmoothedBox.Center = FMath::Vector2DInterpTo(PreviousBox.Center, CurrentBox.Center, DeltaSeconds, SmoothingSpeed);
+            SmoothedBox.Size = FMath::Vector2DInterpTo(PreviousBox.Size, CurrentBox.Size, DeltaSeconds, SmoothingSpeed);
+        }
+
+        SmoothedBox.Size.X = FMath::Max(SmoothedBox.Size.X, 1.f);
+        SmoothedBox.Size.Y = FMath::Max(SmoothedBox.Size.Y, 1.f);
+        SmoothedBox.Area = SmoothedBox.Size.X * SmoothedBox.Size.Y;
+        SmoothedBox.Confidence = CurrentBox.Confidence;
+        return SmoothedBox;
+    }
+
+    bool FindTrackedPersonDetection(
+        const UMyActorComponent& Detector,
+        const FCrowPersonDetectionMemory& Memory,
+        float MinAcceptedConfidence,
+        bool bEnableTracking,
+        float TrackMatchMinIoU,
+        float TrackMatchMaxCenterDistance,
+        float TrackSwitchConfidenceMargin,
+        FDetectionBox& OutBox,
+        bool& bOutMatchedTrack,
+        float& OutMatchIoU,
+        float& OutMatchDistance)
+    {
+        bool bFoundBestBox = false;
+        bool bFoundTrackedBox = false;
+        FDetectionBox BestBox;
+        FDetectionBox BestTrackedBox;
+        float BestScore = -FLT_MAX;
+        float BestTrackedScore = -FLT_MAX;
+        float BestTrackedIoU = 0.f;
+        float BestTrackedDistance = TNumericLimits<float>::Max();
 
         for (const FDetectionResult& Detection : Detector.LastFrameDetections)
         {
@@ -105,16 +180,67 @@ namespace
                 continue;
             }
 
-            const float Score = Box.Confidence > 0.f ? Box.Confidence : Box.Area;
-            if (!bFound || Score > BestScore)
+            const float ConfidenceScore = Box.Confidence > 0.f ? Box.Confidence : 0.f;
+            const float AreaScore = Box.Area / FMath::Max(
+                static_cast<float>(Detector.LastFrameSourceWidth * Detector.LastFrameSourceHeight),
+                1.f);
+            const float Score = ConfidenceScore + (AreaScore * 0.1f);
+            if (!bFoundBestBox || Score > BestScore)
             {
-                OutBox = Box;
+                BestBox = Box;
                 BestScore = Score;
-                bFound = true;
+                bFoundBestBox = true;
+            }
+
+            if (bEnableTracking && Memory.bHasTrackedBox)
+            {
+                const float IoU = CalculateBoxIoU(Box, Memory.LastTrackedBox);
+                const float CenterDistance = CalculateNormalizedCenterDistance(
+                    Box,
+                    Memory.LastTrackedBox,
+                    Detector.LastFrameSourceWidth,
+                    Detector.LastFrameSourceHeight);
+                const float EffectiveCenterDistance = FMath::Min(TrackMatchMaxCenterDistance, 0.12f);
+                const bool bMatchesTrack = IoU >= TrackMatchMinIoU || CenterDistance <= EffectiveCenterDistance;
+                if (bMatchesTrack)
+                {
+                    const float TrackScore = Score + (IoU * 2.f) + FMath::Max(0.f, 1.f - CenterDistance);
+                    if (!bFoundTrackedBox || TrackScore > BestTrackedScore)
+                    {
+                        BestTrackedBox = Box;
+                        BestTrackedScore = TrackScore;
+                        BestTrackedIoU = IoU;
+                        BestTrackedDistance = CenterDistance;
+                        bFoundTrackedBox = true;
+                    }
+                }
             }
         }
 
-        return bFound;
+        if (!bFoundBestBox)
+        {
+            return false;
+        }
+
+        bOutMatchedTrack = false;
+        OutMatchIoU = 0.f;
+        OutMatchDistance = TNumericLimits<float>::Max();
+
+        if (bEnableTracking && Memory.bHasTrackedBox && bFoundTrackedBox)
+        {
+            const bool bBestBoxClearlyBetter = BestBox.Confidence > BestTrackedBox.Confidence + TrackSwitchConfidenceMargin;
+            if (!bBestBoxClearlyBetter)
+            {
+                OutBox = BestTrackedBox;
+                bOutMatchedTrack = true;
+                OutMatchIoU = BestTrackedIoU;
+                OutMatchDistance = BestTrackedDistance;
+                return true;
+            }
+        }
+
+        OutBox = BestBox;
+        return true;
     }
 
     FVector BuildCameraRayDirection(
@@ -265,9 +391,13 @@ namespace
         }
 
         Memory.LastTargetLocation = SharedTarget;
+        Memory.LastRawTargetLocation = SharedTarget;
+        Memory.LastRawTargetTime = CurrentTime;
         Memory.LastDetectedTime = CurrentTime;
         Memory.LastConfidence = SharedConfidence;
+        Memory.TargetVelocity = FVector::ZeroVector;
         Memory.bHasLastTarget = true;
+        Memory.bHasRawTarget = true;
 
         Blackboard.SetValueAsBool(HasPersonKey.SelectedKeyName, true);
         Blackboard.SetValueAsVector(DetectedPersonLocationKey.SelectedKeyName, SharedTarget);
@@ -319,14 +449,21 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
     FCrowPersonDetectionMemory* Memory = reinterpret_cast<FCrowPersonDetectionMemory*>(NodeMemory);
     const float CurrentTime = ControlledPawn->GetWorld() ? ControlledPawn->GetWorld()->GetTimeSeconds() : 0.f;
 
-    APawn* PlayerPawn = GetPlayerPawn(ControlledPawn);
-    if (bAlwaysFollowPlayerPawn && IsValid(PlayerPawn) && PlayerPawn != ControlledPawn)
+    APawn* PlayerPawn = bAllowPlayerPawnLocationFallback ? GetPlayerPawn(ControlledPawn) : nullptr;
+    if (bAllowPlayerPawnLocationFallback &&
+        bAlwaysFollowPlayerPawn &&
+        IsValid(PlayerPawn) &&
+        PlayerPawn != ControlledPawn)
     {
         const FVector TargetLocation = PlayerPawn->GetActorLocation() + TargetLocationOffset;
         Memory->LastTargetLocation = TargetLocation;
+        Memory->LastRawTargetLocation = TargetLocation;
+        Memory->LastRawTargetTime = CurrentTime;
         Memory->LastDetectedTime = CurrentTime;
         Memory->LastConfidence = 1.f;
+        Memory->TargetVelocity = FVector::ZeroVector;
         Memory->bHasLastTarget = true;
+        Memory->bHasRawTarget = true;
 
         Blackboard->SetValueAsBool(HasPersonKey.SelectedKeyName, true);
         Blackboard->SetValueAsVector(DetectedPersonLocationKey.SelectedKeyName, TargetLocation);
@@ -442,7 +579,21 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
     Memory->LastProcessedFrameSequence = Detector->LastFrameSequence;
 
     FDetectionBox PersonBox;
-    if (!FindBestPersonDetection(*Detector, MinAcceptedConfidence, PersonBox))
+    bool bMatchedTrackedBox = false;
+    float TrackMatchIoU = 0.f;
+    float TrackMatchDistance = 0.f;
+    if (!FindTrackedPersonDetection(
+        *Detector,
+        *Memory,
+        MinAcceptedConfidence,
+        bEnableYoloBoxTracking,
+        TrackMatchMinIoU,
+        TrackMatchMaxCenterDistance,
+        TrackSwitchConfidenceMargin,
+        PersonBox,
+        bMatchedTrackedBox,
+        TrackMatchIoU,
+        TrackMatchDistance))
     {
         Memory->ConsecutiveDetections = 0;
         ++Memory->ConsecutiveMisses;
@@ -465,6 +616,9 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
 
         if (Memory->ConsecutiveMisses > MaxConsecutiveDetectionMisses)
         {
+            Memory->bHasTrackedBox = false;
+            Memory->bHasRawTarget = false;
+            Memory->TargetVelocity = FVector::ZeroVector;
             Blackboard->SetValueAsBool(HasPersonKey.SelectedKeyName, false);
             PrintCrowDetectionDebug(
                 *ControlledPawn,
@@ -505,31 +659,52 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         return;
     }
 
+    if (bEnableYoloBoxTracking && Memory->bHasTrackedBox && bMatchedTrackedBox)
+    {
+        PersonBox = SmoothBox(Memory->LastTrackedBox, PersonBox, DeltaSeconds, TrackBoxSmoothingSpeed);
+    }
+    Memory->LastTrackedBox = PersonBox;
+    Memory->bHasTrackedBox = true;
+
     const FVector RayOrigin = Camera->GetComponentLocation();
+    const FVector2D BoxMin = GetBoxMin(PersonBox);
+    const FVector2D BoxMax = GetBoxMax(PersonBox);
+    const FVector2D TargetPixel(
+        FMath::Clamp(PersonBox.Center.X, 0.f, FMath::Max(static_cast<float>(Detector->LastFrameSourceWidth - 1), 0.f)),
+        FMath::Clamp(
+            PersonBox.Center.Y + (PersonBox.Size.Y * TargetRayBoxVerticalBias),
+            0.f,
+            FMath::Max(static_cast<float>(Detector->LastFrameSourceHeight - 1), 0.f)));
     const FVector RayDirection = BuildCameraRayDirection(
         *Camera,
-        PersonBox.Center,
+        TargetPixel,
         Detector->LastFrameSourceWidth,
         Detector->LastFrameSourceHeight);
 
     FVector TargetLocation = FVector::ZeroVector;
     FVector SnappedPlayerLocation = FVector::ZeroVector;
-    const bool bSnappedToPlayer = TrySnapToPlayerOnRay(
-        ControlledPawn,
-        *ControlledPawn,
-        RayOrigin,
-        RayDirection,
-        TraceDistance,
-        PlayerRaySnapRadius,
-        SnappedPlayerLocation);
-    if (bPreferPlayerPawnLocation &&
+    bool bSnappedToPlayer = false;
+    const bool bCanUsePlayerPawnLocationFallback = bAllowPlayerPawnLocationFallback && bPreferPlayerPawnLocation;
+    if (bCanUsePlayerPawnLocationFallback)
+    {
+        bSnappedToPlayer = TrySnapToPlayerOnRay(
+            ControlledPawn,
+            *ControlledPawn,
+            RayOrigin,
+            RayDirection,
+            TraceDistance,
+            PlayerRaySnapRadius,
+            SnappedPlayerLocation);
+    }
+
+    if (bCanUsePlayerPawnLocationFallback &&
         IsValid(PlayerPawn) &&
         PlayerPawn != ControlledPawn &&
         (!bRequireRaySnapForPlayerPawnLocation || bSnappedToPlayer))
     {
         TargetLocation = PlayerPawn->GetActorLocation();
     }
-    else if (bSnappedToPlayer)
+    else if (bCanUsePlayerPawnLocationFallback && bSnappedToPlayer)
     {
         TargetLocation = SnappedPlayerLocation;
     }
@@ -550,6 +725,51 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
     }
 
     TargetLocation += TargetLocationOffset;
+
+    bool bClampedTargetJump = false;
+    float RawTargetJumpDistance = 0.f;
+    if (MaxTrackedTargetJumpDistance > 0.f && Memory->bHasRawTarget && bMatchedTrackedBox)
+    {
+        RawTargetJumpDistance = FVector::Dist(TargetLocation, Memory->LastRawTargetLocation);
+        if (RawTargetJumpDistance > MaxTrackedTargetJumpDistance)
+        {
+            const FVector ClampedOffset = (TargetLocation - Memory->LastRawTargetLocation).GetClampedToMaxSize(MaxTrackedTargetJumpDistance);
+            TargetLocation = Memory->LastRawTargetLocation + ClampedOffset;
+            Memory->TargetVelocity = FVector::ZeroVector;
+            bClampedTargetJump = true;
+        }
+    }
+
+    FVector PredictedTargetLocation = TargetLocation;
+    if (bPredictTrackedTargetMotion && Memory->bHasRawTarget && bMatchedTrackedBox && !bClampedTargetJump)
+    {
+        const float TimeSinceLastRawTarget = CurrentTime - Memory->LastRawTargetTime;
+        if (TimeSinceLastRawTarget > KINDA_SMALL_NUMBER && TimeSinceLastRawTarget < LosePersonAfterSeconds)
+        {
+            FVector InstantVelocity = (TargetLocation - Memory->LastRawTargetLocation) / TimeSinceLastRawTarget;
+            if (TargetVelocitySmoothingSpeed > 0.f)
+            {
+                InstantVelocity = FMath::VInterpTo(
+                    Memory->TargetVelocity,
+                    InstantVelocity,
+                    DeltaSeconds,
+                    TargetVelocitySmoothingSpeed);
+            }
+
+            Memory->TargetVelocity = InstantVelocity;
+            FVector PredictionOffset = Memory->TargetVelocity * TargetPredictionLeadSeconds;
+            if (MaxTargetPredictionDistance > 0.f && PredictionOffset.SizeSquared() > FMath::Square(MaxTargetPredictionDistance))
+            {
+                PredictionOffset = PredictionOffset.GetClampedToMaxSize(MaxTargetPredictionDistance);
+            }
+
+            PredictedTargetLocation = TargetLocation + PredictionOffset;
+        }
+    }
+    Memory->LastRawTargetLocation = TargetLocation;
+    Memory->LastRawTargetTime = CurrentTime;
+    Memory->bHasRawTarget = true;
+
     ++Memory->ConsecutiveDetections;
     Memory->ConsecutiveMisses = 0;
 
@@ -567,9 +787,15 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         PrintCrowDetectionDebug(
             *ControlledPawn,
             FString::Printf(
-                TEXT("candidate target=%s conf=%.2f hits=%d/%d seq=%d"),
-                *TargetLocation.ToCompactString(),
+                TEXT("candidate target=%s conf=%.2f track=%s jump=%.1f clamped=%s pixel=%s boxMin=%s boxMax=%s hits=%d/%d seq=%d"),
+                *PredictedTargetLocation.ToCompactString(),
                 PersonBox.Confidence,
+                bMatchedTrackedBox ? TEXT("matched") : TEXT("new"),
+                RawTargetJumpDistance,
+                bClampedTargetJump ? TEXT("yes") : TEXT("no"),
+                *TargetPixel.ToString(),
+                *BoxMin.ToString(),
+                *BoxMax.ToString(),
                 Memory->ConsecutiveDetections,
                 FMath::Max(1, RequiredConsecutiveDetections),
                 Detector->LastFrameSequence),
@@ -581,8 +807,8 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
     }
 
     const FVector SmoothedTargetLocation = Memory->bHasLastTarget
-        ? FMath::VInterpTo(Memory->LastTargetLocation, TargetLocation, DeltaSeconds, TargetSmoothingSpeed)
-        : TargetLocation;
+        ? FMath::VInterpTo(Memory->LastTargetLocation, PredictedTargetLocation, DeltaSeconds, TargetSmoothingSpeed)
+        : PredictedTargetLocation;
 
     Memory->LastTargetLocation = SmoothedTargetLocation;
     Memory->LastDetectedTime = CurrentTime;
@@ -607,9 +833,18 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
     PrintCrowDetectionDebug(
         *ControlledPawn,
         FString::Printf(
-            TEXT("person target=%s conf=%.2f box=%s size=%s detections=%d seq=%d hits=%d"),
+            TEXT("person target=%s source=%s track=%s iou=%.2f centerDist=%.2f jump=%.1f clamped=%s velocity=%s predicted=%s conf=%.2f pixel=%s box=%s size=%s detections=%d seq=%d hits=%d"),
             *SmoothedTargetLocation.ToCompactString(),
+            bPreferPlayerPawnLocation && bSnappedToPlayer ? TEXT("ray-snap-player") : TEXT("vision-ray"),
+            bMatchedTrackedBox ? TEXT("matched") : TEXT("new"),
+            TrackMatchIoU,
+            TrackMatchDistance,
+            RawTargetJumpDistance,
+            bClampedTargetJump ? TEXT("yes") : TEXT("no"),
+            *Memory->TargetVelocity.ToCompactString(),
+            *PredictedTargetLocation.ToCompactString(),
             PersonBox.Confidence,
+            *TargetPixel.ToString(),
             *PersonBox.Center.ToString(),
             *PersonBox.Size.ToString(),
             Detector->LastFrameDetections.Num(),

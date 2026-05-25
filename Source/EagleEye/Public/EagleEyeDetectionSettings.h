@@ -5,7 +5,7 @@
 #include "Engine/DeveloperSettings.h"
 #include "EagleEyeDetectionSettings.generated.h"
 
-UCLASS(Config=Game, DefaultConfig, meta=(DisplayName="EagleEye Detection"))
+UCLASS(Config=Game, DefaultConfig, meta=(DisplayName="Detection"))
 class EAGLEEYE_API UEagleEyeDetectionSettings : public UDeveloperSettings
 {
     GENERATED_BODY()

@@ -26,8 +26,11 @@ ABotAIController::ABotAIController()
     SightConfig->DetectionByAffiliation.bDetectFriendlies = true;
     SightConfig->DetectionByAffiliation.bDetectNeutrals = true;
 
-    PerceptionComponentRef->ConfigureSense(*SightConfig);
-    PerceptionComponentRef->SetDominantSense(SightConfig->GetSenseImplementation());
+    if (bEnableAISightPerception)
+    {
+        PerceptionComponentRef->ConfigureSense(*SightConfig);
+        PerceptionComponentRef->SetDominantSense(SightConfig->GetSenseImplementation());
+    }
     PerceptionComponentRef->OnTargetPerceptionUpdated.AddDynamic(this, &ABotAIController::HandleTargetPerceptionUpdated);
 }
 
@@ -57,25 +60,28 @@ void ABotAIController::OnPossess(APawn* InPawn)
         return;
     }
 
-    SightConfig->SightRadius = SightRadius;
-    SightConfig->LoseSightRadius = LoseSightRadius;
-    SightConfig->PeripheralVisionAngleDegrees = PeripheralVisionAngleDegrees;
-    SightConfig->SetMaxAge(MaxSightAge);
-    SightConfig->DetectionByAffiliation.bDetectEnemies = true;
-    SightConfig->DetectionByAffiliation.bDetectFriendlies = true;
-    SightConfig->DetectionByAffiliation.bDetectNeutrals = true;
-
-    PerceptionComponentRef->ConfigureSense(*SightConfig);
-    PerceptionComponentRef->SetDominantSense(SightConfig->GetSenseImplementation());
-    if (!PerceptionComponentRef->OnTargetPerceptionUpdated.IsAlreadyBound(
-        this,
-        &ABotAIController::HandleTargetPerceptionUpdated))
+    if (bEnableAISightPerception)
     {
-        PerceptionComponentRef->OnTargetPerceptionUpdated.AddDynamic(
+        SightConfig->SightRadius = SightRadius;
+        SightConfig->LoseSightRadius = LoseSightRadius;
+        SightConfig->PeripheralVisionAngleDegrees = PeripheralVisionAngleDegrees;
+        SightConfig->SetMaxAge(MaxSightAge);
+        SightConfig->DetectionByAffiliation.bDetectEnemies = true;
+        SightConfig->DetectionByAffiliation.bDetectFriendlies = true;
+        SightConfig->DetectionByAffiliation.bDetectNeutrals = true;
+
+        PerceptionComponentRef->ConfigureSense(*SightConfig);
+        PerceptionComponentRef->SetDominantSense(SightConfig->GetSenseImplementation());
+        if (!PerceptionComponentRef->OnTargetPerceptionUpdated.IsAlreadyBound(
             this,
-            &ABotAIController::HandleTargetPerceptionUpdated);
+            &ABotAIController::HandleTargetPerceptionUpdated))
+        {
+            PerceptionComponentRef->OnTargetPerceptionUpdated.AddDynamic(
+                this,
+                &ABotAIController::HandleTargetPerceptionUpdated);
+        }
+        PerceptionComponentRef->RequestStimuliListenerUpdate();
     }
-    PerceptionComponentRef->RequestStimuliListenerUpdate();
 
     if (ShouldUseRandomFlight(InPawn))
     {
@@ -97,6 +103,16 @@ void ABotAIController::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
 
+    if (const ABotCharacter* BotCharacter = Cast<ABotCharacter>(GetPawn()))
+    {
+        if (BotCharacter->IsDead())
+        {
+            StopMovement();
+            ClearFocus(EAIFocusPriority::Gameplay);
+            return;
+        }
+    }
+
     UpdateRandomFlight(DeltaSeconds);
     UpdateRandomWalking(DeltaSeconds);
 
@@ -106,22 +122,36 @@ void ABotAIController::Tick(float DeltaSeconds)
         return;
     }
 
-    AActor* TargetActor = Cast<AActor>(BlackboardComponent->GetValueAsObject(TargetActorKey));
-    if (!IsValid(TargetActor))
+    if (!BlackboardComponent->GetValueAsBool(HasDetectedPersonKey))
     {
+        ClearFocus(EAIFocusPriority::Gameplay);
         return;
     }
 
-    BlackboardComponent->SetValueAsVector(TargetLocationKey, TargetActor->GetActorLocation());
+    const FVector NeuralTargetLocation = BlackboardComponent->GetValueAsVector(DetectedPersonLocationKey);
+    BlackboardComponent->SetValueAsVector(TargetLocationKey, NeuralTargetLocation);
+    if (bFocusProjectileTarget)
+    {
+        SetFocalPoint(NeuralTargetLocation, EAIFocusPriority::Gameplay);
+    }
+    else
+    {
+        ClearFocus(EAIFocusPriority::Gameplay);
+    }
 
     if (ABotCharacter* BotCharacter = Cast<ABotCharacter>(GetPawn()))
     {
-        BotCharacter->TryThrowProjectileAtActor(TargetActor);
+        BotCharacter->TryThrowProjectileAtLocation(NeuralTargetLocation);
     }
 }
 
 void ABotAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulus Stimulus)
 {
+    if (!bEnableAISightPerception)
+    {
+        return;
+    }
+
     if (!IsPlayerTarget(Actor))
     {
         return;
@@ -252,6 +282,8 @@ void ABotAIController::UpdateRandomFlight(float DeltaSeconds)
 
     if (IsBlackboardKeyBlockingRandomMovement(RandomFlightBlockedByKey))
     {
+        StopMovement();
+        bHasFlightDestination = false;
         return;
     }
 
@@ -292,6 +324,8 @@ void ABotAIController::UpdateRandomWalking(float DeltaSeconds)
 
     if (IsBlackboardKeyBlockingRandomMovement(RandomWalkingBlockedByKey))
     {
+        StopMovement();
+        bHasWalkDestination = false;
         return;
     }
 

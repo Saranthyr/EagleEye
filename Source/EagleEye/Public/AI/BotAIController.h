@@ -39,6 +39,18 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Blackboard")
     FName HasLineOfSightKey = TEXT("HasLineOfSight");
 
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Blackboard")
+    FName HasDetectedPersonKey = TEXT("HasDetectedPerson");
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Blackboard")
+    FName DetectedPersonLocationKey = TEXT("DetectedPersonLocation");
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Combat")
+    bool bFocusProjectileTarget = false;
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Perception")
+    bool bEnableAISightPerception = false;
+
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Perception")
     float SightRadius = 1800.f;
 

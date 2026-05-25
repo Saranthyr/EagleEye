@@ -2,9 +2,12 @@
 
 #include "EagleEyeCharacter.h"
 #include "AI/BotCharacter.h"
+#include "AI/BotDamageProjectile.h"
 #include "Engine/LocalPlayer.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/SphereComponent.h"
 #include "EngineUtils.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/SpringArmComponent.h"
@@ -12,6 +15,7 @@
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "InputActionValue.h"
+#include "Kismet/GameplayStatics.h"
 
 DEFINE_LOG_CATEGORY(LogTemplateCharacter);
 
@@ -20,6 +24,8 @@ DEFINE_LOG_CATEGORY(LogTemplateCharacter);
 
 AEagleEyeCharacter::AEagleEyeCharacter()
 {
+	PrimaryActorTick.bCanEverTick = true;
+
 	// Set size for collision capsule
 	GetCapsuleComponent()->InitCapsuleSize(42.f, 96.0f);
 		
@@ -52,7 +58,17 @@ AEagleEyeCharacter::AEagleEyeCharacter()
 	FollowCamera->bUsePawnControlRotation = true; // Camera does not rotate relative to arm
 	FollowCamera->SetupAttachment(GetMesh(), "head");
 
-	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
+	MeleeHitbox = CreateDefaultSubobject<USphereComponent>(TEXT("MeleeHitbox"));
+	MeleeHitbox->SetupAttachment(FollowCamera);
+	MeleeHitbox->InitSphereRadius(110.f);
+	MeleeHitbox->SetRelativeLocation(FVector(140.f, 0.f, 0.f));
+	MeleeHitbox->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	MeleeHitbox->SetCollisionObjectType(ECC_WorldDynamic);
+	MeleeHitbox->SetCollisionResponseToAllChannels(ECR_Ignore);
+	MeleeHitbox->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
+	MeleeHitbox->SetGenerateOverlapEvents(false);
+
+	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character)
 	// are set in the derived blueprint asset named ThirdPersonCharacter (to avoid direct content references in C++)
 }
 
@@ -61,7 +77,20 @@ void AEagleEyeCharacter::BeginPlay()
 	// Call the base class  
 	Super::BeginPlay();
 
+	if (MeleeHitbox && !MeleeHitbox->OnComponentBeginOverlap.IsAlreadyBound(this, &AEagleEyeCharacter::HandleMeleeHitboxOverlap))
+	{
+		MeleeHitbox->OnComponentBeginOverlap.AddDynamic(this, &AEagleEyeCharacter::HandleMeleeHitboxOverlap);
+	}
+	SetMeleeHitboxEnabled(false);
+
 	ResetHealth();
+}
+
+void AEagleEyeCharacter::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	TickMeleeHitbox();
 }
 
 float AEagleEyeCharacter::TakeDamage(
@@ -125,12 +154,127 @@ void AEagleEyeCharacter::ResetHealth()
 	CurrentHealth = MaxHealth;
 	bIsDead = false;
 
+	DisableDeathRagdoll();
+
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
 	{
 		MoveComp->SetMovementMode(MOVE_Walking);
 	}
 
 	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+}
+
+bool AEagleEyeCharacter::TryMeleeAttack()
+{
+	if (!bEnableMeleeAttack || bIsDead || MeleeDamage <= 0.f)
+	{
+		return false;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	const float CurrentTime = World->GetTimeSeconds();
+	if (CurrentTime - LastMeleeAttackTime < MeleeCooldownSeconds)
+	{
+		return false;
+	}
+
+	LastMeleeAttackTime = CurrentTime;
+	LastMeleeDamageActor.Reset();
+	MeleeHitboxDisableTime = CurrentTime + FMath::Max(0.01f, MeleeActiveSeconds);
+	SetMeleeHitboxEnabled(true);
+	TickMeleeHitbox();
+	return true;
+}
+
+bool AEagleEyeCharacter::TryProjectileAttack()
+{
+	if (!bEnableProjectileAttack || bIsDead || ProjectileDamage <= 0.f)
+	{
+		return false;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	const float CurrentTime = World->GetTimeSeconds();
+	if (CurrentTime - LastProjectileAttackTime < ProjectileAttackCooldownSeconds)
+	{
+		return false;
+	}
+
+	TSubclassOf<ABotDamageProjectile> ClassToSpawn = ProjectileClass;
+	if (!ClassToSpawn)
+	{
+		ClassToSpawn = ABotDamageProjectile::StaticClass();
+	}
+
+	FVector ViewLocation = GetActorLocation();
+	FRotator ViewRotation = GetActorRotation();
+	if (FollowCamera)
+	{
+		ViewLocation = FollowCamera->GetComponentLocation();
+		ViewRotation = FollowCamera->GetComponentRotation();
+	}
+	else if (Controller)
+	{
+		ViewRotation = Controller->GetControlRotation();
+	}
+
+	const FVector AimDirection = ViewRotation.Vector().GetSafeNormal();
+	if (AimDirection.IsNearlyZero())
+	{
+		return false;
+	}
+
+	const FVector SpawnLocation = ViewLocation + ViewRotation.RotateVector(ProjectileSpawnOffset);
+	const FVector AimLocation = ViewLocation + AimDirection * FMath::Max(1.f, ProjectileAttackRange);
+	const FVector FireDirection = (AimLocation - SpawnLocation).GetSafeNormal();
+	if (FireDirection.IsNearlyZero())
+	{
+		return false;
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = this;
+	SpawnParams.Instigator = this;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	ABotDamageProjectile* Projectile = World->SpawnActor<ABotDamageProjectile>(
+		ClassToSpawn,
+		SpawnLocation,
+		FireDirection.Rotation(),
+		SpawnParams);
+	if (!Projectile)
+	{
+		return false;
+	}
+
+	Projectile->SetDamage(ProjectileDamage);
+	Projectile->SetProjectileSpeed(ProjectileSpeed);
+	Projectile->FireInDirection(FireDirection);
+	LastProjectileAttackTime = CurrentTime;
+	return true;
+}
+
+void AEagleEyeCharacter::SetMeleeHitboxEnabled(bool bEnabled)
+{
+	bMeleeHitboxEnabled = bEnabled;
+
+	if (!MeleeHitbox)
+	{
+		return;
+	}
+
+	MeleeHitbox->SetCollisionEnabled(bEnabled ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
+	MeleeHitbox->SetGenerateOverlapEvents(bEnabled);
 }
 
 void AEagleEyeCharacter::HandleDeath(AController* EventInstigator, AActor* DamageCauser)
@@ -147,6 +291,8 @@ void AEagleEyeCharacter::HandleDeath(AController* EventInstigator, AActor* Damag
 		MoveComp->DisableMovement();
 	}
 
+	EnableDeathRagdoll();
+
 	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
 	{
 		DisableInput(PlayerController);
@@ -158,6 +304,44 @@ void AEagleEyeCharacter::HandleDeath(AController* EventInstigator, AActor* Damag
 	UE_LOG(LogTemplateCharacter, Log, TEXT("%s died. DamageCauser=%s"),
 		*GetNameSafe(this),
 		*GetNameSafe(DamageCauser));
+}
+
+void AEagleEyeCharacter::EnableDeathRagdoll()
+{
+	if (!bEnableRagdollOnDeath)
+	{
+		return;
+	}
+
+	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+	{
+		Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+
+	if (USkeletalMeshComponent* CharacterMesh = GetMesh())
+	{
+		CharacterMesh->SetCollisionProfileName(TEXT("Ragdoll"));
+		CharacterMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		CharacterMesh->SetAllBodiesSimulatePhysics(true);
+		CharacterMesh->SetSimulatePhysics(true);
+		CharacterMesh->WakeAllRigidBodies();
+		CharacterMesh->bBlendPhysics = true;
+	}
+}
+
+void AEagleEyeCharacter::DisableDeathRagdoll()
+{
+	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+	{
+		Capsule->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	}
+
+	if (USkeletalMeshComponent* CharacterMesh = GetMesh())
+	{
+		CharacterMesh->bBlendPhysics = false;
+		CharacterMesh->SetSimulatePhysics(false);
+		CharacterMesh->SetAllBodiesSimulatePhysics(false);
+	}
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -186,6 +370,16 @@ void AEagleEyeCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputC
 
 		// Looking
 		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &AEagleEyeCharacter::Look);
+
+		if (MeleeAttackAction)
+		{
+			EnhancedInputComponent->BindAction(MeleeAttackAction, ETriggerEvent::Started, this, &AEagleEyeCharacter::MeleeAttackInput);
+		}
+
+		if (ProjectileAttackAction)
+		{
+			EnhancedInputComponent->BindAction(ProjectileAttackAction, ETriggerEvent::Started, this, &AEagleEyeCharacter::ProjectileAttackInput);
+		}
 
 	}
 	else
@@ -228,6 +422,87 @@ void AEagleEyeCharacter::Look(const FInputActionValue& Value)
 		AddControllerYawInput(LookAxisVector.X);
 		AddControllerPitchInput(LookAxisVector.Y);
 	}
+}
+
+void AEagleEyeCharacter::MeleeAttackInput()
+{
+	TryMeleeAttack();
+}
+
+void AEagleEyeCharacter::ProjectileAttackInput()
+{
+	TryProjectileAttack();
+}
+
+void AEagleEyeCharacter::TickMeleeHitbox()
+{
+	if (!bMeleeHitboxEnabled || !MeleeHitbox)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (World && World->GetTimeSeconds() >= MeleeHitboxDisableTime)
+	{
+		SetMeleeHitboxEnabled(false);
+		return;
+	}
+
+	TArray<AActor*> OverlappingActors;
+	MeleeHitbox->GetOverlappingActors(OverlappingActors, ABotCharacter::StaticClass());
+	for (AActor* OverlappingActor : OverlappingActors)
+	{
+		TryApplyMeleeDamage(OverlappingActor);
+	}
+}
+
+bool AEagleEyeCharacter::TryApplyMeleeDamage(AActor* TargetActor)
+{
+	if (!bMeleeHitboxEnabled || !IsValidPlayerDamageTarget(TargetActor) || MeleeDamage <= 0.f)
+	{
+		return false;
+	}
+
+	if (LastMeleeDamageActor.Get() == TargetActor)
+	{
+		return false;
+	}
+
+	const float AppliedDamage = UGameplayStatics::ApplyDamage(
+		TargetActor,
+		MeleeDamage,
+		GetController(),
+		this,
+		nullptr);
+
+	if (AppliedDamage <= 0.f)
+	{
+		return false;
+	}
+
+	LastMeleeDamageActor = TargetActor;
+	return true;
+}
+
+bool AEagleEyeCharacter::IsValidPlayerDamageTarget(const AActor* TargetActor) const
+{
+	if (!IsValid(TargetActor) || TargetActor == this)
+	{
+		return false;
+	}
+
+	return TargetActor->IsA<ABotCharacter>();
+}
+
+void AEagleEyeCharacter::HandleMeleeHitboxOverlap(
+	UPrimitiveComponent* OverlappedComponent,
+	AActor* OtherActor,
+	UPrimitiveComponent* OtherComp,
+	int32 OtherBodyIndex,
+	bool bFromSweep,
+	const FHitResult& SweepResult)
+{
+	TryApplyMeleeDamage(OtherActor);
 }
 
 ABotCharacter* AEagleEyeCharacter::FindNearestBotForRecording() const

@@ -73,6 +73,21 @@ public:
     UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category="Detection")
     float LastFrameTimeSeconds = -FLT_MAX;
 
+    UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category="Detection|FOV Metrics")
+    int32 FovDetectionTruePositiveCount = 0;
+
+    UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category="Detection|FOV Metrics")
+    int32 FovDetectionTrueNegativeCount = 0;
+
+    UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category="Detection|FOV Metrics")
+    int32 FovDetectionFalsePositiveCount = 0;
+
+    UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category="Detection|FOV Metrics")
+    int32 FovDetectionFalseNegativeCount = 0;
+
+    UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category="Detection|FOV Metrics")
+    int32 FovDetectionUnavailableSampleCount = 0;
+
     UFUNCTION()
     void TickCapture();
 
@@ -90,6 +105,8 @@ public:
     void SetApplyOwnerCameraVideoGammaCorrection(bool bEnabled) { bApplyOwnerCameraVideoGammaCorrection = bEnabled; }
     void SetUseSharedVisionModel(bool bEnabled) { bUseSharedVisionModel = bEnabled; }
     void SetSharedVisionModelHost(bool bEnabled) { bSharedVisionModelHost = bEnabled; }
+    void SetUseFovOnlyPersonDetection(bool bEnabled) { bUseFovOnlyPersonDetection = bEnabled; }
+    void SetLogFovDetectionMetrics(bool bEnabled) { bLogFovDetectionMetrics = bEnabled; }
     bool ShouldLogFrameTimings() const { return bLogFrameTimings; }
 
     TArray<FDetectionResult> ProcessSharedVisionFrame(
@@ -118,6 +135,28 @@ private:
     bool EnsureOwnerCameraCapture();
     bool ShouldSkipOwnerCameraCapture() const;
     bool ShouldRecordOwnerCameraVideo() const;
+    void PublishFovOnlyDetectionFrame();
+    bool BuildFovOnlyPersonDetection(
+        TArray<FDetectionResult>& OutDetections,
+        int32& OutSourceWidth,
+        int32& OutSourceHeight,
+        float& OutDistance,
+        float& OutHorizontalAngleDegrees,
+        float& OutVerticalAngleDegrees);
+    bool EvaluatePlayerInOwnerCameraFov(
+        int32 SourceWidth,
+        int32 SourceHeight,
+        FVector2D& OutPixel,
+        float& OutDistance,
+        float& OutHorizontalAngleDegrees,
+        float& OutVerticalAngleDegrees,
+        bool& bOutHasEvaluation) const;
+    bool HasPersonDetection(const TArray<FDetectionResult>& Detections) const;
+    void LogFovDetectionMetricSample(
+        const TCHAR* SourceLabel,
+        const TArray<FDetectionResult>& Detections,
+        int32 SourceWidth,
+        int32 SourceHeight);
     void ConfigureOwnerCaptureVisibility(AActor* Owner);
     void RecordOwnerCameraVideoFrame(const TArray<FColor>& Pixels, int32 Width, int32 Height);
     bool EnsureOwnerCameraVideoWriter(int32 Width, int32 Height);
@@ -188,6 +227,18 @@ private:
 
     UPROPERTY(EditAnywhere, Category="Detection|Shared Model")
     bool bSharedVisionModelHost = false;
+
+    UPROPERTY(EditAnywhere, Category="Detection|FOV")
+    bool bUseFovOnlyPersonDetection = false;
+
+    UPROPERTY(EditAnywhere, Category="Detection|FOV")
+    bool bLogFovDetectionMetrics = false;
+
+    UPROPERTY(EditAnywhere, Category="Detection|FOV", meta=(ClampMin="0.0"))
+    float FovOnlyDetectionMaxDistance = 8000.f;
+
+    UPROPERTY(EditAnywhere, Category="Detection|FOV", meta=(ClampMin="1", ClampMax="512"))
+    int32 FovOnlySyntheticBoxSizePixels = 64;
 
     UPROPERTY(EditAnywhere, Category="Detection|Performance")
     bool bLogFrameTimings = false;

@@ -10,6 +10,9 @@ class UMyActorComponent;
 class USphereComponent;
 class UPrimitiveComponent;
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FBotHealthChangedSignature, float, CurrentHealth, float, MaxHealth);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FBotDiedSignature);
+
 UENUM(BlueprintType)
 enum class EBotLocomotionMode : uint8
 {
@@ -27,6 +30,11 @@ public:
 
     virtual void BeginPlay() override;
     virtual void Tick(float DeltaSeconds) override;
+    virtual float TakeDamage(
+        float DamageAmount,
+        struct FDamageEvent const& DamageEvent,
+        AController* EventInstigator,
+        AActor* DamageCauser) override;
 
     UBehaviorTree* GetBehaviorTreeAsset() const { return BehaviorTreeAsset; }
     EBotLocomotionMode GetBotLocomotionMode() const { return LocomotionMode; }
@@ -49,6 +57,9 @@ public:
     bool TryThrowProjectileAtActor(AActor* TargetActor);
 
     UFUNCTION(BlueprintCallable, Category="Gameplay|Damage")
+    bool TryThrowProjectileAtLocation(const FVector& TargetLocation);
+
+    UFUNCTION(BlueprintCallable, Category="Gameplay|Damage")
     bool ThrowProjectileAtPlayer();
 
     UFUNCTION(BlueprintCallable, Category="Gameplay|Damage")
@@ -57,11 +68,41 @@ public:
     UFUNCTION(BlueprintPure, Category="Gameplay|Damage")
     bool IsCloseDamageHitboxEnabled() const { return bCloseDamageHitboxEnabled; }
 
+    UFUNCTION(BlueprintCallable, Category="Gameplay|Health")
+    float ApplyHealthDamage(float DamageAmount, AController* EventInstigator = nullptr, AActor* DamageCauser = nullptr);
+
+    UFUNCTION(BlueprintCallable, Category="Gameplay|Health")
+    float Heal(float HealAmount);
+
+    UFUNCTION(BlueprintCallable, Category="Gameplay|Health")
+    void ResetHealth();
+
+    UFUNCTION(BlueprintPure, Category="Gameplay|Health")
+    float GetCurrentHealth() const { return CurrentHealth; }
+
+    UFUNCTION(BlueprintPure, Category="Gameplay|Health")
+    float GetMaxHealth() const { return MaxHealth; }
+
+    UFUNCTION(BlueprintPure, Category="Gameplay|Health")
+    bool IsDead() const { return bIsDead; }
+
+    UPROPERTY(BlueprintAssignable, Category="Gameplay|Health")
+    FBotHealthChangedSignature OnHealthChanged;
+
+    UPROPERTY(BlueprintAssignable, Category="Gameplay|Health")
+    FBotDiedSignature OnBotDied;
+
 protected:
     void ApplyDetectionRecordingSettings();
     void TickCloseDamageHitbox();
     bool TryApplyCloseDamage(AActor* TargetActor);
     bool IsValidDamageTarget(const AActor* TargetActor) const;
+    void HandleDeath(AController* EventInstigator, AActor* DamageCauser);
+    void EnableDeathRagdoll();
+    void DisableDeathRagdoll();
+
+    UFUNCTION(BlueprintImplementableEvent, Category="Gameplay|Health")
+    void K2_OnDeath(AController* EventInstigator, AActor* DamageCauser);
 
     UFUNCTION()
     void HandleCloseDamageOverlap(
@@ -104,6 +145,30 @@ protected:
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Gameplay|Damage")
     TObjectPtr<USphereComponent> CloseDamageHitbox;
+
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Gameplay|Health", meta=(ClampMin="1.0"))
+    float MaxHealth = 50.f;
+
+    UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Gameplay|Health")
+    float CurrentHealth = 50.f;
+
+    UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Gameplay|Health")
+    bool bIsDead = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Death")
+    bool bDestroyOnDeath = true;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Death", meta=(ClampMin="0.0", EditCondition="bDestroyOnDeath"))
+    float DestroyDelaySeconds = 1.5f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Death")
+    bool bDisableCollisionOnDeath = true;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Death")
+    bool bEnableRagdollOnDeath = true;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Death", meta=(EditCondition="bEnableRagdollOnDeath"))
+    FName RagdollCollisionProfileName = TEXT("Ragdoll");
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage|Close")
     bool bEnableCloseHitboxDamage = true;
@@ -173,4 +238,7 @@ private:
     float LastCloseDamageTime = -TNumericLimits<float>::Max();
     float LastProjectileAttackTime = -TNumericLimits<float>::Max();
     bool bCloseDamageHitboxEnabled = false;
+    FName CachedMeshCollisionProfileName = NAME_None;
+    ECollisionEnabled::Type CachedMeshCollisionEnabled = ECollisionEnabled::NoCollision;
+    bool bHasCachedMeshCollisionSettings = false;
 };

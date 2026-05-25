@@ -5,6 +5,29 @@
 #include "BehaviorTree/BehaviorTreeTypes.h"
 #include "BTTask_FlyToBlackboardLocation.generated.h"
 
+UENUM(BlueprintType)
+enum class EBTTargetMovementMode : uint8
+{
+    ApproachTarget UMETA(DisplayName="Approach Target"),
+    MaintainDistance UMETA(DisplayName="Maintain Distance")
+};
+
+UENUM(BlueprintType)
+enum class EBTLocomotionModeSource : uint8
+{
+    BotLocomotion UMETA(DisplayName="Bot Locomotion"),
+    ForceWalking UMETA(DisplayName="Force Walking"),
+    ForceFlying UMETA(DisplayName="Force Flying"),
+    BlackboardBool UMETA(DisplayName="Blackboard Bool")
+};
+
+UENUM(BlueprintType)
+enum class EBTTargetMovementModeSource : uint8
+{
+    TaskSettings UMETA(DisplayName="Task Settings"),
+    BlackboardBool UMETA(DisplayName="Blackboard Bool")
+};
+
 UCLASS()
 class EAGLEEYE_API UBTTask_FlyToBlackboardLocation : public UBTTaskNode
 {
@@ -17,20 +40,33 @@ protected:
     virtual EBTNodeResult::Type ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) override;
     virtual void TickTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory, float DeltaSeconds) override;
     virtual void OnTaskFinished(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory, EBTNodeResult::Type TaskResult) override;
+    virtual uint16 GetInstanceMemorySize() const override;
 
     UPROPERTY(EditAnywhere, Category="Blackboard")
     FBlackboardKeySelector TargetLocationKey;
 
+    UPROPERTY(EditAnywhere, Category="Blackboard|Overrides")
+    EBTLocomotionModeSource LocomotionModeSource = EBTLocomotionModeSource::BotLocomotion;
+
+    UPROPERTY(EditAnywhere, Category="Blackboard|Overrides", meta=(EditCondition="LocomotionModeSource==EBTLocomotionModeSource::BlackboardBool", EditConditionHides))
+    FBlackboardKeySelector UseFlyingMovementKey;
+
+    UPROPERTY(EditAnywhere, Category="Blackboard|Overrides")
+    EBTTargetMovementModeSource TargetMovementModeSource = EBTTargetMovementModeSource::TaskSettings;
+
+    UPROPERTY(EditAnywhere, Category="Blackboard|Overrides", meta=(EditCondition="TargetMovementModeSource==EBTTargetMovementModeSource::BlackboardBool", EditConditionHides))
+    FBlackboardKeySelector MaintainDistanceKey;
+
     UPROPERTY(EditAnywhere, Category="Flight", meta=(ClampMin="0.0"))
     float AcceptanceRadius = 220.f;
 
-    UPROPERTY(EditAnywhere, Category="Flight")
-    bool bMaintainDistanceFromTarget = true;
+    UPROPERTY(EditAnywhere, Category="Target Movement", meta=(EditCondition="TargetMovementModeSource==EBTTargetMovementModeSource::TaskSettings", EditConditionHides))
+    EBTTargetMovementMode TargetMovementMode = EBTTargetMovementMode::ApproachTarget;
 
-    UPROPERTY(EditAnywhere, Category="Flight", meta=(ClampMin="0.0", EditCondition="bMaintainDistanceFromTarget"))
+    UPROPERTY(EditAnywhere, Category="Target Movement", meta=(ClampMin="0.0", EditCondition="TargetMovementMode==EBTTargetMovementMode::MaintainDistance || TargetMovementModeSource==EBTTargetMovementModeSource::BlackboardBool", EditConditionHides))
     float DesiredTargetDistance = 1200.f;
 
-    UPROPERTY(EditAnywhere, Category="Flight", meta=(ClampMin="0.0", EditCondition="bMaintainDistanceFromTarget"))
+    UPROPERTY(EditAnywhere, Category="Target Movement", meta=(ClampMin="0.0", EditCondition="TargetMovementMode==EBTTargetMovementMode::MaintainDistance || TargetMovementModeSource==EBTTargetMovementModeSource::BlackboardBool", EditConditionHides))
     float DistanceTolerance = 150.f;
 
     UPROPERTY(EditAnywhere, Category="Flight", meta=(ClampMin="0.0", ClampMax="1.0"))
@@ -69,8 +105,14 @@ protected:
     UPROPERTY(EditAnywhere, Category="Rotation")
     bool bRotateWalkingTowardMoveDirection = true;
 
+    UPROPERTY(EditAnywhere, Category="Rotation", meta=(EditCondition="bRotateWalkingTowardMoveDirection"))
+    bool bFaceTargetWhileRetreating = true;
+
     UPROPERTY(EditAnywhere, Category="Rotation")
     bool bUsePitchRotation = true;
+
+    UPROPERTY(EditAnywhere, Category="Rotation")
+    bool bAlignCameraForwardToTarget = true;
 
     UPROPERTY(EditAnywhere, Category="Rotation", meta=(ClampMin="0.0"))
     float RotationInterpSpeed = 8.f;
@@ -80,4 +122,14 @@ protected:
 
     UPROPERTY(EditAnywhere, Category="Debug")
     bool bDrawDebug = false;
+
+    UPROPERTY(EditAnywhere, Category="Debug")
+    bool bLogMovementDecision = true;
+
+    UPROPERTY(EditAnywhere, Category="Debug", meta=(ClampMin="0.05", EditCondition="bLogMovementDecision"))
+    float MovementDecisionLogInterval = 1.0f;
+
+private:
+    bool ResolveUseFlyingMovement(const APawn& ControlledPawn, const UBlackboardComponent& Blackboard) const;
+    bool ResolveMaintainDistance(const UBlackboardComponent& Blackboard) const;
 };

@@ -516,7 +516,7 @@ void UMyActorComponent::get_class_names() {
 void UMyActorComponent::BeginPlay() {
     Super::BeginPlay();
 
-    const bool bNeedsModelInitialization = !bUseSharedVisionModel || bSharedVisionModelHost;
+    const bool bNeedsModelInitialization = !bUseFovOnlyPersonDetection && (!bUseSharedVisionModel || bSharedVisionModelHost);
     if (bNeedsModelInitialization)
     {
         ApplyProjectDetectionSettings();
@@ -645,7 +645,7 @@ void UMyActorComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAct
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-    if (bUseSharedVisionModel || bSharedVisionModelHost)
+    if (bUseFovOnlyPersonDetection || bUseSharedVisionModel || bSharedVisionModelHost)
     {
         return;
     }
@@ -655,6 +655,12 @@ void UMyActorComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAct
 }
 
 void UMyActorComponent::TickCapture() {
+    if (bUseFovOnlyPersonDetection)
+    {
+        PublishFovOnlyDetectionFrame();
+        return;
+    }
+
     const bool bSkipOwnerCameraDetection = bUseOwnerCameraCapture && ShouldSkipOwnerCameraCapture();
     if (bSkipOwnerCameraDetection && !ShouldRecordOwnerCameraVideo())
     {
@@ -1196,6 +1202,263 @@ bool UMyActorComponent::ShouldRecordOwnerCameraVideo() const
         (!ShouldSkipOwnerCameraCapture() || bRecordOwnerCameraWhenDetectionSkipped);
 }
 
+bool UMyActorComponent::HasPersonDetection(const TArray<FDetectionResult>& Detections) const
+{
+    for (const FDetectionResult& Detection : Detections)
+    {
+        if (Detection.ClassId == 0 || Detection.Label.StartsWith(TEXT("person"), ESearchCase::IgnoreCase))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool UMyActorComponent::EvaluatePlayerInOwnerCameraFov(
+    int32 SourceWidth,
+    int32 SourceHeight,
+    FVector2D& OutPixel,
+    float& OutDistance,
+    float& OutHorizontalAngleDegrees,
+    float& OutVerticalAngleDegrees,
+    bool& bOutHasEvaluation) const
+{
+    bOutHasEvaluation = false;
+    OutPixel = FVector2D::ZeroVector;
+    OutDistance = 0.f;
+    OutHorizontalAngleDegrees = 0.f;
+    OutVerticalAngleDegrees = 0.f;
+
+    const AActor* Owner = GetOwner();
+    const UCameraComponent* OwnerCamera = Owner ? Owner->FindComponentByClass<UCameraComponent>() : nullptr;
+    const UWorld* World = GetWorld();
+    const APlayerController* PlayerController = World ? UGameplayStatics::GetPlayerController(World, 0) : nullptr;
+    const APawn* PlayerPawn = PlayerController ? PlayerController->GetPawn() : nullptr;
+    if (!Owner || !OwnerCamera || !PlayerPawn || PlayerPawn == Owner)
+    {
+        return false;
+    }
+
+    const FVector CameraLocation = OwnerCamera->GetComponentLocation();
+    const FVector TargetLocation = PlayerPawn->GetPawnViewLocation();
+    const FVector ToTarget = TargetLocation - CameraLocation;
+    OutDistance = ToTarget.Size();
+    if (OutDistance <= KINDA_SMALL_NUMBER)
+    {
+        bOutHasEvaluation = true;
+        OutPixel = FVector2D(SourceWidth * 0.5f, SourceHeight * 0.5f);
+        return true;
+    }
+
+    const FVector Direction = ToTarget / OutDistance;
+    const FTransform CameraTransform = OwnerCamera->GetComponentTransform();
+    const float ForwardAmount = FVector::DotProduct(Direction, CameraTransform.GetUnitAxis(EAxis::X));
+    const float RightAmount = FVector::DotProduct(Direction, CameraTransform.GetUnitAxis(EAxis::Y));
+    const float UpAmount = FVector::DotProduct(Direction, CameraTransform.GetUnitAxis(EAxis::Z));
+
+    bOutHasEvaluation = true;
+    if (ForwardAmount <= KINDA_SMALL_NUMBER)
+    {
+        OutHorizontalAngleDegrees = RightAmount >= 0.f ? 180.f : -180.f;
+        OutVerticalAngleDegrees = UpAmount >= 0.f ? 90.f : -90.f;
+        return false;
+    }
+
+    const float SafeWidth = FMath::Max(static_cast<float>(SourceWidth), 1.f);
+    const float SafeHeight = FMath::Max(static_cast<float>(SourceHeight), 1.f);
+    const float Aspect = SafeWidth / SafeHeight;
+    const float HalfHorizontalFovRad = FMath::DegreesToRadians(OwnerCamera->FieldOfView) * 0.5f;
+    const float HalfVerticalFovRad = FMath::Atan(FMath::Tan(HalfHorizontalFovRad) / FMath::Max(Aspect, KINDA_SMALL_NUMBER));
+    const float HorizontalAngleRad = FMath::Atan2(RightAmount, ForwardAmount);
+    const float VerticalAngleRad = FMath::Atan2(UpAmount, ForwardAmount);
+
+    OutHorizontalAngleDegrees = FMath::RadiansToDegrees(HorizontalAngleRad);
+    OutVerticalAngleDegrees = FMath::RadiansToDegrees(VerticalAngleRad);
+
+    const bool bWithinDistance = FovOnlyDetectionMaxDistance <= 0.f || OutDistance <= FovOnlyDetectionMaxDistance;
+    const bool bWithinFov =
+        FMath::Abs(HorizontalAngleRad) <= HalfHorizontalFovRad &&
+        FMath::Abs(VerticalAngleRad) <= HalfVerticalFovRad;
+
+    const float NdcX = FMath::Tan(HorizontalAngleRad) / FMath::Max(FMath::Tan(HalfHorizontalFovRad), KINDA_SMALL_NUMBER);
+    const float NdcY = FMath::Tan(VerticalAngleRad) / FMath::Max(FMath::Tan(HalfVerticalFovRad), KINDA_SMALL_NUMBER);
+    OutPixel.X = (NdcX + 1.f) * 0.5f * SafeWidth;
+    OutPixel.Y = (1.f - NdcY) * 0.5f * SafeHeight;
+
+    return bWithinDistance && bWithinFov;
+}
+
+bool UMyActorComponent::BuildFovOnlyPersonDetection(
+    TArray<FDetectionResult>& OutDetections,
+    int32& OutSourceWidth,
+    int32& OutSourceHeight,
+    float& OutDistance,
+    float& OutHorizontalAngleDegrees,
+    float& OutVerticalAngleDegrees)
+{
+    OutDetections.Reset();
+    OutSourceWidth = FMath::Max(CaptureWidth, 1);
+    OutSourceHeight = FMath::Max(CaptureHeight, 1);
+
+    FVector2D TargetPixel = FVector2D::ZeroVector;
+    bool bHasEvaluation = false;
+    const bool bPlayerInFov = EvaluatePlayerInOwnerCameraFov(
+        OutSourceWidth,
+        OutSourceHeight,
+        TargetPixel,
+        OutDistance,
+        OutHorizontalAngleDegrees,
+        OutVerticalAngleDegrees,
+        bHasEvaluation);
+    if (!bHasEvaluation || !bPlayerInFov)
+    {
+        return false;
+    }
+
+    const float HalfBoxSize = FMath::Clamp(
+        static_cast<float>(FovOnlySyntheticBoxSizePixels),
+        1.f,
+        static_cast<float>(FMath::Max(FMath::Min(OutSourceWidth, OutSourceHeight), 1))) * 0.5f;
+
+    const float MinX = FMath::Clamp(TargetPixel.X - HalfBoxSize, 0.f, static_cast<float>(OutSourceWidth - 1));
+    const float MinY = FMath::Clamp(TargetPixel.Y - HalfBoxSize, 0.f, static_cast<float>(OutSourceHeight - 1));
+    const float MaxX = FMath::Clamp(TargetPixel.X + HalfBoxSize, 0.f, static_cast<float>(OutSourceWidth - 1));
+    const float MaxY = FMath::Clamp(TargetPixel.Y + HalfBoxSize, 0.f, static_cast<float>(OutSourceHeight - 1));
+
+    FDetectionResult Detection;
+    Detection.ClassId = 0;
+    Detection.Confidence = 1.f;
+    Detection.Label = TEXT("person: 1.00 (fov)");
+    Detection.Corners.Add(FVector2D(MinX, MinY));
+    Detection.Corners.Add(FVector2D(MaxX, MinY));
+    Detection.Corners.Add(FVector2D(MaxX, MaxY));
+    Detection.Corners.Add(FVector2D(MinX, MaxY));
+    OutDetections.Add(MoveTemp(Detection));
+    return true;
+}
+
+void UMyActorComponent::LogFovDetectionMetricSample(
+    const TCHAR* SourceLabel,
+    const TArray<FDetectionResult>& Detections,
+    int32 SourceWidth,
+    int32 SourceHeight)
+{
+    if (!bLogFovDetectionMetrics)
+    {
+        return;
+    }
+
+    FVector2D ExpectedPixel = FVector2D::ZeroVector;
+    float Distance = 0.f;
+    float HorizontalAngleDegrees = 0.f;
+    float VerticalAngleDegrees = 0.f;
+    bool bHasEvaluation = false;
+    const bool bExpectedInFov = EvaluatePlayerInOwnerCameraFov(
+        SourceWidth,
+        SourceHeight,
+        ExpectedPixel,
+        Distance,
+        HorizontalAngleDegrees,
+        VerticalAngleDegrees,
+        bHasEvaluation);
+    if (!bHasEvaluation)
+    {
+        ++FovDetectionUnavailableSampleCount;
+        UE_LOG(LogTemp, Warning, TEXT("FovDetectionMetric[%s]: unavailable owner=%s source=%dx%d detections=%d unavailable=%d"),
+            SourceLabel,
+            *GetNameSafe(GetOwner()),
+            SourceWidth,
+            SourceHeight,
+            Detections.Num(),
+            FovDetectionUnavailableSampleCount);
+        return;
+    }
+
+    const bool bActualPersonDetected = HasPersonDetection(Detections);
+    const TCHAR* Outcome = TEXT("true_negative");
+    const TCHAR* Status = TEXT("success");
+    if (bExpectedInFov && bActualPersonDetected)
+    {
+        ++FovDetectionTruePositiveCount;
+        Outcome = TEXT("true_positive");
+    }
+    else if (!bExpectedInFov && !bActualPersonDetected)
+    {
+        ++FovDetectionTrueNegativeCount;
+        Outcome = TEXT("true_negative");
+    }
+    else if (!bExpectedInFov && bActualPersonDetected)
+    {
+        ++FovDetectionFalsePositiveCount;
+        Outcome = TEXT("false_positive");
+        Status = TEXT("fault");
+    }
+    else
+    {
+        ++FovDetectionFalseNegativeCount;
+        Outcome = TEXT("false_negative");
+        Status = TEXT("fault");
+    }
+
+    UE_LOG(LogTemp, Log, TEXT("FovDetectionMetric[%s]: %s outcome=%s owner=%s expected_in_fov=%s actual_person=%s distance=%.1f h_angle=%.1f v_angle=%.1f expected_pixel=%s source=%dx%d detections=%d tp=%d tn=%d fp=%d fn=%d"),
+        SourceLabel,
+        Status,
+        Outcome,
+        *GetNameSafe(GetOwner()),
+        bExpectedInFov ? TEXT("true") : TEXT("false"),
+        bActualPersonDetected ? TEXT("true") : TEXT("false"),
+        Distance,
+        HorizontalAngleDegrees,
+        VerticalAngleDegrees,
+        *ExpectedPixel.ToString(),
+        SourceWidth,
+        SourceHeight,
+        Detections.Num(),
+        FovDetectionTruePositiveCount,
+        FovDetectionTrueNegativeCount,
+        FovDetectionFalsePositiveCount,
+        FovDetectionFalseNegativeCount);
+}
+
+void UMyActorComponent::PublishFovOnlyDetectionFrame()
+{
+    TArray<FDetectionResult> Detections;
+    int32 SourceWidth = 0;
+    int32 SourceHeight = 0;
+    float Distance = 0.f;
+    float HorizontalAngleDegrees = 0.f;
+    float VerticalAngleDegrees = 0.f;
+    BuildFovOnlyPersonDetection(
+        Detections,
+        SourceWidth,
+        SourceHeight,
+        Distance,
+        HorizontalAngleDegrees,
+        VerticalAngleDegrees);
+
+    LastFrameDetections = MoveTemp(Detections);
+    LastFrameSourceWidth = SourceWidth;
+    LastFrameSourceHeight = SourceHeight;
+    ++LastFrameSequence;
+    LastFrameTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+
+    LogFovDetectionMetricSample(TEXT("fov_only"), LastFrameDetections, SourceWidth, SourceHeight);
+
+    if (bLogFrameTimings)
+    {
+        UE_LOG(LogTemp, Log, TEXT("FovOnlyDetection[%s]: detections=%d size=%dx%d seq=%d distance=%.1f h_angle=%.1f v_angle=%.1f"),
+            *GetNameSafe(GetOwner()),
+            LastFrameDetections.Num(),
+            SourceWidth,
+            SourceHeight,
+            LastFrameSequence,
+            Distance,
+            HorizontalAngleDegrees,
+            VerticalAngleDegrees);
+    }
+}
+
 void UMyActorComponent::ClearPublishedResults()
 {
     {
@@ -1615,6 +1878,8 @@ void UMyActorComponent::CopyResultsFromWorker()
     LastFrameSourceHeight = SourceHeight;
     LastFrameSequence = Sequence;
     LastFrameTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : ResultTimeSeconds;
+
+    LogFovDetectionMetricSample(TEXT("model_local"), LastFrameDetections, SourceWidth, SourceHeight);
 }
 
 TArray<FDetectionResult> UMyActorComponent::ProcessSharedVisionFrame(
@@ -1665,6 +1930,8 @@ void UMyActorComponent::ConsumeSharedVisionResult(
     LastFrameSourceHeight = SourceHeight;
     ++LastFrameSequence;
     LastFrameTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+
+    LogFovDetectionMetricSample(TEXT("model_shared"), LastFrameDetections, SourceWidth, SourceHeight);
 
     if (bLogFrameTimings)
     {

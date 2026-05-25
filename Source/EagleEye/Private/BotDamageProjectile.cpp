@@ -1,5 +1,6 @@
 #include "AI/BotDamageProjectile.h"
 
+#include "AI/BotCharacter.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "EagleEyeCharacter.h"
@@ -115,8 +116,11 @@ bool ABotDamageProjectile::TryDamageActor(AActor* OtherActor, const FHitResult& 
     }
 
     const APawn* OtherPawn = Cast<APawn>(OtherActor);
-    const bool bIsPlayerTarget = OtherPawn && OtherPawn->IsPlayerControlled();
-    if (!bIsPlayerTarget && !OtherActor->IsA<AEagleEyeCharacter>())
+    const bool bIsPlayerTarget = OtherActor->IsA<AEagleEyeCharacter>() || (OtherPawn && OtherPawn->IsPlayerControlled());
+    const bool bIsBotTarget = OtherActor->IsA<ABotCharacter>();
+    const bool bOwnerIsBot = GetOwner() && GetOwner()->IsA<ABotCharacter>();
+    const bool bOwnerIsPlayer = GetOwner() && GetOwner()->IsA<AEagleEyeCharacter>();
+    if ((bOwnerIsBot && !bIsPlayerTarget) || (bOwnerIsPlayer && !bIsBotTarget) || (!bOwnerIsBot && !bOwnerIsPlayer && !bIsPlayerTarget && !bIsBotTarget))
     {
         return false;
     }

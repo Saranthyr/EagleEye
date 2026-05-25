@@ -2,6 +2,9 @@
 
 #include "AI/BotDamageProjectile.h"
 #include "AI/BotAIController.h"
+#include "BrainComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/SphereComponent.h"
 #include "EagleEyeCharacter.h"
 #include "Engine/World.h"
@@ -12,6 +15,10 @@
 ABotCharacter::ABotCharacter()
 {
     PrimaryActorTick.bCanEverTick = true;
+
+    bUseControllerRotationPitch = false;
+    bUseControllerRotationYaw = false;
+    bUseControllerRotationRoll = false;
 
     AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
     AIControllerClass = ABotAIController::StaticClass();
@@ -40,6 +47,8 @@ void ABotCharacter::BeginPlay()
 {
     Super::BeginPlay();
 
+    ResetHealth();
+
     ApplyDetectionRecordingSettings();
 
     ApplyBotMovementSettings();
@@ -55,7 +64,23 @@ void ABotCharacter::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
 
+    if (bIsDead)
+    {
+        return;
+    }
+
     TickCloseDamageHitbox();
+}
+
+float ABotCharacter::TakeDamage(
+    float DamageAmount,
+    FDamageEvent const& DamageEvent,
+    AController* EventInstigator,
+    AActor* DamageCauser)
+{
+    const float DamageAppliedByParent = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+    const float DamageToApply = DamageAppliedByParent > 0.f ? DamageAppliedByParent : DamageAmount;
+    return ApplyHealthDamage(DamageToApply, EventInstigator, DamageCauser);
 }
 
 void ABotCharacter::ApplyBotMovementSettings()
@@ -67,6 +92,7 @@ void ABotCharacter::ApplyBotMovementSettings()
     }
 
     MoveComp->bOrientRotationToMovement = bOrientRotationToMovement;
+    MoveComp->bUseControllerDesiredRotation = false;
     MoveComp->RotationRate = MovementRotationRate;
 
     if (LocomotionMode == EBotLocomotionMode::Flying)
@@ -146,7 +172,7 @@ void ABotCharacter::StopBotViewportRecording()
 
 bool ABotCharacter::TryThrowProjectileAtActor(AActor* TargetActor)
 {
-    if (!bEnableProjectileAttack || !IsValidDamageTarget(TargetActor))
+    if (bIsDead || !bEnableProjectileAttack || !IsValidDamageTarget(TargetActor))
     {
         return false;
     }
@@ -206,6 +232,66 @@ bool ABotCharacter::TryThrowProjectileAtActor(AActor* TargetActor)
     return true;
 }
 
+bool ABotCharacter::TryThrowProjectileAtLocation(const FVector& TargetLocation)
+{
+    if (bIsDead || !bEnableProjectileAttack)
+    {
+        return false;
+    }
+
+    UWorld* World = GetWorld();
+    if (!World)
+    {
+        return false;
+    }
+
+    const float CurrentTime = World->GetTimeSeconds();
+    if (CurrentTime - LastProjectileAttackTime < ProjectileAttackCooldownSeconds)
+    {
+        return false;
+    }
+
+    const float DistanceSq = FVector::DistSquared(GetActorLocation(), TargetLocation);
+    if (ProjectileAttackRange > 0.f && DistanceSq > FMath::Square(ProjectileAttackRange))
+    {
+        return false;
+    }
+
+    TSubclassOf<ABotDamageProjectile> ClassToSpawn = ProjectileClass;
+    if (!ClassToSpawn)
+    {
+        ClassToSpawn = ABotDamageProjectile::StaticClass();
+    }
+
+    const FVector SpawnLocation = GetActorLocation() + GetActorRotation().RotateVector(ProjectileSpawnOffset);
+    const FVector Direction = (TargetLocation - SpawnLocation).GetSafeNormal();
+    if (Direction.IsNearlyZero())
+    {
+        return false;
+    }
+
+    FActorSpawnParameters SpawnParams;
+    SpawnParams.Owner = this;
+    SpawnParams.Instigator = this;
+    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+    ABotDamageProjectile* Projectile = World->SpawnActor<ABotDamageProjectile>(
+        ClassToSpawn,
+        SpawnLocation,
+        Direction.Rotation(),
+        SpawnParams);
+    if (!Projectile)
+    {
+        return false;
+    }
+
+    Projectile->SetDamage(ProjectileDamage);
+    Projectile->SetProjectileSpeed(ProjectileSpeed);
+    Projectile->FireInDirection(Direction);
+    LastProjectileAttackTime = CurrentTime;
+    return true;
+}
+
 bool ABotCharacter::ThrowProjectileAtPlayer()
 {
     APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(this, 0);
@@ -214,20 +300,20 @@ bool ABotCharacter::ThrowProjectileAtPlayer()
 
 void ABotCharacter::SetCloseDamageHitboxEnabled(bool bEnabled)
 {
-    bCloseDamageHitboxEnabled = bEnabled;
+    bCloseDamageHitboxEnabled = bEnabled && !bIsDead;
 
     if (!CloseDamageHitbox)
     {
         return;
     }
 
-    CloseDamageHitbox->SetCollisionEnabled(bEnabled ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
-    CloseDamageHitbox->SetGenerateOverlapEvents(bEnabled);
+    CloseDamageHitbox->SetCollisionEnabled(bCloseDamageHitboxEnabled ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
+    CloseDamageHitbox->SetGenerateOverlapEvents(bCloseDamageHitboxEnabled);
 }
 
 void ABotCharacter::TickCloseDamageHitbox()
 {
-    if (!bCloseDamageHitboxEnabled || !CloseDamageHitbox)
+    if (bIsDead || !bCloseDamageHitboxEnabled || !CloseDamageHitbox)
     {
         return;
     }
@@ -242,7 +328,7 @@ void ABotCharacter::TickCloseDamageHitbox()
 
 bool ABotCharacter::TryApplyCloseDamage(AActor* TargetActor)
 {
-    if (!bCloseDamageHitboxEnabled || !IsValidDamageTarget(TargetActor) || CloseDamage <= 0.f)
+    if (bIsDead || !bCloseDamageHitboxEnabled || !IsValidDamageTarget(TargetActor) || CloseDamage <= 0.f)
     {
         return false;
     }
@@ -278,13 +364,194 @@ bool ABotCharacter::TryApplyCloseDamage(AActor* TargetActor)
 
 bool ABotCharacter::IsValidDamageTarget(const AActor* TargetActor) const
 {
-    if (!IsValid(TargetActor) || TargetActor == this)
+    if (bIsDead || !IsValid(TargetActor) || TargetActor == this)
     {
         return false;
     }
 
     const APawn* Pawn = Cast<APawn>(TargetActor);
     return TargetActor->IsA<AEagleEyeCharacter>() || (Pawn && Pawn->IsPlayerControlled());
+}
+
+float ABotCharacter::ApplyHealthDamage(float DamageAmount, AController* EventInstigator, AActor* DamageCauser)
+{
+    if (bIsDead || DamageAmount <= 0.f)
+    {
+        return 0.f;
+    }
+
+    const float PreviousHealth = CurrentHealth;
+    CurrentHealth = FMath::Clamp(CurrentHealth - DamageAmount, 0.f, MaxHealth);
+    const float AppliedDamage = PreviousHealth - CurrentHealth;
+    if (AppliedDamage <= 0.f)
+    {
+        return 0.f;
+    }
+
+    OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+
+    UE_LOG(LogTemp, Verbose, TEXT("%s took %.1f damage. Health %.1f / %.1f. DamageCauser=%s"),
+        *GetNameSafe(this),
+        AppliedDamage,
+        CurrentHealth,
+        MaxHealth,
+        *GetNameSafe(DamageCauser));
+
+    if (CurrentHealth <= 0.f)
+    {
+        HandleDeath(EventInstigator, DamageCauser);
+    }
+
+    return AppliedDamage;
+}
+
+float ABotCharacter::Heal(float HealAmount)
+{
+    if (bIsDead || HealAmount <= 0.f)
+    {
+        return 0.f;
+    }
+
+    const float PreviousHealth = CurrentHealth;
+    CurrentHealth = FMath::Clamp(CurrentHealth + HealAmount, 0.f, MaxHealth);
+    const float AppliedHeal = CurrentHealth - PreviousHealth;
+    if (AppliedHeal > 0.f)
+    {
+        OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+    }
+
+    return AppliedHeal;
+}
+
+void ABotCharacter::ResetHealth()
+{
+    MaxHealth = FMath::Max(1.f, MaxHealth);
+    CurrentHealth = MaxHealth;
+    bIsDead = false;
+    SetLifeSpan(0.f);
+
+    DisableDeathRagdoll();
+    SetActorEnableCollision(true);
+
+    if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+    {
+        Capsule->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+    }
+
+    if (CloseDamageHitbox)
+    {
+        SetCloseDamageHitboxEnabled(bEnableCloseHitboxDamage);
+    }
+
+    if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+    {
+        MoveComp->SetComponentTickEnabled(true);
+        MoveComp->SetMovementMode(LocomotionMode == EBotLocomotionMode::Flying ? MOVE_Flying : MOVE_Walking);
+    }
+
+    OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+}
+
+void ABotCharacter::HandleDeath(AController* EventInstigator, AActor* DamageCauser)
+{
+    if (bIsDead)
+    {
+        return;
+    }
+
+    bIsDead = true;
+    SetCloseDamageHitboxEnabled(false);
+    StopBotViewportRecording();
+
+    if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
+    {
+        MoveComp->StopMovementImmediately();
+        MoveComp->DisableMovement();
+    }
+
+    if (AController* BotController = GetController())
+    {
+        BotController->StopMovement();
+
+        if (AAIController* AIController = Cast<AAIController>(BotController))
+        {
+            if (UBrainComponent* Brain = AIController->GetBrainComponent())
+            {
+                Brain->StopLogic(TEXT("Bot died"));
+            }
+        }
+    }
+
+    if (bEnableRagdollOnDeath)
+    {
+        EnableDeathRagdoll();
+    }
+    else if (bDisableCollisionOnDeath)
+    {
+        SetActorEnableCollision(false);
+    }
+
+    OnBotDied.Broadcast();
+    K2_OnDeath(EventInstigator, DamageCauser);
+
+    UE_LOG(LogTemp, Log, TEXT("%s died. DamageCauser=%s"),
+        *GetNameSafe(this),
+        *GetNameSafe(DamageCauser));
+
+    if (bDestroyOnDeath)
+    {
+        SetLifeSpan(FMath::Max(0.01f, DestroyDelaySeconds));
+    }
+}
+
+void ABotCharacter::EnableDeathRagdoll()
+{
+    if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+    {
+        Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    }
+
+    USkeletalMeshComponent* CharacterMesh = GetMesh();
+    if (!CharacterMesh)
+    {
+        return;
+    }
+
+    if (!bHasCachedMeshCollisionSettings)
+    {
+        CachedMeshCollisionProfileName = CharacterMesh->GetCollisionProfileName();
+        CachedMeshCollisionEnabled = CharacterMesh->GetCollisionEnabled();
+        bHasCachedMeshCollisionSettings = true;
+    }
+
+    if (!RagdollCollisionProfileName.IsNone())
+    {
+        CharacterMesh->SetCollisionProfileName(RagdollCollisionProfileName);
+    }
+    CharacterMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+    CharacterMesh->SetAllBodiesSimulatePhysics(true);
+    CharacterMesh->SetSimulatePhysics(true);
+    CharacterMesh->WakeAllRigidBodies();
+    CharacterMesh->bBlendPhysics = true;
+}
+
+void ABotCharacter::DisableDeathRagdoll()
+{
+    USkeletalMeshComponent* CharacterMesh = GetMesh();
+    if (!CharacterMesh)
+    {
+        return;
+    }
+
+    CharacterMesh->bBlendPhysics = false;
+    CharacterMesh->SetSimulatePhysics(false);
+    CharacterMesh->SetAllBodiesSimulatePhysics(false);
+
+    if (bHasCachedMeshCollisionSettings)
+    {
+        CharacterMesh->SetCollisionProfileName(CachedMeshCollisionProfileName);
+        CharacterMesh->SetCollisionEnabled(CachedMeshCollisionEnabled);
+    }
 }
 
 void ABotCharacter::HandleCloseDamageOverlap(

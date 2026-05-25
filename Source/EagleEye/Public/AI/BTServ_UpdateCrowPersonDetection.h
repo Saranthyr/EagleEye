@@ -54,6 +54,39 @@ protected:
     UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="0", ClampMax="10"))
     int32 MaxConsecutiveDetectionMisses = 2;
 
+    UPROPERTY(EditAnywhere, Category="YOLO Tracking")
+    bool bEnableYoloBoxTracking = true;
+
+    UPROPERTY(EditAnywhere, Category="YOLO Tracking", meta=(ClampMin="0.0", ClampMax="1.0", EditCondition="bEnableYoloBoxTracking"))
+    float TrackMatchMinIoU = 0.1f;
+
+    UPROPERTY(EditAnywhere, Category="YOLO Tracking", meta=(ClampMin="0.0", ClampMax="1.0", EditCondition="bEnableYoloBoxTracking"))
+    float TrackMatchMaxCenterDistance = 0.08f;
+
+    UPROPERTY(EditAnywhere, Category="YOLO Tracking", meta=(ClampMin="0.0", EditCondition="bEnableYoloBoxTracking"))
+    float TrackSwitchConfidenceMargin = 0.25f;
+
+    UPROPERTY(EditAnywhere, Category="YOLO Tracking", meta=(ClampMin="0.0", EditCondition="bEnableYoloBoxTracking"))
+    float TrackBoxSmoothingSpeed = 12.0f;
+
+    UPROPERTY(EditAnywhere, Category="YOLO Tracking", meta=(ClampMin="-0.5", ClampMax="0.75"))
+    float TargetRayBoxVerticalBias = 0.4f;
+
+    UPROPERTY(EditAnywhere, Category="YOLO Tracking", meta=(ClampMin="0.0"))
+    float MaxTrackedTargetJumpDistance = 800.0f;
+
+    UPROPERTY(EditAnywhere, Category="YOLO Tracking")
+    bool bPredictTrackedTargetMotion = true;
+
+    UPROPERTY(EditAnywhere, Category="YOLO Tracking", meta=(ClampMin="0.0", EditCondition="bPredictTrackedTargetMotion"))
+    float TargetPredictionLeadSeconds = 0.15f;
+
+    UPROPERTY(EditAnywhere, Category="YOLO Tracking", meta=(ClampMin="0.0", EditCondition="bPredictTrackedTargetMotion"))
+    float MaxTargetPredictionDistance = 150.0f;
+
+    UPROPERTY(EditAnywhere, Category="YOLO Tracking", meta=(ClampMin="0.0", EditCondition="bPredictTrackedTargetMotion"))
+    float TargetVelocitySmoothingSpeed = 6.0f;
+
     UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="0.0"))
     float TargetSmoothingSpeed = 8.0f;
 
@@ -61,10 +94,13 @@ protected:
     bool bAlwaysFollowPlayerPawn = false;
 
     UPROPERTY(EditAnywhere, Category="Detection")
-    bool bPreferPlayerPawnLocation = true;
+    bool bAllowPlayerPawnLocationFallback = false;
+
+    UPROPERTY(EditAnywhere, Category="Detection")
+    bool bPreferPlayerPawnLocation = false;
 
     UPROPERTY(EditAnywhere, Category="Detection", meta=(EditCondition="bPreferPlayerPawnLocation"))
-    bool bRequireRaySnapForPlayerPawnLocation = true;
+    bool bRequireRaySnapForPlayerPawnLocation = false;
 
     UPROPERTY(EditAnywhere, Category="Detection")
     FVector TargetLocationOffset = FVector(0.f, 0.f, 150.f);
