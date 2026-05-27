@@ -148,6 +148,8 @@ public class EagleEye : ModuleRules
         }
 
         bool bWithOnnxRuntime = false;
+        bool bWithOnnxRuntimeDirectML = false;
+        bool bWithOnnxRuntimeMIGraphX = false;
         if (!String.IsNullOrEmpty(OnnxRuntimeRoot))
         {
             string OnnxIncludePath = FindFirstExistingDirectory(new List<string>
@@ -179,6 +181,8 @@ public class EagleEye : ModuleRules
             {
                 AddSystemIncludePath(OnnxIncludePath);
                 AddSystemIncludePath(Path.Combine(OnnxIncludePath, "onnxruntime", "core", "session"));
+                string DirectMLProviderHeader = Path.Combine(OnnxIncludePath, "onnxruntime", "core", "providers", "dml", "dml_provider_factory.h");
+                string MIGraphXProviderHeader = Path.Combine(OnnxIncludePath, "onnxruntime", "core", "providers", "migraphx", "migraphx_provider_factory.h");
 
                 if (Target.Platform == UnrealTargetPlatform.Win64)
                 {
@@ -193,15 +197,27 @@ public class EagleEye : ModuleRules
                         Path.Combine(OnnxRuntimeRoot, "build", "native", "bin", "x64")
                     };
                     PublicAdditionalLibraries.Add(OnnxImportOrSharedLib);
+                    string DirectMLDll = FindFirstExistingFile(OnnxRuntimeDllDirs, "DirectML.dll");
+                    bWithOnnxRuntimeDirectML = File.Exists(DirectMLProviderHeader) && File.Exists(DirectMLDll);
+
                     foreach (string DllDir in OnnxRuntimeDllDirs)
                     {
                         StageMatchingRuntimeFiles(DllDir, "onnxruntime*.dll");
-                        StageMatchingRuntimeFiles(DllDir, "DirectML.dll");
+                    }
+                    if (bWithOnnxRuntimeDirectML)
+                    {
+                        RuntimeDependencies.Add(
+                            Path.Combine("$(TargetOutputDir)", Path.GetFileName(DirectMLDll)),
+                            DirectMLDll,
+                            StagedFileType.NonUFS);
                     }
                 }
                 else if (Target.Platform == UnrealTargetPlatform.Linux)
                 {
                     AddNativeSharedLibrary(OnnxImportOrSharedLib);
+                    string MIGraphXProviderLib = FindFirstExistingFile(OnnxLibDirs, "libonnxruntime_providers_migraphx.so");
+                    bWithOnnxRuntimeMIGraphX = File.Exists(MIGraphXProviderHeader) && File.Exists(MIGraphXProviderLib);
+
                     foreach (string LibDir in OnnxLibDirs)
                     {
                         StageMatchingRuntimeFiles(LibDir, "libonnxruntime_providers*.so");
@@ -210,8 +226,8 @@ public class EagleEye : ModuleRules
             }
         }
         PublicDefinitions.Add(bWithOnnxRuntime ? "WITH_ONNXRUNTIME=1" : "WITH_ONNXRUNTIME=0");
-        PublicDefinitions.Add((bWithOnnxRuntime && Target.Platform == UnrealTargetPlatform.Win64) ? "WITH_ONNXRUNTIME_DML=1" : "WITH_ONNXRUNTIME_DML=0");
-        PublicDefinitions.Add((bWithOnnxRuntime && Target.Platform == UnrealTargetPlatform.Linux) ? "WITH_ONNXRUNTIME_MIGRAPHX=1" : "WITH_ONNXRUNTIME_MIGRAPHX=0");
+        PublicDefinitions.Add(bWithOnnxRuntimeDirectML ? "WITH_ONNXRUNTIME_DML=1" : "WITH_ONNXRUNTIME_DML=0");
+        PublicDefinitions.Add(bWithOnnxRuntimeMIGraphX ? "WITH_ONNXRUNTIME_MIGRAPHX=1" : "WITH_ONNXRUNTIME_MIGRAPHX=0");
 
         string[] RuntimeModelExtensions =
         {
@@ -285,6 +301,11 @@ public class EagleEye : ModuleRules
     {
         foreach (string DirectoryPath in Directories)
         {
+            if (String.IsNullOrEmpty(DirectoryPath))
+            {
+                continue;
+            }
+
             string CandidatePath = Path.Combine(DirectoryPath, FileName);
             if (File.Exists(CandidatePath))
             {

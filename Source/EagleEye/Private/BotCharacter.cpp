@@ -26,7 +26,7 @@ ABotCharacter::ABotCharacter()
     DetectionComponent->SetupAttachment(RootComponent);
     DetectionComponent->SetUseOwnerCameraCapture(true);
     DetectionComponent->SetCaptureFPS(8.f);
-    DetectionComponent->SetCaptureResolution(416, 416);
+    DetectionComponent->SetCaptureResolution(640, 640);
     DetectionComponent->SetMaxOwnerCameraCaptureDistance(8000.f);
     DetectionComponent->SetMaxActiveOwnerCameraCaptures(2);
     DetectionComponent->SetUseSharedVisionModel(true);
@@ -48,8 +48,6 @@ void ABotCharacter::BeginPlay()
     Super::BeginPlay();
 
     ResetHealth();
-
-    ApplyDetectionRecordingSettings();
 
     ApplyBotMovementSettings();
 
@@ -83,6 +81,24 @@ float ABotCharacter::TakeDamage(
     return ApplyHealthDamage(DamageToApply, EventInstigator, DamageCauser);
 }
 
+bool ABotCharacter::IsFlyingBot() const
+{
+    return !IsWalkingBot();
+}
+
+bool ABotCharacter::IsWalkingBot() const
+{
+    if (LocomotionMode == EBotLocomotionMode::Walking)
+    {
+        return true;
+    }
+
+    const UCharacterMovementComponent* MoveComp = GetCharacterMovement();
+    return MoveComp &&
+        (MoveComp->DefaultLandMovementMode == MOVE_Walking ||
+            MoveComp->DefaultLandMovementMode == MOVE_NavWalking);
+}
+
 void ABotCharacter::ApplyBotMovementSettings()
 {
     UCharacterMovementComponent* MoveComp = GetCharacterMovement();
@@ -95,7 +111,13 @@ void ABotCharacter::ApplyBotMovementSettings()
     MoveComp->bUseControllerDesiredRotation = false;
     MoveComp->RotationRate = MovementRotationRate;
 
-    if (LocomotionMode == EBotLocomotionMode::Flying)
+    const bool bUseWalkingMovement =
+        LocomotionMode == EBotLocomotionMode::Walking ||
+        (HasActorBegunPlay() &&
+            (MoveComp->DefaultLandMovementMode == MOVE_Walking ||
+                MoveComp->DefaultLandMovementMode == MOVE_NavWalking));
+
+    if (!bUseWalkingMovement)
     {
         MoveComp->DefaultLandMovementMode = MOVE_Flying;
         MoveComp->GravityScale = FlyingGravityScale;
@@ -109,6 +131,7 @@ void ABotCharacter::ApplyBotMovementSettings()
         return;
     }
 
+    LocomotionMode = EBotLocomotionMode::Walking;
     MoveComp->DefaultLandMovementMode = MOVE_Walking;
     MoveComp->GravityScale = WalkingGravityScale;
     MoveComp->MaxWalkSpeed = WalkingMaxSpeed;
@@ -120,54 +143,31 @@ void ABotCharacter::ApplyBotMovementSettings()
     }
 }
 
-void ABotCharacter::ApplyDetectionRecordingSettings()
-{
-    if (!DetectionComponent)
-    {
-        return;
-    }
-
-    if (bOverrideBotViewportRecordingCaptureSettings)
-    {
-        DetectionComponent->SetCaptureFPS(BotViewportRecordingFPS);
-        DetectionComponent->SetCaptureResolution(BotViewportRecordingWidth, BotViewportRecordingHeight);
-    }
-
-    DetectionComponent->SetRecordOwnerCameraCaptureVideo(bRecordBotViewportVideo);
-    DetectionComponent->SetRecordOwnerCameraWhenDetectionSkipped(bRecordBotViewportEvenWhenDetectionSkipped);
-    DetectionComponent->SetOwnerCameraVideoOutputPath(BotViewportVideoOutputPath);
-    DetectionComponent->SetOwnerCameraVideoEncoderPath(BotViewportVideoEncoderPath);
-    DetectionComponent->SetMaxQueuedOwnerCameraVideoFrames(MaxQueuedBotViewportVideoFrames);
-    DetectionComponent->SetApplyOwnerCameraVideoGammaCorrection(bApplyBotViewportVideoGammaCorrection);
-
-    UE_LOG(LogTemp, Log, TEXT("Bot viewport recording %s for %s (record_when_detection_skipped=%s, output=%s)"),
-        bRecordBotViewportVideo ? TEXT("enabled") : TEXT("disabled"),
-        *GetNameSafe(this),
-        bRecordBotViewportEvenWhenDetectionSkipped ? TEXT("true") : TEXT("false"),
-        BotViewportVideoOutputPath.IsEmpty() ? TEXT("<default>") : *BotViewportVideoOutputPath);
-}
-
 void ABotCharacter::StartBotViewportRecording()
 {
-    bRecordBotViewportVideo = true;
-    ApplyDetectionRecordingSettings();
+    if (DetectionComponent)
+    {
+        DetectionComponent->SetRecordOwnerCameraCaptureVideo(true);
+    }
 }
 
 void ABotCharacter::StartBotViewportRecordingWithSettings(float FPS, int32 Width, int32 Height)
 {
-    bRecordBotViewportVideo = true;
-    bRecordBotViewportEvenWhenDetectionSkipped = true;
-    bOverrideBotViewportRecordingCaptureSettings = true;
-    BotViewportRecordingFPS = FMath::Clamp(FPS, 1.0f, 120.0f);
-    BotViewportRecordingWidth = FMath::Clamp(Width, 160, 1920);
-    BotViewportRecordingHeight = FMath::Clamp(Height, 160, 1080);
-    ApplyDetectionRecordingSettings();
+    if (DetectionComponent)
+    {
+        DetectionComponent->SetCaptureFPS(FPS);
+        DetectionComponent->SetCaptureResolution(Width, Height);
+        DetectionComponent->SetRecordOwnerCameraWhenDetectionSkipped(true);
+        DetectionComponent->SetRecordOwnerCameraCaptureVideo(true);
+    }
 }
 
 void ABotCharacter::StopBotViewportRecording()
 {
-    bRecordBotViewportVideo = false;
-    ApplyDetectionRecordingSettings();
+    if (DetectionComponent)
+    {
+        DetectionComponent->SetRecordOwnerCameraCaptureVideo(false);
+    }
 }
 
 bool ABotCharacter::TryThrowProjectileAtActor(AActor* TargetActor)

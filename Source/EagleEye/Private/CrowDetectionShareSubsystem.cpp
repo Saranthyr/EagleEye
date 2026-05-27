@@ -3,6 +3,32 @@
 #include "GameFramework/Pawn.h"
 #include "Kismet/GameplayStatics.h"
 
+namespace
+{
+    bool IsAcceptedCrowDetectionClass(
+        int32 ClassId,
+        const FString& ClassLabel,
+        const TArray<int32>& AcceptedClassIds,
+        const TArray<FName>& AcceptedClassLabels)
+    {
+        if (AcceptedClassIds.Contains(ClassId))
+        {
+            return true;
+        }
+
+        for (const FName& AcceptedLabel : AcceptedClassLabels)
+        {
+            if (!AcceptedLabel.IsNone() &&
+                ClassLabel.Equals(AcceptedLabel.ToString(), ESearchCase::IgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+}
+
 void UCrowDetectionShareSubsystem::RegisterDetector(AActor* DetectorOwner)
 {
     if (!IsValid(DetectorOwner))
@@ -105,6 +131,16 @@ void UCrowDetectionShareSubsystem::PublishPersonDetection(
     const FVector& TargetLocation,
     float Confidence)
 {
+    PublishTargetDetection(Reporter, TargetLocation, Confidence, 0, TEXT("person"));
+}
+
+void UCrowDetectionShareSubsystem::PublishTargetDetection(
+    AActor* Reporter,
+    const FVector& TargetLocation,
+    float Confidence,
+    int32 ClassId,
+    const FString& ClassLabel)
+{
     if (!IsValid(Reporter))
     {
         return;
@@ -121,6 +157,8 @@ void UCrowDetectionShareSubsystem::PublishPersonDetection(
     Detection.Reporter = Reporter;
     Detection.TargetLocation = TargetLocation;
     Detection.Confidence = Confidence;
+    Detection.ClassId = ClassId;
+    Detection.ClassLabel = ClassLabel;
     Detection.ReportTime = CurrentTime;
     RecentPersonDetections.Add(Detection);
 }
@@ -131,6 +169,36 @@ bool UCrowDetectionShareSubsystem::GetBestRecentPersonDetection(
     float MaxReporterDistance,
     FVector& OutTargetLocation,
     float& OutConfidence) const
+{
+    TArray<int32> PersonClassIds;
+    PersonClassIds.Add(0);
+    TArray<FName> PersonClassLabels;
+    PersonClassLabels.Add(TEXT("person"));
+
+    int32 OutClassId = -1;
+    FString OutClassLabel;
+    return GetBestRecentTargetDetection(
+        Requester,
+        MaxAgeSeconds,
+        MaxReporterDistance,
+        PersonClassIds,
+        PersonClassLabels,
+        OutTargetLocation,
+        OutConfidence,
+        OutClassId,
+        OutClassLabel);
+}
+
+bool UCrowDetectionShareSubsystem::GetBestRecentTargetDetection(
+    const AActor* Requester,
+    float MaxAgeSeconds,
+    float MaxReporterDistance,
+    const TArray<int32>& AcceptedClassIds,
+    const TArray<FName>& AcceptedClassLabels,
+    FVector& OutTargetLocation,
+    float& OutConfidence,
+    int32& OutClassId,
+    FString& OutClassLabel) const
 {
     if (!Requester)
     {
@@ -145,6 +213,15 @@ bool UCrowDetectionShareSubsystem::GetBestRecentPersonDetection(
     {
         AActor* Reporter = Detection.Reporter.Get();
         if (!IsValid(Reporter) || Reporter == Requester)
+        {
+            continue;
+        }
+
+        if (!IsAcceptedCrowDetectionClass(
+            Detection.ClassId,
+            Detection.ClassLabel,
+            AcceptedClassIds,
+            AcceptedClassLabels))
         {
             continue;
         }
@@ -166,6 +243,8 @@ bool UCrowDetectionShareSubsystem::GetBestRecentPersonDetection(
         {
             OutTargetLocation = Detection.TargetLocation;
             OutConfidence = Detection.Confidence;
+            OutClassId = Detection.ClassId;
+            OutClassLabel = Detection.ClassLabel;
             BestScore = Score;
             bFound = true;
         }

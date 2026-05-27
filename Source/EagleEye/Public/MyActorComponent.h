@@ -49,7 +49,7 @@ namespace nvinfer1
 
 class USceneCaptureComponent2D;
 
-UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent), Config=Game)
+UCLASS(BlueprintType, Blueprintable, ClassGroup=(Detection), meta=(BlueprintSpawnableComponent, DisplayName="Detection Component"), Config=Game)
 class EAGLEEYE_API UMyActorComponent : public USceneComponent
 {
 	GENERATED_BODY()
@@ -72,6 +72,18 @@ public:
 
     UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category="Detection")
     float LastFrameTimeSeconds = -FLT_MAX;
+
+    UPROPERTY(Transient)
+    TArray<float> LastFrameSceneDepth;
+
+    UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category="Detection|Depth")
+    int32 LastFrameSceneDepthWidth = 0;
+
+    UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category="Detection|Depth")
+    int32 LastFrameSceneDepthHeight = 0;
+
+    UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category="Detection|Depth")
+    float LastFrameSceneDepthTimeSeconds = -FLT_MAX;
 
     UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category="Detection|FOV Metrics")
     int32 FovDetectionTruePositiveCount = 0;
@@ -106,8 +118,8 @@ public:
     void SetUseSharedVisionModel(bool bEnabled) { bUseSharedVisionModel = bEnabled; }
     void SetSharedVisionModelHost(bool bEnabled) { bSharedVisionModelHost = bEnabled; }
     void SetUseFovOnlyPersonDetection(bool bEnabled) { bUseFovOnlyPersonDetection = bEnabled; }
-    void SetLogFovDetectionMetrics(bool bEnabled) { bLogFovDetectionMetrics = bEnabled; }
-    bool ShouldLogFrameTimings() const { return bLogFrameTimings; }
+    void SetLogFovDetectionMetrics(bool bEnabled);
+    bool ShouldLogFrameTimings() const;
 
     TArray<FDetectionResult> ProcessSharedVisionFrame(
         const TArray<FColor>& Bitmap,
@@ -130,6 +142,9 @@ private:
     void CopyResultsFromWorker(); // game-thread copy from shared buffer
     bool CaptureViewportToPixels(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight);
     bool CaptureSceneToPixels(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight);
+    bool CaptureOwnerSceneDepthToBuffer(TArray<float>& OutDepth, int32& OutWidth, int32& OutHeight);
+    void PublishOwnerSceneDepth(TArray<float>&& Depth, int32 Width, int32 Height);
+    void ClearLastFrameSceneDepth();
     bool PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight);
     bool EnqueueAsyncOwnerCameraReadback();
     bool EnsureOwnerCameraCapture();
@@ -152,6 +167,20 @@ private:
         float& OutVerticalAngleDegrees,
         bool& bOutHasEvaluation) const;
     bool HasPersonDetection(const TArray<FDetectionResult>& Detections) const;
+    void InitFovDetectionMetricsTable();
+    void AppendFovDetectionMetricsTableRow(
+        const TCHAR* SourceLabel,
+        const TCHAR* Status,
+        const TCHAR* Outcome,
+        bool bExpectedInFov,
+        bool bActualPersonDetected,
+        float Distance,
+        float HorizontalAngleDegrees,
+        float VerticalAngleDegrees,
+        const FVector2D& ExpectedPixel,
+        int32 SourceWidth,
+        int32 SourceHeight,
+        int32 DetectionCount);
     void LogFovDetectionMetricSample(
         const TCHAR* SourceLabel,
         const TArray<FDetectionResult>& Detections,
@@ -180,16 +209,16 @@ private:
     UPROPERTY(EditAnywhere, Category="Detection|Performance", meta=(ClampMin="1.0", ClampMax="120.0"))
     float CaptureFPS = 60.0f;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Performance", meta=(ClampMin="160", ClampMax="1280"))
+    UPROPERTY(EditAnywhere, Category="Detection|Performance", meta=(ClampMin="160", ClampMax="3840"))
     int32 OnnxInputSize = 640;
 
     UPROPERTY(EditAnywhere, Category="Detection|Capture")
     bool bUseOwnerCameraCapture = false;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Capture", meta=(ClampMin="160", ClampMax="1920"))
+    UPROPERTY(EditAnywhere, Category="Detection|Capture", meta=(ClampMin="160", ClampMax="3840"))
     int32 CaptureWidth = 640;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Capture", meta=(ClampMin="160", ClampMax="1080"))
+    UPROPERTY(EditAnywhere, Category="Detection|Capture", meta=(ClampMin="160", ClampMax="2160"))
     int32 CaptureHeight = 640;
 
     UPROPERTY(EditAnywhere, Category="Detection|Capture", meta=(ClampMin="0.0"))
@@ -234,6 +263,12 @@ private:
     UPROPERTY(EditAnywhere, Category="Detection|FOV")
     bool bLogFovDetectionMetrics = false;
 
+    UPROPERTY(EditAnywhere, Category="Detection|FOV")
+    bool bResetFovDetectionMetricsTableOnBeginPlay = true;
+
+    UPROPERTY(EditAnywhere, Category="Detection|FOV")
+    FString FovDetectionMetricsCsvPath;
+
     UPROPERTY(EditAnywhere, Category="Detection|FOV", meta=(ClampMin="0.0"))
     float FovOnlyDetectionMaxDistance = 8000.f;
 
@@ -255,10 +290,21 @@ private:
     UPROPERTY()
     UTextureRenderTarget2D* OwnerCaptureRenderTarget = nullptr;
 
+    UPROPERTY()
+    USceneCaptureComponent2D* OwnerDepthSceneCapture = nullptr;
+
+    UPROPERTY()
+    UTextureRenderTarget2D* OwnerDepthRenderTarget = nullptr;
+
     TUniquePtr<FRHIGPUTextureReadback> PendingOwnerCameraReadback;
     int32 PendingOwnerCameraReadbackWidth = 0;
     int32 PendingOwnerCameraReadbackHeight = 0;
     double PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
+    TArray<float> PendingOwnerCameraReadbackDepth;
+    int32 PendingOwnerCameraReadbackDepthWidth = 0;
+    int32 PendingOwnerCameraReadbackDepthHeight = 0;
+    FString ResolvedFovDetectionMetricsCsvPath;
+    bool bFovDetectionMetricsTableInitialized = false;
 
     struct FOwnerCameraVideoFrame
     {
@@ -330,8 +376,8 @@ private:
 
     bool bIsModelLoaded = false;
     bool bIsOnnxModel = false;
-    int32 ModelInputWidth = 416;
-    int32 ModelInputHeight = 416;
+    int32 ModelInputWidth = 640;
+    int32 ModelInputHeight = 640;
 
     UPROPERTY(EditAnywhere, Category="Detection|Performance")
     bool bLogPerf = false;
@@ -365,6 +411,7 @@ private:
     void ReleaseOnnxRuntime();
     EDetectionInferenceBackend DetectAutomaticInferenceBackend(const FString& ModelPathUE) const;
     EDetectionInferenceBackend ResolveEffectiveInferenceBackend(const FString& ModelPathUE) const;
+    EOnnxRuntimeExecutionProvider ResolveEffectiveOnnxRuntimeProvider() const;
     FString ResolveModelPathForBackend(const FString& ModelPathUE, EDetectionInferenceBackend Backend) const;
     bool LoadOnnxRuntime(const FString& ModelPathUE);
     bool RunTensorRT();
@@ -400,6 +447,7 @@ private:
     TArray<int64_t> OnnxRuntimeInputShape;
     std::string OnnxRuntimeInputName;
     TArray<std::string> OnnxRuntimeOutputNames;
+    EOnnxRuntimeExecutionProvider EffectiveOnnxRuntimeExecutionProvider = EOnnxRuntimeExecutionProvider::CPU;
     bool bOnnxRuntimeUsingGpuProvider = false;
 #endif
     cv::dnn::Net OpenCVDnnNet;

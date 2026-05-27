@@ -19,9 +19,9 @@ public:
     UMyActorComponent* GetModelHostComponent() const { return ModelHostComponent; }
 
 private:
-    UPROPERTY(VisibleAnywhere, Category="Components")
+    UPROPERTY(VisibleAnywhere, Category="Components", meta=(AllowPrivateAccess="true"))
     TObjectPtr<USceneComponent> SceneRoot;
 
-    UPROPERTY(VisibleAnywhere, Category="Detection|Shared Model")
+    UPROPERTY(VisibleAnywhere, Category="Detection|Shared Model", meta=(AllowPrivateAccess="true"))
     TObjectPtr<UMyActorComponent> ModelHostComponent;
 };

@@ -49,13 +49,13 @@ struct FFoliageTypeConfig
 	bool bAlignToNormal = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Foliage")
-	bool bSnapToGeneratedSurface = true;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Foliage")
 	float SurfaceOffset = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Foliage")
-	bool bEnableCollision = false;
+	bool bEnableCollision = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Foliage")
+	bool bUseComplexCollisionAsSimple = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Foliage")
 	int32 SeedOffset = 0;
@@ -92,6 +92,15 @@ struct FBotSpawnTypeConfig
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bot", meta=(ClampMin="0.0"))
 	float SectionEdgePadding = 300.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bot", meta=(ClampMin="0.0"))
+	float GroundSpawnClearance = 2.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bot|Collision")
+	bool bCheckSpawnCollision = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bot|Collision", meta=(ClampMin="0.0", EditCondition="bCheckSpawnCollision"))
+	float SpawnCollisionExtraClearance = 5.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bot")
 	int32 SeedOffset = 9173;
@@ -136,6 +145,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Streaming")
 	float StreamingUpdateInterval = 0.25f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Streaming", meta=(ClampMin="1"))
+	int32 MaxStreamingSectionOpsPerUpdate = 1;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Streaming")
 	bool bClampToWorldSize = false;
 
@@ -144,6 +156,9 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Foliage")
 	bool bEnableFoliage = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Foliage")
+	int32 FoliageSeedOffset = 0;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bots")
 	bool bEnableBotSpawning = false;
@@ -159,6 +174,9 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bots|Debug", meta=(ClampMin="1.0"))
 	float BotDebugSphereRadius = 120.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Player Start", meta=(ClampMin="0.0"))
+	float PlayerStartObjectAvoidanceRadius = 300.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Navigation")
 	bool bEnableNavMesh = true;
@@ -214,12 +232,23 @@ private:
 		TArray<TWeakObjectPtr<ABotCharacter>> SpawnedBots;
 	};
 
+	struct FSurfacePlacement
+	{
+		FVector LocalLocation = FVector::ZeroVector;
+		FVector LocalNormal = FVector::UpVector;
+		FVector WorldLocation = FVector::ZeroVector;
+		FVector WorldNormal = FVector::UpVector;
+		float SlopeDeg = 0.0f;
+	};
+
 	void UpdateStreaming();
 	void UpdateStreamingInternal(bool bForce);
+	bool ProcessPendingStreamingOps();
 	void CreateSection(const FIntPoint& Section);
 	void DestroySection(const FIntPoint& Section);
 	void GenerateSectionMeshData(const FIntPoint& Section, FSectionMeshData& Out, FBox& OutBounds);
 	bool SampleGeneratedSurfaceAt(const FIntPoint& Section, const FVector2D& SampleLocation, FVector& OutLocation, FVector& OutNormal);
+	bool BuildSurfacePlacementAt(const FIntPoint& Section, const FVector2D& SampleLocation, const FTransform& TerrainTransform, float SurfaceOffset, FSurfacePlacement& OutPlacement);
 	void InitializeFoliageComponents();
 	void SpawnFoliageForSection(const FIntPoint& Section, FSectionData& SectionData);
 	void RemoveFoliageForSection(const FIntPoint& Section, FSectionData& SectionData);
@@ -234,11 +263,15 @@ private:
 		float SectionSizeX,
 		float SectionSizeY);
 	void DestroyBotsForSection(FSectionData& SectionData);
+	void GatherPlayerStartLocations(TArray<FVector>& OutLocations) const;
+	bool IsNearAnyPlayerStart(const TArray<FVector>& PlayerStartLocations, const FVector& WorldLocation, float ClearanceRadius) const;
+	bool IsBotSpawnLocationBlocked(const FVector& SpawnLocation, const FRotator& SpawnRotation, const ABotCharacter* BotDefaults, float ExtraClearance) const;
 	ANavMeshBoundsVolume* ResolveNavBoundsTemplate();
 	ANavMeshBoundsVolume* CreateSectionNavBounds(const FBox& WorldBounds);
 	void DestroySectionNavBounds(FSectionData& SectionData);
 	void RequestNavRebuild();
 	void PerformNavRebuild();
+	void UpdateGeneratedNavigationData();
 	void MarkNavDirty(const FBox& Bounds);
 	FIntPoint GetSectionFromWorld(const FVector& Location) const;
 	bool IsSectionInBounds(const FIntPoint& Section) const;
@@ -261,8 +294,13 @@ private:
 	UPROPERTY()
 	int32 LastStreamingRadius = -1;
 
+	UPROPERTY()
+	TArray<FIntPoint> PendingSectionsToCreate;
+
+	UPROPERTY()
+	TArray<FIntPoint> PendingSectionsToDestroy;
+
 	TWeakObjectPtr<ANavMeshBoundsVolume> NavBoundsTemplateVolume;
-	bool bLoggedMissingNavBoundsTemplate = false;
 	bool bTerrainNavRegistered = false;
 
 	FTimerHandle StreamingTimerHandle;

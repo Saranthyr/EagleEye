@@ -15,6 +15,7 @@ class EAGLEEYE_API UCrowVisionSubsystem : public UWorldSubsystem
     GENERATED_BODY()
 
 public:
+    virtual void OnWorldBeginPlay(UWorld& InWorld) override;
     virtual void Deinitialize() override;
 
     void RegisterModelHost(UMyActorComponent* Component);

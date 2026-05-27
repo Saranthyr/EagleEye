@@ -216,6 +216,12 @@ namespace
         return !Path.IsEmpty() && FPlatformFileManager::Get().GetPlatformFile().FileExists(*Path);
     }
 
+    bool IsDetectionMetricLoggingEnabled()
+    {
+        const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
+        return !Settings || Settings->bEnableDetectionMetricLogs;
+    }
+
     FString NormalizeRuntimeFilePath(const FString& Path)
     {
         FString Normalized = FPaths::ConvertRelativePathToFull(Path);
@@ -306,22 +312,124 @@ namespace
         }
     }
 
-    bool IsLikelyNvidiaAdapter(const FString& AdapterName)
+    bool IsOnnxRuntimeProviderCompiled(EOnnxRuntimeExecutionProvider Provider)
     {
-        return AdapterName.Contains(TEXT("NVIDIA"), ESearchCase::IgnoreCase) ||
-            AdapterName.Contains(TEXT("GeForce"), ESearchCase::IgnoreCase) ||
-            AdapterName.Contains(TEXT("RTX"), ESearchCase::IgnoreCase);
+        switch (Provider)
+        {
+        case EOnnxRuntimeExecutionProvider::CPU:
+            return true;
+        case EOnnxRuntimeExecutionProvider::DirectML:
+#if WITH_ONNXRUNTIME_DML
+            return true;
+#else
+            return false;
+#endif
+        case EOnnxRuntimeExecutionProvider::MIGraphX:
+#if WITH_ONNXRUNTIME_MIGRAPHX
+            return true;
+#else
+            return false;
+#endif
+        default:
+            return false;
+        }
     }
 
-    bool IsLikelyAmdAdapter(const FString& AdapterName)
+    enum class EDetectedGpuVendor : uint8
     {
-        return AdapterName.Contains(TEXT("AMD"), ESearchCase::IgnoreCase) ||
-            AdapterName.Contains(TEXT("Radeon"), ESearchCase::IgnoreCase);
+        Nvidia,
+        AMD,
+        Other
+    };
+
+    enum class EDetectedOperatingSystem : uint8
+    {
+        Windows,
+        Linux,
+        Mac,
+        Other
+    };
+
+    EDetectedGpuVendor DetectGpuVendor(const FString& AdapterName)
+    {
+        if (AdapterName.Contains(TEXT("NVIDIA"), ESearchCase::IgnoreCase) ||
+            AdapterName.Contains(TEXT("GeForce"), ESearchCase::IgnoreCase) ||
+            AdapterName.Contains(TEXT("RTX"), ESearchCase::IgnoreCase) ||
+            AdapterName.Contains(TEXT("Quadro"), ESearchCase::IgnoreCase) ||
+            AdapterName.Contains(TEXT("Tesla"), ESearchCase::IgnoreCase))
+        {
+            return EDetectedGpuVendor::Nvidia;
+        }
+
+        if (AdapterName.Contains(TEXT("AMD"), ESearchCase::IgnoreCase) ||
+            AdapterName.Contains(TEXT("Radeon"), ESearchCase::IgnoreCase) ||
+            AdapterName.Contains(TEXT("Advanced Micro Devices"), ESearchCase::IgnoreCase))
+        {
+            return EDetectedGpuVendor::AMD;
+        }
+
+        return EDetectedGpuVendor::Other;
+    }
+
+    EDetectedOperatingSystem DetectOperatingSystem()
+    {
+#if PLATFORM_WINDOWS
+        return EDetectedOperatingSystem::Windows;
+#elif PLATFORM_LINUX
+        return EDetectedOperatingSystem::Linux;
+#elif PLATFORM_MAC
+        return EDetectedOperatingSystem::Mac;
+#else
+        return EDetectedOperatingSystem::Other;
+#endif
+    }
+
+    const TCHAR* GpuVendorToString(EDetectedGpuVendor Vendor)
+    {
+        switch (Vendor)
+        {
+        case EDetectedGpuVendor::Nvidia:
+            return TEXT("NVIDIA");
+        case EDetectedGpuVendor::AMD:
+            return TEXT("AMD");
+        case EDetectedGpuVendor::Other:
+        default:
+            return TEXT("Other");
+        }
+    }
+
+    const TCHAR* OperatingSystemToString(EDetectedOperatingSystem OperatingSystem)
+    {
+        switch (OperatingSystem)
+        {
+        case EDetectedOperatingSystem::Windows:
+            return TEXT("Windows");
+        case EDetectedOperatingSystem::Linux:
+            return TEXT("Linux");
+        case EDetectedOperatingSystem::Mac:
+            return TEXT("macOS");
+        case EDetectedOperatingSystem::Other:
+        default:
+            return TEXT("Other");
+        }
     }
 
     constexpr double FfmpegStopTimeoutSeconds = 3.0;
     constexpr double FfmpegFastShutdownTimeoutSeconds = 1.0;
     constexpr double FfmpegTerminateTimeoutSeconds = 0.5;
+    TSet<FString> ResetFovDetectionMetricsTablesThisRun;
+
+    FString EscapeCsvField(const FString& Value)
+    {
+        if (!Value.Contains(TEXT(",")) && !Value.Contains(TEXT("\"")) && !Value.Contains(TEXT("\n")) && !Value.Contains(TEXT("\r")))
+        {
+            return Value;
+        }
+
+        FString Escaped = Value;
+        Escaped.ReplaceInline(TEXT("\""), TEXT("\"\""));
+        return FString::Printf(TEXT("\"%s\""), *Escaped);
+    }
 }
 
 UMyActorComponent::UMyActorComponent()
@@ -384,6 +492,21 @@ void UMyActorComponent::SetRecordOwnerCameraCaptureVideo(bool bEnabled)
     }
 }
 
+void UMyActorComponent::SetLogFovDetectionMetrics(bool bEnabled)
+{
+    bLogFovDetectionMetrics = bEnabled;
+    if (bLogFovDetectionMetrics)
+    {
+        InitFovDetectionMetricsTable();
+    }
+}
+
+bool UMyActorComponent::ShouldLogFrameTimings() const
+{
+    const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
+    return bLogFrameTimings && (!Settings || Settings->bEnableDetectionPerformanceLogs);
+}
+
 void UMyActorComponent::InitFrameTimingLog()
 {
     if (!bRecordFrameTimes)
@@ -422,7 +545,114 @@ void UMyActorComponent::InitFrameTimingLog()
 
     FrameTimeLogBuffer.Reset();
     bFrameTimingLogInitialized = true;
-    UE_LOG(LogTemp, Log, TEXT("Frame timing log enabled: %s"), *ResolvedFrameTimeCsvPath);
+    if (ShouldLogFrameTimings())
+    {
+        UE_LOG(LogTemp, Log, TEXT("Frame timing log enabled: %s"), *ResolvedFrameTimeCsvPath);
+    }
+}
+
+void UMyActorComponent::InitFovDetectionMetricsTable()
+{
+    if (!bLogFovDetectionMetrics || bFovDetectionMetricsTableInitialized)
+    {
+        return;
+    }
+
+    ResolvedFovDetectionMetricsCsvPath = FovDetectionMetricsCsvPath;
+    if (ResolvedFovDetectionMetricsCsvPath.IsEmpty())
+    {
+        ResolvedFovDetectionMetricsCsvPath = FPaths::Combine(
+            FPaths::ProjectSavedDir(),
+            TEXT("Profiling"),
+            TEXT("FovDetectionMetrics.csv"));
+    }
+
+    const FString Directory = FPaths::GetPath(ResolvedFovDetectionMetricsCsvPath);
+    if (!Directory.IsEmpty())
+    {
+        IFileManager::Get().MakeDirectory(*Directory, true);
+    }
+
+    if (bResetFovDetectionMetricsTableOnBeginPlay &&
+        !ResetFovDetectionMetricsTablesThisRun.Contains(ResolvedFovDetectionMetricsCsvPath) &&
+        IFileManager::Get().FileExists(*ResolvedFovDetectionMetricsCsvPath))
+    {
+        IFileManager::Get().Delete(*ResolvedFovDetectionMetricsCsvPath, false, true, true);
+    }
+    ResetFovDetectionMetricsTablesThisRun.Add(ResolvedFovDetectionMetricsCsvPath);
+
+    if (!IFileManager::Get().FileExists(*ResolvedFovDetectionMetricsCsvPath))
+    {
+        const FString Header = TEXT("timestamp,world_seconds,owner,source,status,outcome,expected_in_fov,actual_person_detected,distance,horizontal_angle,vertical_angle,expected_pixel_x,expected_pixel_y,source_width,source_height,detection_count,tp,tn,fp,fn,unavailable\n");
+        FFileHelper::SaveStringToFile(
+            Header,
+            *ResolvedFovDetectionMetricsCsvPath,
+            FFileHelper::EEncodingOptions::AutoDetect,
+            &IFileManager::Get());
+    }
+
+    bFovDetectionMetricsTableInitialized = true;
+    if (IsDetectionMetricLoggingEnabled())
+    {
+        UE_LOG(LogTemp, Log, TEXT("FOV detection metrics table enabled: %s"), *ResolvedFovDetectionMetricsCsvPath);
+    }
+}
+
+void UMyActorComponent::AppendFovDetectionMetricsTableRow(
+    const TCHAR* SourceLabel,
+    const TCHAR* Status,
+    const TCHAR* Outcome,
+    bool bExpectedInFov,
+    bool bActualPersonDetected,
+    float Distance,
+    float HorizontalAngleDegrees,
+    float VerticalAngleDegrees,
+    const FVector2D& ExpectedPixel,
+    int32 SourceWidth,
+    int32 SourceHeight,
+    int32 DetectionCount)
+{
+    if (!bLogFovDetectionMetrics)
+    {
+        return;
+    }
+
+    InitFovDetectionMetricsTable();
+    if (!bFovDetectionMetricsTableInitialized)
+    {
+        return;
+    }
+
+    const FString Line = FString::Printf(
+        TEXT("%s,%.4f,%s,%s,%s,%s,%s,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%d,%d,%d,%d,%d\n"),
+        *FDateTime::Now().ToIso8601(),
+        GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f,
+        *EscapeCsvField(GetNameSafe(GetOwner())),
+        *EscapeCsvField(FString(SourceLabel)),
+        *EscapeCsvField(Status),
+        *EscapeCsvField(Outcome),
+        bExpectedInFov ? TEXT("true") : TEXT("false"),
+        bActualPersonDetected ? TEXT("true") : TEXT("false"),
+        Distance,
+        HorizontalAngleDegrees,
+        VerticalAngleDegrees,
+        ExpectedPixel.X,
+        ExpectedPixel.Y,
+        SourceWidth,
+        SourceHeight,
+        DetectionCount,
+        FovDetectionTruePositiveCount,
+        FovDetectionTrueNegativeCount,
+        FovDetectionFalsePositiveCount,
+        FovDetectionFalseNegativeCount,
+        FovDetectionUnavailableSampleCount);
+
+    FFileHelper::SaveStringToFile(
+        Line,
+        *ResolvedFovDetectionMetricsCsvPath,
+        FFileHelper::EEncodingOptions::AutoDetect,
+        &IFileManager::Get(),
+        FILEWRITE_Append);
 }
 
 void UMyActorComponent::FlushFrameTimingLog(bool bForce)
@@ -516,19 +746,23 @@ void UMyActorComponent::get_class_names() {
 void UMyActorComponent::BeginPlay() {
     Super::BeginPlay();
 
+    ApplyProjectDetectionSettings();
+
     const bool bNeedsModelInitialization = !bUseFovOnlyPersonDetection && (!bUseSharedVisionModel || bSharedVisionModelHost);
     if (bNeedsModelInitialization)
     {
-        ApplyProjectDetectionSettings();
-
-        UE_LOG(LogTemp, Log, TEXT("Inference backend requested: %s (ONNX provider: %s, RHI adapter: %s, host=%s)"),
+        const EDetectedOperatingSystem DetectedOS = DetectOperatingSystem();
+        const EDetectedGpuVendor DetectedGpu = DetectGpuVendor(GRHIAdapterName);
+        UE_LOG(LogTemp, Log, TEXT("Inference backend requested: %s (ONNX provider: %s, OS: %s, GPU: %s, RHI adapter: %s, host=%s)"),
             BackendToString(InferenceBackend),
             OnnxProviderToString(OnnxRuntimeExecutionProvider),
+            OperatingSystemToString(DetectedOS),
+            GpuVendorToString(DetectedGpu),
             *GRHIAdapterName,
             bSharedVisionModelHost ? TEXT("true") : TEXT("false"));
 
         FString ResolvedNamesPath = ResolveRuntimeFilePath(TEXT("coco.names"));
-        FString ResolvedModelPath = ResolveRuntimeFilePath(TEXT("yolo11x.plan"));
+        FString ResolvedModelPath = ResolveRuntimeFilePath(TEXT("yolo26x.plan"));
         FString ResolvedCfgPath = ResolveRuntimeFilePath(TEXT("yolov7.cfg"));
 
         if (!ModelPathOverride.IsEmpty())
@@ -558,6 +792,8 @@ void UMyActorComponent::BeginPlay() {
             StartWorker();
         }
     }
+
+    InitFovDetectionMetricsTable();
 
     if (bSharedVisionModelHost)
     {
@@ -753,6 +989,28 @@ bool UMyActorComponent::EnsureOwnerCameraCapture()
         OwnerCaptureRenderTarget->UpdateResourceImmediate(true);
     }
 
+    constexpr ETextureRenderTargetFormat DesiredDepthRenderTargetFormat = RTF_RGBA16f;
+    if (!OwnerDepthRenderTarget)
+    {
+        OwnerDepthRenderTarget = NewObject<UTextureRenderTarget2D>(this, TEXT("OwnerCameraDepthRenderTarget"));
+        OwnerDepthRenderTarget->RenderTargetFormat = DesiredDepthRenderTargetFormat;
+        OwnerDepthRenderTarget->ClearColor = FLinearColor::Black;
+        OwnerDepthRenderTarget->InitAutoFormat(DesiredCaptureWidth, DesiredCaptureHeight);
+        OwnerDepthRenderTarget->UpdateResourceImmediate(true);
+    }
+    else if (OwnerDepthRenderTarget->RenderTargetFormat != DesiredDepthRenderTargetFormat ||
+        OwnerDepthRenderTarget->SizeX != DesiredCaptureWidth ||
+        OwnerDepthRenderTarget->SizeY != DesiredCaptureHeight)
+    {
+        PendingOwnerCameraReadbackDepth.Reset();
+        PendingOwnerCameraReadbackDepthWidth = 0;
+        PendingOwnerCameraReadbackDepthHeight = 0;
+        ClearLastFrameSceneDepth();
+        OwnerDepthRenderTarget->RenderTargetFormat = DesiredDepthRenderTargetFormat;
+        OwnerDepthRenderTarget->InitAutoFormat(DesiredCaptureWidth, DesiredCaptureHeight);
+        OwnerDepthRenderTarget->UpdateResourceImmediate(true);
+    }
+
     if (!OwnerSceneCapture)
     {
         OwnerSceneCapture = NewObject<UScreenCaptureComponent>(Owner, TEXT("OwnerCameraDetectionCapture"));
@@ -765,27 +1023,58 @@ bool UMyActorComponent::EnsureOwnerCameraCapture()
         OwnerSceneCapture->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
     }
 
+    if (!OwnerDepthSceneCapture)
+    {
+        OwnerDepthSceneCapture = NewObject<UScreenCaptureComponent>(Owner, TEXT("OwnerCameraDepthCapture"));
+        OwnerDepthSceneCapture->SetupAttachment(OwnerCamera);
+        OwnerDepthSceneCapture->RegisterComponent();
+        OwnerDepthSceneCapture->SetRelativeTransform(FTransform::Identity);
+        OwnerDepthSceneCapture->TextureTarget = OwnerDepthRenderTarget;
+        OwnerDepthSceneCapture->bCaptureEveryFrame = false;
+        OwnerDepthSceneCapture->bCaptureOnMovement = false;
+        OwnerDepthSceneCapture->CaptureSource = ESceneCaptureSource::SCS_SceneDepth;
+    }
+
     OwnerSceneCapture->FOVAngle = OwnerCamera->FieldOfView;
     OwnerSceneCapture->SetWorldLocationAndRotation(OwnerCamera->GetComponentLocation(), OwnerCamera->GetComponentRotation());
     OwnerSceneCapture->TextureTarget = OwnerCaptureRenderTarget;
+    OwnerSceneCapture->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
+    OwnerDepthSceneCapture->FOVAngle = OwnerCamera->FieldOfView;
+    OwnerDepthSceneCapture->SetWorldLocationAndRotation(OwnerCamera->GetComponentLocation(), OwnerCamera->GetComponentRotation());
+    OwnerDepthSceneCapture->TextureTarget = OwnerDepthRenderTarget;
+    OwnerDepthSceneCapture->CaptureSource = ESceneCaptureSource::SCS_SceneDepth;
     ConfigureOwnerCaptureVisibility(Owner);
     return true;
 }
 
 void UMyActorComponent::ConfigureOwnerCaptureVisibility(AActor* Owner)
 {
-    if (!OwnerSceneCapture || !Owner)
+    if (!Owner)
     {
         return;
     }
 
     if (bHideOwnerFromOwnerCameraCapture)
     {
-        OwnerSceneCapture->HiddenActors.AddUnique(Owner);
+        if (OwnerSceneCapture)
+        {
+            OwnerSceneCapture->HiddenActors.AddUnique(Owner);
+        }
+        if (OwnerDepthSceneCapture)
+        {
+            OwnerDepthSceneCapture->HiddenActors.AddUnique(Owner);
+        }
     }
     else
     {
-        OwnerSceneCapture->HiddenActors.Remove(Owner);
+        if (OwnerSceneCapture)
+        {
+            OwnerSceneCapture->HiddenActors.Remove(Owner);
+        }
+        if (OwnerDepthSceneCapture)
+        {
+            OwnerDepthSceneCapture->HiddenActors.Remove(Owner);
+        }
     }
 }
 
@@ -809,6 +1098,8 @@ void UMyActorComponent::ApplyProjectDetectionSettings()
     LetterboxValue = FMath::Clamp(Settings->LetterboxValue, 0, 255);
     ConfidenceThreshold = FMath::Clamp(Settings->ConfidenceThreshold, 0.01f, 0.99f);
     NmsThreshold = FMath::Clamp(Settings->NmsThreshold, 0.01f, 0.99f);
+    MaxActiveOwnerCameraCaptures = FMath::Max(0, Settings->MaxActiveSharedDetectionBots);
+    MaxOwnerCameraCaptureDistance = FMath::Max(0.f, Settings->SharedDetectionMaxBotDistance);
     bRecordFrameTimes = Settings->bRecordFrameTimes;
     FrameTimeCsvPath = Settings->FrameTimeCsvPath;
     bResetFrameTimeLogOnBeginPlay = Settings->bResetFrameTimeLogOnBeginPlay;
@@ -1365,13 +1656,29 @@ void UMyActorComponent::LogFovDetectionMetricSample(
     if (!bHasEvaluation)
     {
         ++FovDetectionUnavailableSampleCount;
-        UE_LOG(LogTemp, Warning, TEXT("FovDetectionMetric[%s]: unavailable owner=%s source=%dx%d detections=%d unavailable=%d"),
+        AppendFovDetectionMetricsTableRow(
             SourceLabel,
-            *GetNameSafe(GetOwner()),
+            TEXT("unavailable"),
+            TEXT("unavailable"),
+            false,
+            HasPersonDetection(Detections),
+            Distance,
+            HorizontalAngleDegrees,
+            VerticalAngleDegrees,
+            ExpectedPixel,
             SourceWidth,
             SourceHeight,
-            Detections.Num(),
-            FovDetectionUnavailableSampleCount);
+            Detections.Num());
+        if (IsDetectionMetricLoggingEnabled())
+        {
+            UE_LOG(LogTemp, Warning, TEXT("FovDetectionMetric[%s]: unavailable owner=%s source=%dx%d detections=%d unavailable=%d"),
+                SourceLabel,
+                *GetNameSafe(GetOwner()),
+                SourceWidth,
+                SourceHeight,
+                Detections.Num(),
+                FovDetectionUnavailableSampleCount);
+        }
         return;
     }
 
@@ -1401,24 +1708,41 @@ void UMyActorComponent::LogFovDetectionMetricSample(
         Status = TEXT("fault");
     }
 
-    UE_LOG(LogTemp, Log, TEXT("FovDetectionMetric[%s]: %s outcome=%s owner=%s expected_in_fov=%s actual_person=%s distance=%.1f h_angle=%.1f v_angle=%.1f expected_pixel=%s source=%dx%d detections=%d tp=%d tn=%d fp=%d fn=%d"),
+    AppendFovDetectionMetricsTableRow(
         SourceLabel,
         Status,
         Outcome,
-        *GetNameSafe(GetOwner()),
-        bExpectedInFov ? TEXT("true") : TEXT("false"),
-        bActualPersonDetected ? TEXT("true") : TEXT("false"),
+        bExpectedInFov,
+        bActualPersonDetected,
         Distance,
         HorizontalAngleDegrees,
         VerticalAngleDegrees,
-        *ExpectedPixel.ToString(),
+        ExpectedPixel,
         SourceWidth,
         SourceHeight,
-        Detections.Num(),
-        FovDetectionTruePositiveCount,
-        FovDetectionTrueNegativeCount,
-        FovDetectionFalsePositiveCount,
-        FovDetectionFalseNegativeCount);
+        Detections.Num());
+
+    if (IsDetectionMetricLoggingEnabled())
+    {
+        UE_LOG(LogTemp, Log, TEXT("FovDetectionMetric[%s]: %s outcome=%s owner=%s expected_in_fov=%s actual_person=%s distance=%.1f h_angle=%.1f v_angle=%.1f expected_pixel=%s source=%dx%d detections=%d tp=%d tn=%d fp=%d fn=%d"),
+            SourceLabel,
+            Status,
+            Outcome,
+            *GetNameSafe(GetOwner()),
+            bExpectedInFov ? TEXT("true") : TEXT("false"),
+            bActualPersonDetected ? TEXT("true") : TEXT("false"),
+            Distance,
+            HorizontalAngleDegrees,
+            VerticalAngleDegrees,
+            *ExpectedPixel.ToString(),
+            SourceWidth,
+            SourceHeight,
+            Detections.Num(),
+            FovDetectionTruePositiveCount,
+            FovDetectionTrueNegativeCount,
+            FovDetectionFalsePositiveCount,
+            FovDetectionFalseNegativeCount);
+    }
 }
 
 void UMyActorComponent::PublishFovOnlyDetectionFrame()
@@ -1445,7 +1769,7 @@ void UMyActorComponent::PublishFovOnlyDetectionFrame()
 
     LogFovDetectionMetricSample(TEXT("fov_only"), LastFrameDetections, SourceWidth, SourceHeight);
 
-    if (bLogFrameTimings)
+    if (ShouldLogFrameTimings())
     {
         UE_LOG(LogTemp, Log, TEXT("FovOnlyDetection[%s]: detections=%d size=%dx%d seq=%d distance=%.1f h_angle=%.1f v_angle=%.1f"),
             *GetNameSafe(GetOwner()),
@@ -1475,6 +1799,7 @@ void UMyActorComponent::ClearPublishedResults()
     LastFrameSourceHeight = 0;
     ++LastFrameSequence;
     LastFrameTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+    ClearLastFrameSceneDepth();
 }
 
 bool UMyActorComponent::CaptureSceneToPixels(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight)
@@ -1523,7 +1848,7 @@ bool UMyActorComponent::CaptureSceneToPixels(TArray<FColor>& OutPixels, int32& O
     OutHeight = OwnerCaptureRenderTarget->SizeY;
     OutPixels = MoveTemp(LocalPixels);
 
-    if (bLogFrameTimings)
+    if (ShouldLogFrameTimings())
     {
         const double TotalMs = (FPlatformTime::Seconds() - CaptureStartSeconds) * 1000.0;
         UE_LOG(LogTemp, Log, TEXT("DetectionCapture[%s]: total=%.2fms ensure=%.2fms capture=%.2fms readback=%.2fms size=%dx%d"),
@@ -1537,6 +1862,85 @@ bool UMyActorComponent::CaptureSceneToPixels(TArray<FColor>& OutPixels, int32& O
     }
 
     return true;
+}
+
+bool UMyActorComponent::CaptureOwnerSceneDepthToBuffer(TArray<float>& OutDepth, int32& OutWidth, int32& OutHeight)
+{
+    OutDepth.Reset();
+    OutWidth = 0;
+    OutHeight = 0;
+
+    if (!EnsureOwnerCameraCapture() || !OwnerDepthSceneCapture || !OwnerDepthRenderTarget)
+    {
+        return false;
+    }
+
+    const double DepthCaptureStartSeconds = FPlatformTime::Seconds();
+    OwnerDepthSceneCapture->CaptureScene();
+
+    FTextureRenderTargetResource* Resource = OwnerDepthRenderTarget->GameThread_GetRenderTargetResource();
+    if (!Resource)
+    {
+        return false;
+    }
+
+    TArray<FFloat16Color> DepthPixels;
+    FReadSurfaceDataFlags ReadFlags(RCM_MinMax);
+    ReadFlags.SetLinearToGamma(false);
+    if (!Resource->ReadFloat16Pixels(DepthPixels, ReadFlags))
+    {
+        return false;
+    }
+
+    const int32 DepthWidth = OwnerDepthRenderTarget->SizeX;
+    const int32 DepthHeight = OwnerDepthRenderTarget->SizeY;
+    if (DepthPixels.Num() != DepthWidth * DepthHeight)
+    {
+        return false;
+    }
+
+    OutDepth.SetNumUninitialized(DepthPixels.Num());
+    for (int32 Index = 0; Index < DepthPixels.Num(); ++Index)
+    {
+        const FFloat16Color& DepthPixel = DepthPixels[Index];
+        OutDepth[Index] = DepthPixel.R.GetFloat();
+    }
+
+    OutWidth = DepthWidth;
+    OutHeight = DepthHeight;
+
+    if (ShouldLogFrameTimings())
+    {
+        UE_LOG(LogTemp, Log, TEXT("SceneDepthCapture[%s]: total=%.2fms size=%dx%d"),
+            *GetNameSafe(GetOwner()),
+            (FPlatformTime::Seconds() - DepthCaptureStartSeconds) * 1000.0,
+            OutWidth,
+            OutHeight);
+    }
+
+    return true;
+}
+
+void UMyActorComponent::PublishOwnerSceneDepth(TArray<float>&& Depth, int32 Width, int32 Height)
+{
+    if (Depth.Num() != Width * Height || Width <= 0 || Height <= 0)
+    {
+        ClearLastFrameSceneDepth();
+        return;
+    }
+
+    LastFrameSceneDepth = MoveTemp(Depth);
+    LastFrameSceneDepthWidth = Width;
+    LastFrameSceneDepthHeight = Height;
+    LastFrameSceneDepthTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+}
+
+void UMyActorComponent::ClearLastFrameSceneDepth()
+{
+    LastFrameSceneDepth.Reset();
+    LastFrameSceneDepthWidth = 0;
+    LastFrameSceneDepthHeight = 0;
+    LastFrameSceneDepthTimeSeconds = -FLT_MAX;
 }
 
 bool UMyActorComponent::PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight)
@@ -1575,7 +1979,12 @@ bool UMyActorComponent::PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, 
     PendingOwnerCameraReadback->Unlock();
     PendingOwnerCameraReadback.Reset();
 
-    if (bLogFrameTimings)
+    PublishOwnerSceneDepth(
+        MoveTemp(PendingOwnerCameraReadbackDepth),
+        PendingOwnerCameraReadbackDepthWidth,
+        PendingOwnerCameraReadbackDepthHeight);
+
+    if (ShouldLogFrameTimings())
     {
         const double NowSeconds = FPlatformTime::Seconds();
         UE_LOG(LogTemp, Log, TEXT("AsyncReadbackPoll[%s]: lock+copy=%.2fms latency=%.2fms row_pitch=%d buffer_h=%d size=%dx%d"),
@@ -1591,6 +2000,9 @@ bool UMyActorComponent::PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, 
     PendingOwnerCameraReadbackWidth = 0;
     PendingOwnerCameraReadbackHeight = 0;
     PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
+    PendingOwnerCameraReadbackDepth.Reset();
+    PendingOwnerCameraReadbackDepthWidth = 0;
+    PendingOwnerCameraReadbackDepthHeight = 0;
     return true;
 }
 
@@ -1611,6 +2023,11 @@ bool UMyActorComponent::EnqueueAsyncOwnerCameraReadback()
     OwnerSceneCapture->CaptureScene();
     const double SceneCaptureMs = (FPlatformTime::Seconds() - SceneCaptureStartSeconds) * 1000.0;
 
+    TArray<float> CapturedDepth;
+    int32 CapturedDepthWidth = 0;
+    int32 CapturedDepthHeight = 0;
+    CaptureOwnerSceneDepthToBuffer(CapturedDepth, CapturedDepthWidth, CapturedDepthHeight);
+
     FTextureRenderTargetResource* Resource = OwnerCaptureRenderTarget->GameThread_GetRenderTargetResource();
     if (!Resource)
     {
@@ -1627,6 +2044,9 @@ bool UMyActorComponent::EnqueueAsyncOwnerCameraReadback()
     PendingOwnerCameraReadbackWidth = OwnerCaptureRenderTarget->SizeX;
     PendingOwnerCameraReadbackHeight = OwnerCaptureRenderTarget->SizeY;
     PendingOwnerCameraReadbackSubmitTimeSeconds = FPlatformTime::Seconds();
+    PendingOwnerCameraReadbackDepth = MoveTemp(CapturedDepth);
+    PendingOwnerCameraReadbackDepthWidth = CapturedDepthWidth;
+    PendingOwnerCameraReadbackDepthHeight = CapturedDepthHeight;
     FRHIGPUTextureReadback* Readback = PendingOwnerCameraReadback.Get();
     const FIntVector ReadbackSize(PendingOwnerCameraReadbackWidth, PendingOwnerCameraReadbackHeight, 1);
 
@@ -1636,7 +2056,7 @@ bool UMyActorComponent::EnqueueAsyncOwnerCameraReadback()
             Readback->EnqueueCopy(RHICmdList, TextureRHI, FIntVector::ZeroValue, 0, ReadbackSize);
         });
 
-    if (bLogFrameTimings)
+    if (ShouldLogFrameTimings())
     {
         UE_LOG(LogTemp, Log, TEXT("AsyncReadbackEnqueue[%s]: total=%.2fms capture=%.2fms size=%dx%d"),
             *GetNameSafe(GetOwner()),
@@ -1674,6 +2094,25 @@ void UMyActorComponent::CaptureAndEnqueue(bool bSubmitDetection)
         return;
     }
 
+    if (bUseOwnerCameraCapture && !bUseAsyncOwnerCameraReadback)
+    {
+        TArray<float> CapturedDepth;
+        int32 CapturedDepthWidth = 0;
+        int32 CapturedDepthHeight = 0;
+        if (CaptureOwnerSceneDepthToBuffer(CapturedDepth, CapturedDepthWidth, CapturedDepthHeight))
+        {
+            PublishOwnerSceneDepth(MoveTemp(CapturedDepth), CapturedDepthWidth, CapturedDepthHeight);
+        }
+        else
+        {
+            ClearLastFrameSceneDepth();
+        }
+    }
+    else if (!bUseOwnerCameraCapture)
+    {
+        ClearLastFrameSceneDepth();
+    }
+
     RecordOwnerCameraVideoFrame(Pixels, SourceWidth, SourceHeight);
 
     if (!bSubmitDetection)
@@ -1689,7 +2128,7 @@ void UMyActorComponent::CaptureAndEnqueue(bool bSubmitDetection)
             if (UCrowVisionSubsystem* VisionSubsystem = World->GetSubsystem<UCrowVisionSubsystem>())
             {
                 VisionSubsystem->SubmitFrame(this, MoveTemp(Pixels), SourceWidth, SourceHeight);
-                if (bLogFrameTimings)
+                if (ShouldLogFrameTimings())
                 {
                     const double TotalMs = (FPlatformTime::Seconds() - CaptureAndEnqueueStartSeconds) * 1000.0;
                     UE_LOG(LogTemp, Log, TEXT("DetectionSubmit[%s]: capture+submit=%.2fms size=%dx%d"),
@@ -1713,7 +2152,7 @@ void UMyActorComponent::CaptureAndEnqueue(bool bSubmitDetection)
         LatestFrame = Frame;
     }
 
-    if (bLogFrameTimings)
+    if (ShouldLogFrameTimings())
     {
         const double TotalMs = (FPlatformTime::Seconds() - CaptureAndEnqueueStartSeconds) * 1000.0;
         UE_LOG(LogTemp, Log, TEXT("DetectionEnqueue[%s]: capture+enqueue=%.2fms size=%dx%d"),
@@ -1896,7 +2335,7 @@ TArray<FDetectionResult> UMyActorComponent::ProcessSharedVisionFrame(
     const double StartSeconds = FPlatformTime::Seconds();
     TArray<FDetectionResult> Detections = ProcessWithOpenCV_BG(Bitmap, Width, Height, OutInferenceMs);
 
-    if (bLogFrameTimings)
+    if (ShouldLogFrameTimings())
     {
         UE_LOG(LogTemp, Log, TEXT("SharedInferenceHost[%s]: total=%.2fms infer=%.2fms detections=%d size=%dx%d"),
             *GetNameSafe(GetOwner()),
@@ -1933,7 +2372,7 @@ void UMyActorComponent::ConsumeSharedVisionResult(
 
     LogFovDetectionMetricSample(TEXT("model_shared"), LastFrameDetections, SourceWidth, SourceHeight);
 
-    if (bLogFrameTimings)
+    if (ShouldLogFrameTimings())
     {
         UE_LOG(LogTemp, Log, TEXT("SharedResult[%s]: detections=%d size=%dx%d seq=%d"),
             *GetNameSafe(GetOwner()),
@@ -1975,10 +2414,11 @@ EDetectionInferenceBackend UMyActorComponent::DetectAutomaticInferenceBackend(co
         return EDetectionInferenceBackend::OpenCVDNN;
     }
 
-    const FString AdapterName = GRHIAdapterName;
+    const EDetectedOperatingSystem DetectedOS = DetectOperatingSystem();
+    const EDetectedGpuVendor DetectedGpu = DetectGpuVendor(GRHIAdapterName);
 
 #if PLATFORM_LINUX && WITH_TENSORRT
-    if (IsLikelyNvidiaAdapter(AdapterName))
+    if (DetectedOS == EDetectedOperatingSystem::Linux && DetectedGpu == EDetectedGpuVendor::Nvidia)
     {
         return EDetectionInferenceBackend::TensorRT;
     }
@@ -1986,12 +2426,12 @@ EDetectionInferenceBackend UMyActorComponent::DetectAutomaticInferenceBackend(co
 
 #if WITH_ONNXRUNTIME
 #if PLATFORM_WINDOWS && WITH_ONNXRUNTIME_DML
-    if (IsLikelyAmdAdapter(AdapterName))
+    if (DetectedOS == EDetectedOperatingSystem::Windows && DetectedGpu == EDetectedGpuVendor::AMD)
     {
         return EDetectionInferenceBackend::ONNXRuntime;
     }
 #elif PLATFORM_LINUX && WITH_ONNXRUNTIME_MIGRAPHX
-    if (IsLikelyAmdAdapter(AdapterName))
+    if (DetectedOS == EDetectedOperatingSystem::Linux && DetectedGpu == EDetectedGpuVendor::AMD)
     {
         return EDetectionInferenceBackend::ONNXRuntime;
     }
@@ -2035,6 +2475,41 @@ EDetectionInferenceBackend UMyActorComponent::ResolveEffectiveInferenceBackend(c
     }
 
     return EDetectionInferenceBackend::OpenCVDNN;
+}
+
+EOnnxRuntimeExecutionProvider UMyActorComponent::ResolveEffectiveOnnxRuntimeProvider() const
+{
+    if (OnnxRuntimeExecutionProvider != EOnnxRuntimeExecutionProvider::Auto)
+    {
+        return OnnxRuntimeExecutionProvider;
+    }
+
+    const EDetectedOperatingSystem DetectedOS = DetectOperatingSystem();
+    const EDetectedGpuVendor DetectedGpu = DetectGpuVendor(GRHIAdapterName);
+
+#if PLATFORM_WINDOWS
+    if (DetectedOS == EDetectedOperatingSystem::Windows && DetectedGpu == EDetectedGpuVendor::AMD)
+    {
+#if WITH_ONNXRUNTIME_DML
+        return EOnnxRuntimeExecutionProvider::DirectML;
+#else
+        UE_LOG(LogTemp, Warning, TEXT("AMD adapter detected, but ONNX Runtime DirectML provider is not compiled into this build. Using CPU provider."));
+#endif
+    }
+#endif
+
+#if PLATFORM_LINUX
+    if (DetectedOS == EDetectedOperatingSystem::Linux && DetectedGpu == EDetectedGpuVendor::AMD)
+    {
+#if WITH_ONNXRUNTIME_MIGRAPHX
+        return EOnnxRuntimeExecutionProvider::MIGraphX;
+#else
+        UE_LOG(LogTemp, Warning, TEXT("AMD adapter detected, but ONNX Runtime MIGraphX provider is not compiled into this build. Using CPU provider."));
+#endif
+    }
+#endif
+
+    return EOnnxRuntimeExecutionProvider::CPU;
 }
 
 FString UMyActorComponent::ResolveModelPathForBackend(const FString& ModelPathUE, EDetectionInferenceBackend Backend) const
@@ -2095,10 +2570,14 @@ FString UMyActorComponent::ResolveModelPathForBackend(const FString& ModelPathUE
 
             EffectiveInferenceBackend = ResolveEffectiveInferenceBackend(ModelPathUE);
             ModelPathUE = ResolveModelPathForBackend(ModelPathUE, EffectiveInferenceBackend);
-            UE_LOG(LogTemp, Log, TEXT("LoadYOLO selected backend: %s (requested=%s, ONNX provider=%s, adapter=%s, model=%s)"),
+            const EDetectedOperatingSystem DetectedOS = DetectOperatingSystem();
+            const EDetectedGpuVendor DetectedGpu = DetectGpuVendor(GRHIAdapterName);
+            UE_LOG(LogTemp, Log, TEXT("LoadYOLO selected backend: %s (requested=%s, ONNX provider=%s, OS=%s, GPU=%s, adapter=%s, model=%s)"),
                 BackendToString(EffectiveInferenceBackend),
                 BackendToString(InferenceBackend),
                 OnnxProviderToString(OnnxRuntimeExecutionProvider),
+                OperatingSystemToString(DetectedOS),
+                GpuVendorToString(DetectedGpu),
                 *GRHIAdapterName,
                 *ModelPathUE);
 
@@ -2378,6 +2857,7 @@ void UMyActorComponent::ReleaseOnnxRuntime()
     OnnxRuntimeInputShape.Reset();
     OnnxRuntimeInputName.clear();
     OnnxRuntimeOutputNames.Reset();
+    EffectiveOnnxRuntimeExecutionProvider = EOnnxRuntimeExecutionProvider::CPU;
     bOnnxRuntimeUsingGpuProvider = false;
 #endif
     ResetInferenceOutputState();
@@ -2507,22 +2987,32 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
         OnnxRuntimeSessionOptions->SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
         OnnxRuntimeSessionOptions->DisableMemPattern();
 
+        EffectiveOnnxRuntimeExecutionProvider = ResolveEffectiveOnnxRuntimeProvider();
+        if (!IsOnnxRuntimeProviderCompiled(EffectiveOnnxRuntimeExecutionProvider))
+        {
+            UE_LOG(LogTemp, Error, TEXT("ONNX Runtime provider requested but not compiled into this build: %s"),
+                OnnxProviderToString(EffectiveOnnxRuntimeExecutionProvider));
+            ReleaseOnnxRuntime();
+            return false;
+        }
+
         bool bProviderConfigured = false;
         const bool bProviderAuto = OnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::Auto;
 
 #if WITH_ONNXRUNTIME_DML
-        if (OnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::DirectML || bProviderAuto)
+        if (EffectiveOnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::DirectML)
         {
             if (OrtStatus* Status = OrtSessionOptionsAppendExecutionProvider_DML(*OnnxRuntimeSessionOptions, 0))
             {
                 const FString ErrorMessage = UTF8_TO_TCHAR(Ort::GetApi().GetErrorMessage(Status));
                 Ort::GetApi().ReleaseStatus(Status);
-                if (OnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::DirectML)
+                if (!bProviderAuto)
                 {
                     UE_LOG(LogTemp, Error, TEXT("Failed to configure ONNX Runtime DirectML provider: %s"), *ErrorMessage);
                     return false;
                 }
                 UE_LOG(LogTemp, Warning, TEXT("ONNX Runtime DirectML provider unavailable, falling back to CPU: %s"), *ErrorMessage);
+                EffectiveOnnxRuntimeExecutionProvider = EOnnxRuntimeExecutionProvider::CPU;
             }
             else
             {
@@ -2534,18 +3024,19 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
 #endif
 
 #if WITH_ONNXRUNTIME_MIGRAPHX
-        if (!bProviderConfigured && (OnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::MIGraphX || bProviderAuto))
+        if (!bProviderConfigured && EffectiveOnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::MIGraphX)
         {
             if (OrtStatus* Status = OrtSessionOptionsAppendExecutionProvider_MIGraphX(*OnnxRuntimeSessionOptions, 0))
             {
                 const FString ErrorMessage = UTF8_TO_TCHAR(Ort::GetApi().GetErrorMessage(Status));
                 Ort::GetApi().ReleaseStatus(Status);
-                if (OnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::MIGraphX)
+                if (!bProviderAuto)
                 {
                     UE_LOG(LogTemp, Error, TEXT("Failed to configure ONNX Runtime MIGraphX provider: %s"), *ErrorMessage);
                     return false;
                 }
                 UE_LOG(LogTemp, Warning, TEXT("ONNX Runtime MIGraphX provider unavailable, falling back to CPU: %s"), *ErrorMessage);
+                EffectiveOnnxRuntimeExecutionProvider = EOnnxRuntimeExecutionProvider::CPU;
             }
             else
             {
@@ -2558,6 +3049,7 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
 
         if (!bProviderConfigured)
         {
+            EffectiveOnnxRuntimeExecutionProvider = EOnnxRuntimeExecutionProvider::CPU;
             bOnnxRuntimeUsingGpuProvider = false;
             UE_LOG(LogTemp, Log, TEXT("ONNX Runtime provider configured: CPU"));
         }
@@ -2624,7 +3116,7 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
             *ModelPathUE,
             ModelInputWidth,
             ModelInputHeight,
-            OnnxProviderToString(OnnxRuntimeExecutionProvider),
+            OnnxProviderToString(EffectiveOnnxRuntimeExecutionProvider),
             bOnnxRuntimeUsingGpuProvider ? TEXT(", GPU") : TEXT(", CPU"));
         return true;
     }

@@ -122,7 +122,6 @@ private:
     void UpdateRandomWalking(float DeltaSeconds);
     void PickRandomFlightDestination();
     void PickRandomWalkDestination();
-    void ClearChaseTarget();
 
     TWeakObjectPtr<AActor> CurrentTargetActor;
     FVector LastKnownTargetLocation = FVector::ZeroVector;
@@ -130,7 +129,6 @@ private:
     FVector CurrentFlightDestination = FVector::ZeroVector;
     FVector WalkOrigin = FVector::ZeroVector;
     FVector CurrentWalkDestination = FVector::ZeroVector;
-    float LastTargetSeenTime = -1.f;
     float DestinationHoldTimeRemaining = 0.f;
     float WalkDestinationHoldTimeRemaining = 0.f;
     bool bHasLastKnownTargetLocation = false;

@@ -70,7 +70,7 @@ public:
 		AActor* DamageCauser) override;
 
 	UFUNCTION(BlueprintCallable, Exec, Category="Detection|Recording")
-	void StartNearestBotViewportRecording(float FPS = 8.0f, int32 Width = 416, int32 Height = 416);
+	void StartNearestBotViewportRecording(float FPS = 8.0f, int32 Width = 640, int32 Height = 640);
 
 	UFUNCTION(BlueprintCallable, Exec, Category="Detection|Recording")
 	void StopBotViewportRecordings();

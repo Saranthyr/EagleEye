@@ -38,8 +38,8 @@ public:
 
     UBehaviorTree* GetBehaviorTreeAsset() const { return BehaviorTreeAsset; }
     EBotLocomotionMode GetBotLocomotionMode() const { return LocomotionMode; }
-    bool IsFlyingBot() const { return LocomotionMode == EBotLocomotionMode::Flying; }
-    bool IsWalkingBot() const { return LocomotionMode == EBotLocomotionMode::Walking; }
+    bool IsFlyingBot() const;
+    bool IsWalkingBot() const;
 
     UFUNCTION(BlueprintCallable, Category="AI|Movement")
     void ApplyBotMovementSettings();
@@ -93,7 +93,6 @@ public:
     FBotDiedSignature OnBotDied;
 
 protected:
-    void ApplyDetectionRecordingSettings();
     void TickCloseDamageHitbox();
     bool TryApplyCloseDamage(AActor* TargetActor);
     bool IsValidDamageTarget(const AActor* TargetActor) const;
@@ -140,7 +139,7 @@ protected:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="AI|Movement|Flying", meta=(ClampMin="0.0"))
     float FlyingBrakingDeceleration = 1200.f;
 
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Detection")
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Detection", meta=(AllowPrivateAccess="true"))
     TObjectPtr<UMyActorComponent> DetectionComponent;
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Gameplay|Damage")
@@ -199,36 +198,6 @@ protected:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage|Projectile")
     FVector ProjectileSpawnOffset = FVector(80.f, 0.f, 40.f);
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|Recording")
-    bool bRecordBotViewportVideo = false;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|Recording")
-    bool bRecordBotViewportEvenWhenDetectionSkipped = true;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|Recording")
-    bool bOverrideBotViewportRecordingCaptureSettings = false;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|Recording", meta=(ClampMin="1.0", ClampMax="120.0", EditCondition="bOverrideBotViewportRecordingCaptureSettings"))
-    float BotViewportRecordingFPS = 8.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|Recording", meta=(ClampMin="160", ClampMax="1920", EditCondition="bOverrideBotViewportRecordingCaptureSettings"))
-    int32 BotViewportRecordingWidth = 416;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|Recording", meta=(ClampMin="160", ClampMax="1080", EditCondition="bOverrideBotViewportRecordingCaptureSettings"))
-    int32 BotViewportRecordingHeight = 416;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|Recording")
-    FString BotViewportVideoOutputPath;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|Recording")
-    FString BotViewportVideoEncoderPath = TEXT("ffmpeg");
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|Recording", meta=(ClampMin="1", ClampMax="120"))
-    int32 MaxQueuedBotViewportVideoFrames = 2;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|Recording")
-    bool bApplyBotViewportVideoGammaCorrection = true;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="AI")
     TObjectPtr<UBehaviorTree> BehaviorTreeAsset;

@@ -18,7 +18,7 @@ public:
     EOnnxRuntimeExecutionProvider OnnxRuntimeExecutionProvider = EOnnxRuntimeExecutionProvider::Auto;
 
     UPROPERTY(EditAnywhere, Config, Category="Model")
-    FString ModelPathOverride = TEXT("yolo11x.plan");
+    FString ModelPathOverride = TEXT("yolo26x.plan");
 
     UPROPERTY(EditAnywhere, Config, Category="Model")
     FString NamesPathOverride = TEXT("coco.names");
@@ -47,6 +47,12 @@ public:
     UPROPERTY(EditAnywhere, Config, Category="Postprocess", meta=(ClampMin="0.01", ClampMax="0.99"))
     float NmsThreshold = 0.45f;
 
+    UPROPERTY(EditAnywhere, Config, Category="Shared Detection", meta=(ClampMin="0"))
+    int32 MaxActiveSharedDetectionBots = 2;
+
+    UPROPERTY(EditAnywhere, Config, Category="Shared Detection", meta=(ClampMin="0.0"))
+    float SharedDetectionMaxBotDistance = 8000.f;
+
     UPROPERTY(EditAnywhere, Config, Category="Benchmark")
     bool bRecordFrameTimes = false;
 
@@ -58,4 +64,19 @@ public:
 
     UPROPERTY(EditAnywhere, Config, Category="Benchmark", meta=(ClampMin="1", ClampMax="600"))
     int32 FrameTimeFlushInterval = 60;
+
+    UPROPERTY(EditAnywhere, Config, Category="Logging")
+    bool bEnablePathfindingDecisionLogs = true;
+
+    UPROPERTY(EditAnywhere, Config, Category="Logging")
+    bool bEnablePathfindingObjectLogs = false;
+
+    UPROPERTY(EditAnywhere, Config, Category="Logging")
+    bool bEnableDetectionDebugLogs = true;
+
+    UPROPERTY(EditAnywhere, Config, Category="Logging")
+    bool bEnableDetectionPerformanceLogs = false;
+
+    UPROPERTY(EditAnywhere, Config, Category="Logging")
+    bool bEnableDetectionMetricLogs = false;
 };

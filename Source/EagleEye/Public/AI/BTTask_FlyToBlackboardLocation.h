@@ -45,6 +45,9 @@ protected:
     UPROPERTY(EditAnywhere, Category="Blackboard")
     FBlackboardKeySelector TargetLocationKey;
 
+    UPROPERTY(EditAnywhere, Category="Blackboard")
+    FBlackboardKeySelector HasTargetKey;
+
     UPROPERTY(EditAnywhere, Category="Blackboard|Overrides")
     EBTLocomotionModeSource LocomotionModeSource = EBTLocomotionModeSource::BotLocomotion;
 
@@ -60,6 +63,9 @@ protected:
     UPROPERTY(EditAnywhere, Category="Flight", meta=(ClampMin="0.0"))
     float AcceptanceRadius = 220.f;
 
+    UPROPERTY(EditAnywhere, Category="Target Movement", meta=(ClampMin="0.0"))
+    float MinApproachStopDistance = 120.f;
+
     UPROPERTY(EditAnywhere, Category="Target Movement", meta=(EditCondition="TargetMovementModeSource==EBTTargetMovementModeSource::TaskSettings", EditConditionHides))
     EBTTargetMovementMode TargetMovementMode = EBTTargetMovementMode::ApproachTarget;
 
@@ -68,6 +74,12 @@ protected:
 
     UPROPERTY(EditAnywhere, Category="Target Movement", meta=(ClampMin="0.0", EditCondition="TargetMovementMode==EBTTargetMovementMode::MaintainDistance || TargetMovementModeSource==EBTTargetMovementModeSource::BlackboardBool", EditConditionHides))
     float DistanceTolerance = 150.f;
+
+    UPROPERTY(EditAnywhere, Category="Target Movement")
+    bool bFinishWhenActionComplete = true;
+
+    UPROPERTY(EditAnywhere, Category="Target Movement", meta=(EditCondition="bFinishWhenActionComplete"))
+    bool bClearHasTargetOnActionComplete = true;
 
     UPROPERTY(EditAnywhere, Category="Flight", meta=(ClampMin="0.0", ClampMax="1.0"))
     float MovementScale = 1.f;
@@ -90,6 +102,15 @@ protected:
     UPROPERTY(EditAnywhere, Category="Navigation", meta=(ClampMin="0.0", EditCondition="bUseNavMeshForWalking"))
     float WalkingMoveAcceptanceRadius = 120.f;
 
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(ClampMin="1.0", EditCondition="bUseNavMeshForWalking"))
+    float WalkingPathAcceptanceRadius = 35.f;
+
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(ClampMin="0.0", EditCondition="bUseNavMeshForWalking"))
+    float MinWalkingMoveAcceptanceRadius = 120.f;
+
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(ClampMin="0.0", EditCondition="bUseNavMeshForWalking"))
+    float WalkingCompletionSlack = 30.f;
+
     UPROPERTY(EditAnywhere, Category="Navigation", meta=(EditCondition="bUseNavMeshForWalking"))
     FVector NavProjectionExtent = FVector(300.f, 300.f, 500.f);
 
@@ -97,7 +118,34 @@ protected:
     bool bAllowPartialNavPath = true;
 
     UPROPERTY(EditAnywhere, Category="Navigation", meta=(EditCondition="bUseNavMeshForWalking"))
-    bool bFallbackToDirectWalkingWhenNavMoveFails = true;
+    bool bFallbackToDirectWalkingWhenNavMoveFails = false;
+
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(ClampMin="0.0", EditCondition="bUseNavMeshForWalking"))
+    float WalkingTargetSnapshotRefreshDistance = 150.f;
+
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(ClampMin="0.0", EditCondition="bUseNavMeshForWalking"))
+    float WalkingTargetSnapshotMaxAge = 1.0f;
+
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(ClampMin="0.0", EditCondition="bUseNavMeshForWalking"))
+    float WalkingMoveReissueDistance = 50.f;
+
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(ClampMin="0.0", EditCondition="bUseNavMeshForWalking"))
+    float WalkingMoveReissueInterval = 1.0f;
+
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(ClampMin="0.0", EditCondition="bUseNavMeshForWalking"))
+    float WalkingWaypointAcceptanceRadius = 100.f;
+
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(ClampMin="0.0", EditCondition="bUseNavMeshForWalking"))
+    float WalkingRoutePointMinDistance = 120.f;
+
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(ClampMin="0.0", EditCondition="bUseNavMeshForWalking"))
+    float WalkingStuckTimeout = 1.5f;
+
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(ClampMin="0.0", EditCondition="bUseNavMeshForWalking"))
+    float WalkingStuckMinProgress = 25.f;
+
+    UPROPERTY(EditAnywhere, Category="Navigation", meta=(ClampMin="0.0", EditCondition="bUseNavMeshForWalking"))
+    float WalkingBestEffortRepathInterval = 2.0f;
 
     UPROPERTY(EditAnywhere, Category="Rotation")
     bool bRotateTowardTarget = true;
@@ -124,10 +172,25 @@ protected:
     bool bDrawDebug = false;
 
     UPROPERTY(EditAnywhere, Category="Debug")
+    bool bDrawPathDebug = true;
+
+    UPROPERTY(EditAnywhere, Category="Debug")
     bool bLogMovementDecision = true;
 
     UPROPERTY(EditAnywhere, Category="Debug", meta=(ClampMin="0.05", EditCondition="bLogMovementDecision"))
     float MovementDecisionLogInterval = 1.0f;
+
+    UPROPERTY(EditAnywhere, Category="Debug", meta=(EditCondition="bLogMovementDecision"))
+    bool bLogPathfindingObjects = true;
+
+    UPROPERTY(EditAnywhere, Category="Debug", meta=(ClampMin="0.0", EditCondition="bLogPathfindingObjects"))
+    float PathfindingObjectLogCorridorRadius = 600.f;
+
+    UPROPERTY(EditAnywhere, Category="Debug", meta=(ClampMin="0.0", EditCondition="bLogPathfindingObjects"))
+    float PathfindingObjectLogVerticalExtent = 600.f;
+
+    UPROPERTY(EditAnywhere, Category="Debug", meta=(ClampMin="1", EditCondition="bLogPathfindingObjects"))
+    int32 MaxPathfindingObjectsToLog = 80;
 
 private:
     bool ResolveUseFlyingMovement(const APawn& ControlledPawn, const UBlackboardComponent& Blackboard) const;

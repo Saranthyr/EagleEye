@@ -4,18 +4,30 @@
 
 #include "AI/BotCharacter.h"
 #include "Algo/Unique.h"
+#include "Components/BoxComponent.h"
 #include "Components/BrushComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
+#include "Engine/StaticMesh.h"
+#include "GameFramework/PlayerStart.h"
 #include "Kismet/GameplayStatics.h"
 #include "NavigationSystem.h"
 #include "NavMesh/NavMeshBoundsVolume.h"
 #include "Math/RotationMatrix.h"
+#include "PhysicsEngine/BodySetup.h"
 
 namespace
 {
 	constexpr float kMinStreamingInterval = 0.05f;
+
+	bool StaticMeshHasCollision(const UStaticMesh& Mesh)
+	{
+		const UBodySetup* BodySetup = Mesh.GetBodySetup();
+		return BodySetup &&
+			(BodySetup->AggGeom.GetElementCount() > 0 ||
+				BodySetup->CollisionTraceFlag == CTF_UseComplexAsSimple);
+	}
 }
 
 // Sets default values
@@ -102,6 +114,8 @@ void AWorldGen::RegenerateAll()
 
 	LoadedSections.Empty();
 	FreeMeshSectionIndices.Empty();
+	PendingSectionsToCreate.Empty();
+	PendingSectionsToDestroy.Empty();
 	NextMeshSectionIndex = 0;
 	bTerrainNavRegistered = false;
 
@@ -139,11 +153,17 @@ void AWorldGen::UpdateStreamingInternal(bool bForce)
 	const int32 Radius = FMath::Max(StreamingRadiusSections, 0);
 	if (!bForce && NewCenter == CurrentCenterSection && LastStreamingRadius == Radius)
 	{
+		if (ProcessPendingStreamingOps())
+		{
+			RequestNavRebuild();
+		}
 		return;
 	}
 
 	CurrentCenterSection = NewCenter;
 	LastStreamingRadius = Radius;
+	PendingSectionsToCreate.Reset();
+	PendingSectionsToDestroy.Reset();
 
 	TSet<FIntPoint> DesiredSections;
 	DesiredSections.Reserve((2 * Radius + 1) * (2 * Radius + 1));
@@ -161,38 +181,66 @@ void AWorldGen::UpdateStreamingInternal(bool bForce)
 		}
 	}
 
-	bool bSectionsChanged = false;
-	TArray<FIntPoint> SectionsToRemove;
-	SectionsToRemove.Reserve(LoadedSections.Num());
+	PendingSectionsToDestroy.Reserve(LoadedSections.Num());
 	for (const TPair<FIntPoint, FSectionData>& Pair : LoadedSections)
 	{
 		if (!DesiredSections.Contains(Pair.Key))
 		{
-			SectionsToRemove.Add(Pair.Key);
+			PendingSectionsToDestroy.Add(Pair.Key);
 		}
-	}
-
-	for (const FIntPoint& Section : SectionsToRemove)
-	{
-		const int32 PreviousLoadedCount = LoadedSections.Num();
-		DestroySection(Section);
-		bSectionsChanged |= (LoadedSections.Num() != PreviousLoadedCount);
 	}
 
 	for (const FIntPoint& Section : DesiredSections)
 	{
 		if (!LoadedSections.Contains(Section))
 		{
-			const int32 PreviousLoadedCount = LoadedSections.Num();
-			CreateSection(Section);
-			bSectionsChanged |= (LoadedSections.Num() != PreviousLoadedCount);
+			PendingSectionsToCreate.Add(Section);
 		}
 	}
 
-	if (bSectionsChanged && bEnableNavMesh)
+	PendingSectionsToCreate.Sort([NewCenter](const FIntPoint& A, const FIntPoint& B)
+	{
+		const int32 DistA = FMath::Abs(A.X - NewCenter.X) + FMath::Abs(A.Y - NewCenter.Y);
+		const int32 DistB = FMath::Abs(B.X - NewCenter.X) + FMath::Abs(B.Y - NewCenter.Y);
+		return DistA < DistB;
+	});
+
+	if (ProcessPendingStreamingOps())
 	{
 		RequestNavRebuild();
 	}
+}
+
+bool AWorldGen::ProcessPendingStreamingOps()
+{
+	int32 RemainingOps = FMath::Max(MaxStreamingSectionOpsPerUpdate, 1);
+	bool bSectionsChanged = false;
+
+	while (RemainingOps > 0 && PendingSectionsToDestroy.Num() > 0)
+	{
+		const FIntPoint Section = PendingSectionsToDestroy.Pop(EAllowShrinking::No);
+		const int32 PreviousLoadedCount = LoadedSections.Num();
+		DestroySection(Section);
+		bSectionsChanged |= (LoadedSections.Num() != PreviousLoadedCount);
+		--RemainingOps;
+	}
+
+	while (RemainingOps > 0 && PendingSectionsToCreate.Num() > 0)
+	{
+		const FIntPoint Section = PendingSectionsToCreate[0];
+		PendingSectionsToCreate.RemoveAt(0, 1, EAllowShrinking::No);
+		if (!IsSectionInBounds(Section) || LoadedSections.Contains(Section))
+		{
+			continue;
+		}
+
+		const int32 PreviousLoadedCount = LoadedSections.Num();
+		CreateSection(Section);
+		bSectionsChanged |= (LoadedSections.Num() != PreviousLoadedCount);
+		--RemainingOps;
+	}
+
+	return bSectionsChanged;
 }
 
 void AWorldGen::CreateSection(const FIntPoint& Section)
@@ -243,9 +291,6 @@ void AWorldGen::CreateSection(const FIntPoint& Section)
 		bTerrainNavRegistered = true;
 	}
 
-	FNavigationSystem::OnComponentRegistered(*TerrainMesh);
-	FNavigationSystem::UpdateComponentData(*TerrainMesh);
-
 	if (TerrMat)
 	{
 		TerrainMesh->SetMaterial(MeshSectionIndex, TerrMat);
@@ -258,14 +303,19 @@ void AWorldGen::CreateSection(const FIntPoint& Section)
 	SectionData.MeshSectionIndex = MeshSectionIndex;
 	SectionData.Bounds = WorldBounds;
 	SectionData.FoliageInstanceIndices.SetNum(FoliageTypes.Num());
-	if (bEnableNavMesh && bAutoNavBounds)
-	{
-		SectionData.NavBoundsVolume = CreateSectionNavBounds(WorldBounds);
-	}
 
 	if (bEnableFoliage)
 	{
 		SpawnFoliageForSection(Section, SectionData);
+	}
+
+	if (bEnableNavMesh)
+	{
+		UpdateGeneratedNavigationData();
+		if (bAutoNavBounds)
+		{
+			SectionData.NavBoundsVolume = CreateSectionNavBounds(WorldBounds);
+		}
 	}
 
 	if (bEnableBotSpawning)
@@ -470,6 +520,39 @@ bool AWorldGen::SampleGeneratedSurfaceAt(const FIntPoint& Section, const FVector
 	return true;
 }
 
+bool AWorldGen::BuildSurfacePlacementAt(
+	const FIntPoint& Section,
+	const FVector2D& SampleLocation,
+	const FTransform& TerrainTransform,
+	float SurfaceOffset,
+	FSurfacePlacement& OutPlacement)
+{
+	FVector LocalLocation;
+	FVector LocalNormal;
+	if (!SampleGeneratedSurfaceAt(Section, SampleLocation, LocalLocation, LocalNormal))
+	{
+		return false;
+	}
+
+	if (LocalNormal.IsNearlyZero())
+	{
+		LocalNormal = FVector::UpVector;
+	}
+
+	OutPlacement.LocalNormal = LocalNormal.GetSafeNormal();
+	OutPlacement.LocalLocation = LocalLocation + (OutPlacement.LocalNormal * SurfaceOffset);
+	OutPlacement.WorldLocation = TerrainTransform.TransformPosition(OutPlacement.LocalLocation);
+	OutPlacement.WorldNormal = TerrainTransform.TransformVectorNoScale(OutPlacement.LocalNormal).GetSafeNormal();
+	if (OutPlacement.WorldNormal.IsNearlyZero())
+	{
+		OutPlacement.WorldNormal = FVector::UpVector;
+	}
+
+	const float DotUp = FMath::Clamp(FMath::Abs(FVector::DotProduct(OutPlacement.WorldNormal, FVector::UpVector)), 0.0f, 1.0f);
+	OutPlacement.SlopeDeg = FMath::RadiansToDegrees(FMath::Acos(DotUp));
+	return true;
+}
+
 void AWorldGen::InitializeFoliageComponents()
 {
 	for (UHierarchicalInstancedStaticMeshComponent* Component : FoliageComponents)
@@ -514,8 +597,40 @@ void AWorldGen::InitializeFoliageComponents()
 			}
 		}
 		Component->SetMobility(EComponentMobility::Movable);
-		Component->SetCollisionEnabled(Config.bEnableCollision ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
-		Component->SetCanEverAffectNavigation(false);
+		if (Config.bEnableCollision)
+		{
+			if (Config.bUseComplexCollisionAsSimple)
+			{
+				Config.Mesh->CreateBodySetup();
+				if (UBodySetup* BodySetup = Config.Mesh->GetBodySetup())
+				{
+					BodySetup->CollisionTraceFlag = CTF_UseComplexAsSimple;
+					BodySetup->CreatePhysicsMeshes();
+				}
+			}
+
+			Component->SetCollisionProfileName(TEXT("BlockAll"));
+			Component->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			Component->SetCollisionObjectType(ECC_WorldStatic);
+			Component->SetCollisionResponseToAllChannels(ECR_Block);
+			Component->SetGenerateOverlapEvents(false);
+
+			if (!StaticMeshHasCollision(*Config.Mesh))
+			{
+				UE_LOG(
+					LogTemp,
+					Warning,
+					TEXT("WorldGen: Foliage mesh %s has no collision data. Enable bUseComplexCollisionAsSimple or add collision to the mesh."),
+					*Config.Mesh->GetName()
+				);
+			}
+		}
+		else
+		{
+			Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Component->SetCollisionResponseToAllChannels(ECR_Ignore);
+		}
+		Component->SetCanEverAffectNavigation(Config.bEnableCollision);
 		AddInstanceComponent(Component);
 		Component->RegisterComponent();
 
@@ -537,6 +652,9 @@ void AWorldGen::SpawnFoliageForSection(const FIntPoint& Section, FSectionData& S
 	const float AreaSqM = (SectionSizeX * SectionSizeY) / 10000.0f;
 	const float BaseX = Section.X * SectionSizeX;
 	const float BaseY = Section.Y * SectionSizeY;
+	const FTransform TerrainTransform = TerrainMesh ? TerrainMesh->GetComponentTransform() : GetActorTransform();
+	TArray<FVector> PlayerStartLocations;
+	GatherPlayerStartLocations(PlayerStartLocations);
 
 	for (int32 TypeIndex = 0; TypeIndex < FoliageTypes.Num(); ++TypeIndex)
 	{
@@ -557,7 +675,8 @@ void AWorldGen::SpawnFoliageForSection(const FIntPoint& Section, FSectionData& S
 
 		const uint32 SectionSeed = GetTypeHash(Section);
 		const uint32 TypeSeed = HashCombine(SectionSeed, GetTypeHash(TypeIndex));
-		const uint32 Seed = HashCombine(TypeSeed, GetTypeHash(Config.SeedOffset));
+		const uint32 GlobalSeed = HashCombine(TypeSeed, GetTypeHash(FoliageSeedOffset));
+		const uint32 Seed = HashCombine(GlobalSeed, GetTypeHash(Config.SeedOffset));
 		FRandomStream Rand(static_cast<int32>(Seed));
 
 		TArray<int32>& InstanceIndices = SectionData.FoliageInstanceIndices[TypeIndex];
@@ -565,9 +684,10 @@ void AWorldGen::SpawnFoliageForSection(const FIntPoint& Section, FSectionData& S
 		TArray<FTransform> PendingTransforms;
 		PendingTransforms.Reserve(NumInstances);
 
-		const bool bCanSnapToSurface = Config.bSnapToGeneratedSurface;
 		const float MinAllowedHeight = FMath::Min(Config.MinHeight, Config.MaxHeight);
 		const float MaxAllowedHeight = FMath::Max(Config.MinHeight, Config.MaxHeight);
+		const FBoxSphereBounds MeshBounds = Config.Mesh ? Config.Mesh->GetBounds() : FBoxSphereBounds(EForceInit::ForceInit);
+		const float MeshFootprintRadius = FVector2D(MeshBounds.BoxExtent.X, MeshBounds.BoxExtent.Y).Size();
 		constexpr int32 MaxPlacementAttemptsPerInstance = 8;
 
 		int32 AddedCount = 0;
@@ -579,45 +699,40 @@ void AWorldGen::SpawnFoliageForSection(const FIntPoint& Section, FSectionData& S
 				const float LocalY = Rand.FRandRange(0.0f, SectionSizeY);
 				const FVector2D SampleLocation(BaseX + LocalX, BaseY + LocalY);
 
-				const float HeightSample = GetHeight(SampleLocation);
-				const float HxPos = GetHeight(SampleLocation + FVector2D(cellsize, 0.0f));
-				const float HxNeg = GetHeight(SampleLocation - FVector2D(cellsize, 0.0f));
-				const float HyPos = GetHeight(SampleLocation + FVector2D(0.0f, cellsize));
-				const float HyNeg = GetHeight(SampleLocation - FVector2D(0.0f, cellsize));
-
-				const float DzDx = HxPos - HxNeg;
-				const float DzDy = HyPos - HyNeg;
-				FVector Normal(-DzDx, -DzDy, 2.0f * cellsize);
-				Normal.Normalize();
-
-				FVector PlacementLocation(SampleLocation.X, SampleLocation.Y, HeightSample);
-				FVector PlacementNormal = Normal;
-
-				if (bCanSnapToSurface)
+				FSurfacePlacement Placement;
+				if (!BuildSurfacePlacementAt(
+					Section,
+					SampleLocation,
+					TerrainTransform,
+					Config.SurfaceOffset,
+					Placement))
 				{
-					FVector SnappedLocation;
-					FVector SnappedNormal;
-					if (SampleGeneratedSurfaceAt(Section, SampleLocation, SnappedLocation, SnappedNormal))
-					{
-						PlacementLocation = SnappedLocation + (SnappedNormal * Config.SurfaceOffset);
-						PlacementNormal = SnappedNormal;
-					}
+					continue;
 				}
 
-				const float DotUp = FMath::Clamp(FMath::Abs(FVector::DotProduct(PlacementNormal, FVector::UpVector)), 0.0f, 1.0f);
-				const float SlopeDeg = FMath::RadiansToDegrees(FMath::Acos(DotUp));
-				if (SlopeDeg > Config.MaxSlopeDeg || PlacementLocation.Z < MinAllowedHeight || PlacementLocation.Z > MaxAllowedHeight)
+				if (Placement.SlopeDeg > Config.MaxSlopeDeg ||
+					Placement.LocalLocation.Z < MinAllowedHeight ||
+					Placement.LocalLocation.Z > MaxAllowedHeight)
+				{
+					continue;
+				}
+
+				const float ScaleValue = Rand.FRandRange(Config.MinScale, Config.MaxScale);
+				if (Config.bEnableCollision &&
+					IsNearAnyPlayerStart(
+						PlayerStartLocations,
+						Placement.WorldLocation,
+						PlayerStartObjectAvoidanceRadius + MeshFootprintRadius * ScaleValue))
 				{
 					continue;
 				}
 
 				FRotator Rotation = Config.bAlignToNormal
-					? FRotationMatrix::MakeFromZX(PlacementNormal, FVector::ForwardVector).Rotator()
+					? FRotationMatrix::MakeFromZX(Placement.WorldNormal, FVector::ForwardVector).Rotator()
 					: FRotator::ZeroRotator;
 				Rotation.Yaw += Rand.FRandRange(0.0f, 360.0f);
 
-				const float ScaleValue = Rand.FRandRange(Config.MinScale, Config.MaxScale);
-				PendingTransforms.Emplace(Rotation, PlacementLocation, FVector(ScaleValue));
+				PendingTransforms.Emplace(Rotation, Placement.WorldLocation, FVector(ScaleValue));
 				++AddedCount;
 				break;
 			}
@@ -880,6 +995,12 @@ void AWorldGen::SpawnBotTypeForSection(
 	const float PaddingY = FMath::Clamp(Config.SectionEdgePadding, 0.0f, SectionSizeY * 0.49f);
 	const float MinAltitude = FMath::Min(Config.MinAltitudeAboveTerrain, Config.MaxAltitudeAboveTerrain);
 	const float MaxAltitude = FMath::Max(Config.MinAltitudeAboveTerrain, Config.MaxAltitudeAboveTerrain);
+	const FTransform TerrainTransform = TerrainMesh ? TerrainMesh->GetComponentTransform() : GetActorTransform();
+	TArray<FVector> PlayerStartLocations;
+	GatherPlayerStartLocations(PlayerStartLocations);
+	const float BotCollisionRadius = BotDefaults && BotDefaults->GetCapsuleComponent()
+		? BotDefaults->GetCapsuleComponent()->GetScaledCapsuleRadius()
+		: 0.0f;
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.Owner = this;
@@ -892,16 +1013,50 @@ void AWorldGen::SpawnBotTypeForSection(
 		const float WorldX = BaseX + Rand.FRandRange(PaddingX, SectionSizeX - PaddingX);
 		const float WorldY = BaseY + Rand.FRandRange(PaddingY, SectionSizeY - PaddingY);
 		const FVector2D SampleLocation(WorldX, WorldY);
-		const float TerrainZ = GetHeight(SampleLocation);
+		FSurfacePlacement Placement;
+		if (!BuildSurfacePlacementAt(Section, SampleLocation, TerrainTransform, 0.0f, Placement))
+		{
+			continue;
+		}
 		const float CapsuleHalfHeight = bSpawnAsWalkingBot && BotDefaults && BotDefaults->GetCapsuleComponent()
 			? BotDefaults->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()
 			: 0.f;
 		const float Altitude = bSpawnAsWalkingBot
-			? CapsuleHalfHeight + 5.f
+			? CapsuleHalfHeight + Config.GroundSpawnClearance
 			: Rand.FRandRange(MinAltitude, MaxAltitude);
 
-		const FVector SpawnLocation(WorldX, WorldY, TerrainZ + Altitude);
+		const FVector SpawnLocation = Placement.WorldLocation + FVector(0.0f, 0.0f, Altitude);
+		if (IsNearAnyPlayerStart(PlayerStartLocations, SpawnLocation, PlayerStartObjectAvoidanceRadius + BotCollisionRadius))
+		{
+			continue;
+		}
+
 		const FRotator SpawnRotation(0.0f, Rand.FRandRange(0.0f, 360.0f), 0.0f);
+		if (Config.bCheckSpawnCollision &&
+			IsBotSpawnLocationBlocked(SpawnLocation, SpawnRotation, BotDefaults, Config.SpawnCollisionExtraClearance))
+		{
+			if (bDebugBotSpawning)
+			{
+				const float DebugClearance = FMath::Max(Config.SpawnCollisionExtraClearance, 0.0f);
+				DrawDebugCapsule(
+					World,
+					SpawnLocation + FVector(0.0f, 0.0f, DebugClearance),
+					BotDefaults && BotDefaults->GetCapsuleComponent()
+						? BotDefaults->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + DebugClearance
+						: 88.0f + DebugClearance,
+					BotDefaults && BotDefaults->GetCapsuleComponent()
+						? BotDefaults->GetCapsuleComponent()->GetScaledCapsuleRadius() + DebugClearance
+						: 34.0f + DebugClearance,
+					SpawnRotation.Quaternion(),
+					FColor::Red,
+					false,
+					BotDebugDrawDuration,
+					0,
+					2.0f
+				);
+			}
+			continue;
+		}
 
 		ABotCharacter* SpawnedBot = World->SpawnActor<ABotCharacter>(Config.BotClass, SpawnLocation, SpawnRotation, SpawnParams);
 		if (SpawnedBot)
@@ -916,7 +1071,6 @@ void AWorldGen::SpawnBotTypeForSection(
 
 			if (bDebugBotSpawning)
 			{
-				const FVector TerrainLocation(WorldX, WorldY, TerrainZ);
 				const FString DebugText = FString::Printf(
 					TEXT("%s %d/%d\nSection (%d,%d)\nAlt %.0f"),
 					*DebugName,
@@ -940,7 +1094,7 @@ void AWorldGen::SpawnBotTypeForSection(
 				);
 				DrawDebugLine(
 					World,
-					TerrainLocation,
+					Placement.WorldLocation,
 					SpawnLocation,
 					FColor::Yellow,
 					false,
@@ -968,7 +1122,7 @@ void AWorldGen::SpawnBotTypeForSection(
 					Section.X,
 					Section.Y,
 					*SpawnLocation.ToCompactString(),
-					TerrainZ,
+					Placement.WorldLocation.Z,
 					Altitude,
 					*SectionTag.ToString(),
 					*Config.BotClass->GetName()
@@ -1022,6 +1176,83 @@ void AWorldGen::DestroyBotsForSection(FSectionData& SectionData)
 	SectionData.SpawnedBots.Reset();
 }
 
+void AWorldGen::GatherPlayerStartLocations(TArray<FVector>& OutLocations) const
+{
+	OutLocations.Reset();
+	if (PlayerStartObjectAvoidanceRadius <= 0.0f)
+	{
+		return;
+	}
+
+	TArray<AActor*> PlayerStarts;
+	UGameplayStatics::GetAllActorsOfClass(this, APlayerStart::StaticClass(), PlayerStarts);
+	OutLocations.Reserve(PlayerStarts.Num());
+	for (const AActor* PlayerStart : PlayerStarts)
+	{
+		if (PlayerStart)
+		{
+			OutLocations.Add(PlayerStart->GetActorLocation());
+		}
+	}
+}
+
+bool AWorldGen::IsNearAnyPlayerStart(const TArray<FVector>& PlayerStartLocations, const FVector& WorldLocation, float ClearanceRadius) const
+{
+	if (PlayerStartLocations.Num() == 0 || ClearanceRadius <= 0.0f)
+	{
+		return false;
+	}
+
+	const float ClearanceRadiusSq = FMath::Square(ClearanceRadius);
+	for (const FVector& PlayerStartLocation : PlayerStartLocations)
+	{
+		if (FVector::DistSquared2D(PlayerStartLocation, WorldLocation) <= ClearanceRadiusSq)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool AWorldGen::IsBotSpawnLocationBlocked(
+	const FVector& SpawnLocation,
+	const FRotator& SpawnRotation,
+	const ABotCharacter* BotDefaults,
+	float ExtraClearance) const
+{
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	float CapsuleRadius = 34.0f;
+	float CapsuleHalfHeight = 88.0f;
+	if (BotDefaults && BotDefaults->GetCapsuleComponent())
+	{
+		const UCapsuleComponent* Capsule = BotDefaults->GetCapsuleComponent();
+		CapsuleRadius = Capsule->GetScaledCapsuleRadius();
+		CapsuleHalfHeight = Capsule->GetScaledCapsuleHalfHeight();
+	}
+
+	const float Clearance = FMath::Max(ExtraClearance, 0.0f);
+	CapsuleRadius += Clearance;
+	CapsuleHalfHeight = FMath::Max(CapsuleHalfHeight + Clearance, CapsuleRadius);
+	const FVector QueryLocation = SpawnLocation + FVector(0.0f, 0.0f, Clearance);
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(WorldGenBotSpawnCollision), false, this);
+	QueryParams.bFindInitialOverlaps = true;
+
+	const FCollisionShape CollisionShape = FCollisionShape::MakeCapsule(CapsuleRadius, CapsuleHalfHeight);
+	return World->OverlapBlockingTestByChannel(
+		QueryLocation,
+		SpawnRotation.Quaternion(),
+		ECC_Pawn,
+		CollisionShape,
+		QueryParams);
+}
+
 ANavMeshBoundsVolume* AWorldGen::ResolveNavBoundsTemplate()
 {
 	if (ANavMeshBoundsVolume* CachedTemplate = NavBoundsTemplateVolume.Get())
@@ -1073,27 +1304,20 @@ ANavMeshBoundsVolume* AWorldGen::CreateSectionNavBounds(const FBox& WorldBounds)
 		return nullptr;
 	}
 
-	ANavMeshBoundsVolume* TemplateVolume = ResolveNavBoundsTemplate();
-	if (!TemplateVolume)
-	{
-		if (!bLoggedMissingNavBoundsTemplate)
-		{
-			bLoggedMissingNavBoundsTemplate = true;
-			UE_LOG(
-				LogTemp,
-				Warning,
-				TEXT("WorldGen: Cannot create runtime nav bounds without a template NavMeshBoundsVolume. Place one NavMeshBoundsVolume in the level.")
-			);
-		}
-		return nullptr;
-	}
-
 	FActorSpawnParameters Params;
 	Params.Owner = this;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	Params.Template = TemplateVolume;
 	Params.ObjectFlags |= RF_Transient;
-	ANavMeshBoundsVolume* BoundsVolume = World->SpawnActor<ANavMeshBoundsVolume>(TemplateVolume->GetClass(), FTransform::Identity, Params);
+	ANavMeshBoundsVolume* TemplateVolume = ResolveNavBoundsTemplate();
+	if (TemplateVolume)
+	{
+		Params.Template = TemplateVolume;
+	}
+
+	ANavMeshBoundsVolume* BoundsVolume = World->SpawnActor<ANavMeshBoundsVolume>(
+		TemplateVolume ? TemplateVolume->GetClass() : ANavMeshBoundsVolume::StaticClass(),
+		FTransform::Identity,
+		Params);
 	if (!BoundsVolume)
 	{
 		return nullptr;
@@ -1136,7 +1360,22 @@ ANavMeshBoundsVolume* AWorldGen::CreateSectionNavBounds(const FBox& WorldBounds)
 	);
 
 	BoundsVolume->SetActorLocation(WorldBounds.GetCenter());
-	BoundsVolume->SetActorScale3D(Scale);
+	BoundsVolume->SetActorScale3D(TemplateVolume ? Scale : FVector::OneVector);
+
+	if (!TemplateVolume)
+	{
+		UBoxComponent* BoundsComponent = NewObject<UBoxComponent>(BoundsVolume, TEXT("RuntimeNavBoundsBox"));
+		if (BoundsComponent)
+		{
+			BoundsComponent->SetupAttachment(BoundsVolume->GetRootComponent());
+			BoundsComponent->SetBoxExtent(DesiredExtent);
+			BoundsComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			BoundsComponent->SetCanEverAffectNavigation(false);
+			BoundsComponent->SetHiddenInGame(true);
+			BoundsVolume->AddInstanceComponent(BoundsComponent);
+			BoundsComponent->RegisterComponent();
+		}
+	}
 
 	if (UNavigationSystemV1* NavSystem = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World))
 	{
@@ -1187,6 +1426,16 @@ void AWorldGen::PerformNavRebuild()
 		return;
 	}
 
+	UpdateGeneratedNavigationData();
+}
+
+void AWorldGen::UpdateGeneratedNavigationData()
+{
+	if (!bEnableNavMesh)
+	{
+		return;
+	}
+
 	if (TerrainMesh && bTerrainNavRegistered)
 	{
 		TerrainMesh->UpdateBounds();
@@ -1194,9 +1443,14 @@ void AWorldGen::PerformNavRebuild()
 		FNavigationSystem::UpdateComponentData(*TerrainMesh);
 	}
 
-	if (UNavigationSystemV1* NavSystem = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
+	for (UHierarchicalInstancedStaticMeshComponent* Component : FoliageComponents)
 	{
-		NavSystem->Build();
+		if (Component && Component->CanEverAffectNavigation())
+		{
+			Component->UpdateBounds();
+			FNavigationSystem::OnComponentRegistered(*Component);
+			FNavigationSystem::UpdateComponentData(*Component);
+		}
 	}
 }
 
@@ -1209,7 +1463,7 @@ void AWorldGen::MarkNavDirty(const FBox& Bounds)
 
 	if (UNavigationSystemV1* NavSystem = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
 	{
-		NavSystem->AddDirtyArea(Bounds, ENavigationDirtyFlag::All);
+		NavSystem->AddDirtyArea(Bounds.ExpandBy(FVector(cellsize, cellsize, NavBoundsHeight)), ENavigationDirtyFlag::All);
 	}
 }
 

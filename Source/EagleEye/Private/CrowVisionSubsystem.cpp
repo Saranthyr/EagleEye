@@ -7,6 +7,12 @@
 #include "Misc/ScopeLock.h"
 #include "MyActorComponent.h"
 
+void UCrowVisionSubsystem::OnWorldBeginPlay(UWorld& InWorld)
+{
+    Super::OnWorldBeginPlay(InWorld);
+    EnsureModelHostActor();
+}
+
 void UCrowVisionSubsystem::Deinitialize()
 {
     StopWorker();

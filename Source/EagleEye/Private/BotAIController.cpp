@@ -162,7 +162,6 @@ void ABotAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulus 
         UpdateBlackboardTarget(Actor, true);
         CurrentTargetActor = Actor;
         LastKnownTargetLocation = Actor->GetActorLocation();
-        LastTargetSeenTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
         bHasLastKnownTargetLocation = true;
         return;
     }
@@ -175,7 +174,6 @@ void ABotAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulus 
             LastKnownTargetLocation = Actor->GetActorLocation();
             bHasLastKnownTargetLocation = true;
         }
-        LastTargetSeenTime = GetWorld() ? GetWorld()->GetTimeSeconds() : LastTargetSeenTime;
     }
 
     UpdateBlackboardTarget(nullptr, false);
@@ -424,22 +422,4 @@ void ABotAIController::PickRandomWalkDestination()
             }
         }
     }
-}
-
-void ABotAIController::ClearChaseTarget()
-{
-    CurrentTargetActor = nullptr;
-    bHasLastKnownTargetLocation = false;
-    LastTargetSeenTime = -1.f;
-    StopMovement();
-
-    UBlackboardComponent* BlackboardComponent = GetBlackboardComponent();
-    if (!BlackboardComponent)
-    {
-        return;
-    }
-
-    BlackboardComponent->SetValueAsBool(HasLineOfSightKey, false);
-    BlackboardComponent->ClearValue(TargetActorKey);
-    BlackboardComponent->ClearValue(TargetLocationKey);
 }
