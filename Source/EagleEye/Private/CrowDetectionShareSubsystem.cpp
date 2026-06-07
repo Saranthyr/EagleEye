@@ -11,6 +11,11 @@ namespace
         const TArray<int32>& AcceptedClassIds,
         const TArray<FName>& AcceptedClassLabels)
     {
+        if (AcceptedClassIds.Num() == 0 && AcceptedClassLabels.Num() == 0)
+        {
+            return true;
+        }
+
         if (AcceptedClassIds.Contains(ClassId))
         {
             return true;
@@ -54,7 +59,7 @@ void UCrowDetectionShareSubsystem::UnregisterDetector(AActor* DetectorOwner)
         return !Entry.IsValid() || Entry.Get() == DetectorOwner;
     });
 
-    RecentPersonDetections.RemoveAll([DetectorOwner](const FCrowSharedPersonDetection& Entry)
+    RecentTargetDetections.RemoveAll([DetectorOwner](const FCrowSharedTargetDetection& Entry)
     {
         return !Entry.Reporter.IsValid() || Entry.Reporter.Get() == DetectorOwner;
     });
@@ -126,14 +131,6 @@ bool UCrowDetectionShareSubsystem::ShouldRunDetector(
     return false;
 }
 
-void UCrowDetectionShareSubsystem::PublishPersonDetection(
-    AActor* Reporter,
-    const FVector& TargetLocation,
-    float Confidence)
-{
-    PublishTargetDetection(Reporter, TargetLocation, Confidence, 0, TEXT("person"));
-}
-
 void UCrowDetectionShareSubsystem::PublishTargetDetection(
     AActor* Reporter,
     const FVector& TargetLocation,
@@ -148,45 +145,19 @@ void UCrowDetectionShareSubsystem::PublishTargetDetection(
 
     const float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
 
-    RecentPersonDetections.RemoveAll([Reporter](const FCrowSharedPersonDetection& Entry)
+    RecentTargetDetections.RemoveAll([Reporter](const FCrowSharedTargetDetection& Entry)
     {
         return !Entry.Reporter.IsValid() || Entry.Reporter.Get() == Reporter;
     });
 
-    FCrowSharedPersonDetection Detection;
+    FCrowSharedTargetDetection Detection;
     Detection.Reporter = Reporter;
     Detection.TargetLocation = TargetLocation;
     Detection.Confidence = Confidence;
     Detection.ClassId = ClassId;
     Detection.ClassLabel = ClassLabel;
     Detection.ReportTime = CurrentTime;
-    RecentPersonDetections.Add(Detection);
-}
-
-bool UCrowDetectionShareSubsystem::GetBestRecentPersonDetection(
-    const AActor* Requester,
-    float MaxAgeSeconds,
-    float MaxReporterDistance,
-    FVector& OutTargetLocation,
-    float& OutConfidence) const
-{
-    TArray<int32> PersonClassIds;
-    PersonClassIds.Add(0);
-    TArray<FName> PersonClassLabels;
-    PersonClassLabels.Add(TEXT("person"));
-
-    int32 OutClassId = -1;
-    FString OutClassLabel;
-    return GetBestRecentTargetDetection(
-        Requester,
-        MaxAgeSeconds,
-        MaxReporterDistance,
-        PersonClassIds,
-        PersonClassLabels,
-        OutTargetLocation,
-        OutConfidence,
-        OutClassId,
-        OutClassLabel);
+    RecentTargetDetections.Add(Detection);
 }
 
 bool UCrowDetectionShareSubsystem::GetBestRecentTargetDetection(
@@ -209,7 +180,7 @@ bool UCrowDetectionShareSubsystem::GetBestRecentTargetDetection(
     bool bFound = false;
     float BestScore = -FLT_MAX;
 
-    for (const FCrowSharedPersonDetection& Detection : RecentPersonDetections)
+    for (const FCrowSharedTargetDetection& Detection : RecentTargetDetections)
     {
         AActor* Reporter = Detection.Reporter.Get();
         if (!IsValid(Reporter) || Reporter == Requester)

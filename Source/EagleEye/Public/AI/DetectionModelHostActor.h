@@ -18,7 +18,13 @@ public:
     UFUNCTION(BlueprintPure, Category="Detection|Shared Model")
     UMyActorComponent* GetModelHostComponent() const { return ModelHostComponent; }
 
+protected:
+    virtual void BeginPlay() override;
+
 private:
+    UPROPERTY(EditAnywhere, Category="Detection|Shared Model", meta=(AllowPrivateAccess="true"))
+    bool bPreloadModelOnBeginPlay = true;
+
     UPROPERTY(VisibleAnywhere, Category="Components", meta=(AllowPrivateAccess="true"))
     TObjectPtr<USceneComponent> SceneRoot;
 

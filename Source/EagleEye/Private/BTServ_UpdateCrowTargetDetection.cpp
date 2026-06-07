@@ -1,4 +1,4 @@
-#include "AI/BTServ_UpdateCrowPersonDetection.h"
+#include "AI/BTServ_UpdateCrowTargetDetection.h"
 
 #include "AIController.h"
 #include "AI/CrowDetectionShareSubsystem.h"
@@ -10,8 +10,14 @@
 #include "EagleEyeDetectionSettings.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
+#include "GameFramework/PlayerController.h"
 #include "GameFramework/Pawn.h"
-#include "Kismet/GameplayStatics.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Misc/ScopeLock.h"
 #include "MyActorComponent.h"
 
 namespace
@@ -26,7 +32,7 @@ namespace
         FString ClassLabel;
     };
 
-    struct FCrowPersonDetectionMemory
+    struct FCrowTargetDetectionMemory
     {
         FVector LastTargetLocation = FVector::ZeroVector;
         FVector PendingTargetLocation = FVector::ZeroVector;
@@ -51,6 +57,231 @@ namespace
         bool bHasTrackedBox = false;
     };
 
+    FCriticalSection DepthDetectionMetricsMutex;
+    bool bDepthDetectionMetricsInitialized = false;
+    FString DepthDetectionMetricsCsvPath;
+    FString DepthDetectionMetricsRunId;
+
+    constexpr int32 DepthDetectionMetricsSchemaVersion = 2;
+    constexpr float ResolvedActorMatchRadius = 250.f;
+
+    bool IsDetectionMetricLoggingEnabled()
+    {
+        const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
+        return !Settings || Settings->bEnableDetectionMetricLogs;
+    }
+
+    const TCHAR* BoolToCsv(bool bValue)
+    {
+        return bValue ? TEXT("true") : TEXT("false");
+    }
+
+    FString EscapeCsvField(const FString& Value)
+    {
+        if (!Value.Contains(TEXT(",")) && !Value.Contains(TEXT("\"")) && !Value.Contains(TEXT("\n")) && !Value.Contains(TEXT("\r")))
+        {
+            return Value;
+        }
+
+        FString Escaped = Value;
+        Escaped.ReplaceInline(TEXT("\""), TEXT("\"\""));
+        return FString::Printf(TEXT("\"%s\""), *Escaped);
+    }
+
+    FString GetDepthDetectionMetricsHeader()
+    {
+        return
+            TEXT("schema_version,run_id,timestamp,world_seconds,bot,frame_sequence,frame_age_ms,outcome,depth_success,shared_fallback,")
+            TEXT("has_player_target,expected_in_fov,player_x,player_y,player_z,")
+            TEXT("has_expected_target,target_error_cm,target_planar_error_cm,predicted_error_cm,predicted_planar_error_cm,")
+            TEXT("expected_x,expected_y,expected_z,target_x,target_y,target_z,predicted_x,predicted_y,predicted_z,")
+            TEXT("resolved_actor,resolved_actor_class,resolved_actor_dist_cm,resolved_actor_is_player,resolved_actor_match,")
+            TEXT("class_id,class_label,confidence,box_center_x,box_center_y,box_w,box_h,target_pixel_x,target_pixel_y,")
+            TEXT("depth_pixel_x,depth_pixel_y,target_ray_bias,scene_depth,depth_samples,cluster_samples,cluster_ratio,")
+            TEXT("required_cluster_samples,required_cluster_ratio,cluster_score,cluster_pixel_dist,cluster_ref_dist,")
+            TEXT("tested,valid,too_near,too_far,non_finite,depth_min,depth_max,depth_avg,valid_depth_min,valid_depth_max,valid_depth_avg,")
+            TEXT("track_matched,track_iou,track_center_dist,raw_jump_cm,clamped,consecutive_detections,consecutive_misses,detections\n");
+    }
+
+    bool DoesCsvHeaderMatch(const FString& Path, const FString& ExpectedHeader)
+    {
+        FString Contents;
+        if (!FFileHelper::LoadFileToString(Contents, *Path))
+        {
+            return false;
+        }
+
+        int32 NewlineIndex = INDEX_NONE;
+        FString ExistingHeader = Contents;
+        if (Contents.FindChar(TEXT('\n'), NewlineIndex))
+        {
+            ExistingHeader = Contents.Left(NewlineIndex + 1);
+        }
+
+        return ExistingHeader == ExpectedHeader;
+    }
+
+    void InitDepthDetectionMetricsTable()
+    {
+        if (bDepthDetectionMetricsInitialized)
+        {
+            return;
+        }
+
+        if (DepthDetectionMetricsRunId.IsEmpty())
+        {
+            DepthDetectionMetricsRunId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+        }
+
+        const FString Header = GetDepthDetectionMetricsHeader();
+        const FString DefaultCsvPath = FPaths::Combine(
+            FPaths::ProjectSavedDir(),
+            TEXT("Profiling"),
+            TEXT("DepthDetectionMetrics.csv"));
+        DepthDetectionMetricsCsvPath = DefaultCsvPath;
+        if (IFileManager::Get().FileExists(*DepthDetectionMetricsCsvPath) &&
+            !DoesCsvHeaderMatch(DepthDetectionMetricsCsvPath, Header))
+        {
+            DepthDetectionMetricsCsvPath = FPaths::Combine(
+                FPaths::ProjectSavedDir(),
+                TEXT("Profiling"),
+                TEXT("DepthDetectionMetrics_v2.csv"));
+        }
+
+        const FString Directory = FPaths::GetPath(DepthDetectionMetricsCsvPath);
+        if (!Directory.IsEmpty())
+        {
+            IFileManager::Get().MakeDirectory(*Directory, true);
+        }
+
+        if (!IFileManager::Get().FileExists(*DepthDetectionMetricsCsvPath))
+        {
+            FFileHelper::SaveStringToFile(
+                Header,
+                *DepthDetectionMetricsCsvPath,
+                FFileHelper::EEncodingOptions::AutoDetect,
+                &IFileManager::Get());
+        }
+
+        bDepthDetectionMetricsInitialized = true;
+        UE_LOG(LogTemp, Log, TEXT("Depth detection metrics table enabled: %s"), *DepthDetectionMetricsCsvPath);
+    }
+
+    struct FMetricPlayerContext
+    {
+        FVector PlayerLocation = FVector::ZeroVector;
+        FVector ExpectedTargetLocation = FVector::ZeroVector;
+        bool bHasPlayerTarget = false;
+        bool bExpectedInFov = false;
+    };
+
+    FMetricPlayerContext BuildMetricPlayerContext(
+        const APawn& ControlledPawn,
+        const UMyActorComponent& Detector,
+        const FVector& TargetOffset)
+    {
+        FMetricPlayerContext Context;
+        const UWorld* World = ControlledPawn.GetWorld();
+        const APlayerController* PlayerController = World ? World->GetFirstPlayerController() : nullptr;
+        const APawn* PlayerPawn = PlayerController ? PlayerController->GetPawn() : nullptr;
+        if (!PlayerPawn || PlayerPawn == &ControlledPawn)
+        {
+            return Context;
+        }
+
+        Context.bHasPlayerTarget = true;
+        Context.PlayerLocation = PlayerPawn->GetActorLocation();
+        Context.ExpectedTargetLocation = Context.PlayerLocation + TargetOffset;
+
+        const UCameraComponent* Camera = ControlledPawn.FindComponentByClass<UCameraComponent>();
+        if (!Camera || Detector.LastFrameSourceWidth <= 0 || Detector.LastFrameSourceHeight <= 0)
+        {
+            return Context;
+        }
+
+        const FVector ToTarget = PlayerPawn->GetPawnViewLocation() - Camera->GetComponentLocation();
+        const float Distance = ToTarget.Size();
+        if (Distance <= KINDA_SMALL_NUMBER)
+        {
+            Context.bExpectedInFov = true;
+            return Context;
+        }
+
+        const FVector Direction = ToTarget / Distance;
+        const FTransform CameraTransform = Camera->GetComponentTransform();
+        const float ForwardAmount = FVector::DotProduct(Direction, CameraTransform.GetUnitAxis(EAxis::X));
+        if (ForwardAmount <= KINDA_SMALL_NUMBER)
+        {
+            return Context;
+        }
+
+        const float RightAmount = FVector::DotProduct(Direction, CameraTransform.GetUnitAxis(EAxis::Y));
+        const float UpAmount = FVector::DotProduct(Direction, CameraTransform.GetUnitAxis(EAxis::Z));
+        const float Aspect = static_cast<float>(FMath::Max(Detector.LastFrameSourceWidth, 1)) /
+            static_cast<float>(FMath::Max(Detector.LastFrameSourceHeight, 1));
+        const float HalfHorizontalFovRad = FMath::DegreesToRadians(Camera->FieldOfView) * 0.5f;
+        const float HalfVerticalFovRad = FMath::Atan(FMath::Tan(HalfHorizontalFovRad) / FMath::Max(Aspect, KINDA_SMALL_NUMBER));
+        const float HorizontalAngleRad = FMath::Atan2(RightAmount, ForwardAmount);
+        const float VerticalAngleRad = FMath::Atan2(UpAmount, ForwardAmount);
+        Context.bExpectedInFov =
+            FMath::Abs(HorizontalAngleRad) <= HalfHorizontalFovRad &&
+            FMath::Abs(VerticalAngleRad) <= HalfVerticalFovRad;
+        return Context;
+    }
+
+    struct FResolvedActorMetric
+    {
+        FString ActorName;
+        FString ActorClassName;
+        float Distance = -1.f;
+        bool bIsPlayer = false;
+        bool bMatchesResolvedTarget = false;
+    };
+
+    FResolvedActorMetric FindResolvedActorMetric(
+        const APawn& ControlledPawn,
+        const FVector* TargetLocation)
+    {
+        FResolvedActorMetric Metric;
+        const UWorld* World = ControlledPawn.GetWorld();
+        if (!World || !TargetLocation)
+        {
+            return Metric;
+        }
+
+        const APlayerController* PlayerController = World->GetFirstPlayerController();
+        const APawn* PlayerPawn = PlayerController ? PlayerController->GetPawn() : nullptr;
+        const APawn* BestPawn = nullptr;
+        float BestDistSq = FLT_MAX;
+        for (TActorIterator<APawn> It(World); It; ++It)
+        {
+            const APawn* Candidate = *It;
+            if (!IsValid(Candidate) || Candidate == &ControlledPawn)
+            {
+                continue;
+            }
+
+            const float DistSq = FVector::DistSquared(Candidate->GetActorLocation(), *TargetLocation);
+            if (DistSq < BestDistSq)
+            {
+                BestDistSq = DistSq;
+                BestPawn = Candidate;
+            }
+        }
+
+        if (!BestPawn)
+        {
+            return Metric;
+        }
+
+        Metric.ActorName = BestPawn->GetName();
+        Metric.ActorClassName = BestPawn->GetClass() ? BestPawn->GetClass()->GetName() : FString();
+        Metric.Distance = FMath::Sqrt(BestDistSq);
+        Metric.bIsPlayer = BestPawn == PlayerPawn;
+        Metric.bMatchesResolvedTarget = Metric.Distance <= ResolvedActorMatchRadius;
+        return Metric;
+    }
+
     FString ExtractDetectionClassLabel(const FDetectionResult& Detection)
     {
         FString Label = Detection.Label;
@@ -68,6 +299,11 @@ namespace
         const TArray<int32>& ActionableClassIds,
         const TArray<FName>& ActionableClassLabels)
     {
+        if (ActionableClassIds.Num() == 0 && ActionableClassLabels.Num() == 0)
+        {
+            return true;
+        }
+
         if (ActionableClassIds.Contains(Detection.ClassId))
         {
             return true;
@@ -184,9 +420,9 @@ namespace
         return SmoothedBox;
     }
 
-    bool FindTrackedPersonDetection(
+    bool FindTrackedTargetDetection(
         const UMyActorComponent& Detector,
-        const FCrowPersonDetectionMemory& Memory,
+        const FCrowTargetDetectionMemory& Memory,
         const TArray<int32>& ActionableClassIds,
         const TArray<FName>& ActionableClassLabels,
         float MinAcceptedConfidence,
@@ -321,15 +557,203 @@ namespace
         int32 NonFinite = 0;
         float MinDepth = FLT_MAX;
         float MaxDepth = -FLT_MAX;
+        float ValidMinDepth = FLT_MAX;
+        float ValidMaxDepth = -FLT_MAX;
         double DepthSum = 0.0;
+        double ValidDepthSum = 0.0;
         FVector2D MinDepthPixel = FVector2D::ZeroVector;
         FVector2D MaxDepthPixel = FVector2D::ZeroVector;
+        float ClusterScore = 0.f;
+        float ClusterPixelDistance = 0.f;
+        float ClusterReferenceDistance = -1.f;
 
         float GetAverageDepth() const
         {
             return Tested > NonFinite ? static_cast<float>(DepthSum / static_cast<double>(Tested - NonFinite)) : 0.f;
         }
+
+        float GetValidAverageDepth() const
+        {
+            return Valid > 0 ? static_cast<float>(ValidDepthSum / static_cast<double>(Valid)) : 0.f;
+        }
     };
+
+    void AppendDepthDetectionMetricRow(
+        const APawn& ControlledPawn,
+        const UMyActorComponent& Detector,
+        const FVector& ExpectedTargetOffset,
+        const TCHAR* Outcome,
+        bool bDepthSuccess,
+        bool bSharedFallback,
+        const FDetectionBox* Box,
+        const FVector2D* TargetPixel,
+        const FVector2D* ResolvedDepthPixel,
+        float TargetRayBias,
+        float SceneDepth,
+        int32 DepthSampleCount,
+        int32 DepthClusterSampleCount,
+        int32 RequiredDepthClusterSamples,
+        float RequiredDepthClusterRatio,
+        const FSceneDepthResolveStats& DepthStats,
+        const FVector* TargetLocation,
+        const FVector* PredictedTargetLocation,
+        bool bMatchedTrack,
+        float TrackMatchIoU,
+        float TrackMatchDistance,
+        float RawTargetJumpDistance,
+        bool bClampedTargetJump,
+        int32 ConsecutiveDetections,
+        int32 ConsecutiveMisses)
+    {
+        if (!IsDetectionMetricLoggingEnabled())
+        {
+            return;
+        }
+
+        FScopeLock Lock(&DepthDetectionMetricsMutex);
+        InitDepthDetectionMetricsTable();
+        if (!bDepthDetectionMetricsInitialized)
+        {
+            return;
+        }
+
+        const UWorld* World = ControlledPawn.GetWorld();
+        const float WorldSeconds = World ? World->GetTimeSeconds() : 0.f;
+        const float FrameAgeMs = Detector.LastFrameTimeSeconds > -FLT_MAX * 0.5f
+            ? (WorldSeconds - Detector.LastFrameTimeSeconds) * 1000.f
+            : -1.f;
+
+        const FMetricPlayerContext PlayerContext = BuildMetricPlayerContext(ControlledPawn, Detector, ExpectedTargetOffset);
+        const FResolvedActorMetric ResolvedActorMetric = FindResolvedActorMetric(ControlledPawn, TargetLocation);
+        const FVector ExpectedTarget = PlayerContext.ExpectedTargetLocation;
+
+        const FVector EmptyTarget(-1.f, -1.f, -1.f);
+        const FVector& EffectiveTarget = TargetLocation ? *TargetLocation : EmptyTarget;
+        const FVector& EffectivePredictedTarget = PredictedTargetLocation ? *PredictedTargetLocation : EmptyTarget;
+        const float TargetError = PlayerContext.bHasPlayerTarget && TargetLocation
+            ? FVector::Dist(*TargetLocation, ExpectedTarget)
+            : -1.f;
+        const float TargetPlanarError = PlayerContext.bHasPlayerTarget && TargetLocation
+            ? FVector::Dist2D(*TargetLocation, ExpectedTarget)
+            : -1.f;
+        const float PredictedError = PlayerContext.bHasPlayerTarget && PredictedTargetLocation
+            ? FVector::Dist(*PredictedTargetLocation, ExpectedTarget)
+            : -1.f;
+        const float PredictedPlanarError = PlayerContext.bHasPlayerTarget && PredictedTargetLocation
+            ? FVector::Dist2D(*PredictedTargetLocation, ExpectedTarget)
+            : -1.f;
+
+        const float ClusterRatio = DepthSampleCount > 0
+            ? static_cast<float>(DepthClusterSampleCount) / static_cast<float>(DepthSampleCount)
+            : 0.f;
+        const float MinDepth = DepthStats.MinDepth == FLT_MAX ? 0.f : DepthStats.MinDepth;
+        const float MaxDepth = DepthStats.MaxDepth == -FLT_MAX ? 0.f : DepthStats.MaxDepth;
+        const float ValidMinDepth = DepthStats.ValidMinDepth == FLT_MAX ? 0.f : DepthStats.ValidMinDepth;
+        const float ValidMaxDepth = DepthStats.ValidMaxDepth == -FLT_MAX ? 0.f : DepthStats.ValidMaxDepth;
+
+        const FVector2D EmptyPixel(-1.f, -1.f);
+        const FVector2D& EffectiveTargetPixel = TargetPixel ? *TargetPixel : EmptyPixel;
+        const FVector2D& EffectiveDepthPixel = ResolvedDepthPixel ? *ResolvedDepthPixel : EmptyPixel;
+
+        const int32 ClassId = Box ? Box->ClassId : -1;
+        const FString ClassLabel = Box ? Box->ClassLabel : FString();
+        const float Confidence = Box ? Box->Confidence : -1.f;
+        const FVector2D BoxCenter = Box ? Box->Center : EmptyPixel;
+        const FVector2D BoxSize = Box ? Box->Size : EmptyPixel;
+
+        const FString Line = FString::Printf(
+            TEXT("%d,%s,%s,%.4f,%s,%d,%.3f,%s,%s,%s,")
+            TEXT("%s,%s,%.3f,%.3f,%.3f,")
+            TEXT("%s,%.3f,%.3f,%.3f,%.3f,")
+            TEXT("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,")
+            TEXT("%s,%s,%.3f,%s,%s,")
+            TEXT("%d,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,")
+            TEXT("%.3f,%.3f,%.3f,%.3f,%d,%d,%.4f,%d,%.4f,%.4f,%.3f,%.3f,")
+            TEXT("%d,%d,%d,%d,%d,%.3f,%.3f,%.3f,")
+            TEXT("%.3f,%.3f,%.3f,")
+            TEXT("%s,%.4f,%.4f,%.3f,%s,%d,%d,%d\n"),
+            DepthDetectionMetricsSchemaVersion,
+            *EscapeCsvField(DepthDetectionMetricsRunId),
+            *FDateTime::Now().ToIso8601(),
+            WorldSeconds,
+            *EscapeCsvField(GetNameSafe(&ControlledPawn)),
+            Detector.LastFrameSequence,
+            FrameAgeMs,
+            *EscapeCsvField(FString(Outcome)),
+            BoolToCsv(bDepthSuccess),
+            BoolToCsv(bSharedFallback),
+            BoolToCsv(PlayerContext.bHasPlayerTarget),
+            BoolToCsv(PlayerContext.bExpectedInFov),
+            PlayerContext.PlayerLocation.X,
+            PlayerContext.PlayerLocation.Y,
+            PlayerContext.PlayerLocation.Z,
+            BoolToCsv(PlayerContext.bHasPlayerTarget),
+            TargetError,
+            TargetPlanarError,
+            PredictedError,
+            PredictedPlanarError,
+            ExpectedTarget.X,
+            ExpectedTarget.Y,
+            ExpectedTarget.Z,
+            EffectiveTarget.X,
+            EffectiveTarget.Y,
+            EffectiveTarget.Z,
+            EffectivePredictedTarget.X,
+            EffectivePredictedTarget.Y,
+            EffectivePredictedTarget.Z,
+            *EscapeCsvField(ResolvedActorMetric.ActorName),
+            *EscapeCsvField(ResolvedActorMetric.ActorClassName),
+            ResolvedActorMetric.Distance,
+            BoolToCsv(ResolvedActorMetric.bIsPlayer),
+            BoolToCsv(ResolvedActorMetric.bMatchesResolvedTarget),
+            ClassId,
+            *EscapeCsvField(ClassLabel),
+            Confidence,
+            BoxCenter.X,
+            BoxCenter.Y,
+            BoxSize.X,
+            BoxSize.Y,
+            EffectiveTargetPixel.X,
+            EffectiveTargetPixel.Y,
+            EffectiveDepthPixel.X,
+            EffectiveDepthPixel.Y,
+            TargetRayBias,
+            SceneDepth,
+            DepthSampleCount,
+            DepthClusterSampleCount,
+            ClusterRatio,
+            RequiredDepthClusterSamples,
+            RequiredDepthClusterRatio,
+            DepthStats.ClusterScore,
+            DepthStats.ClusterPixelDistance,
+            DepthStats.ClusterReferenceDistance,
+            DepthStats.Tested,
+            DepthStats.Valid,
+            DepthStats.TooNear,
+            DepthStats.TooFar,
+            DepthStats.NonFinite,
+            MinDepth,
+            MaxDepth,
+            DepthStats.GetAverageDepth(),
+            ValidMinDepth,
+            ValidMaxDepth,
+            DepthStats.GetValidAverageDepth(),
+            BoolToCsv(bMatchedTrack),
+            TrackMatchIoU,
+            TrackMatchDistance,
+            RawTargetJumpDistance,
+            BoolToCsv(bClampedTargetJump),
+            ConsecutiveDetections,
+            ConsecutiveMisses,
+            Detector.LastFrameDetections.Num());
+
+        FFileHelper::SaveStringToFile(
+            Line,
+            *DepthDetectionMetricsCsvPath,
+            FFileHelper::EEncodingOptions::AutoDetect,
+            &IFileManager::Get(),
+            FILEWRITE_Append);
+    }
 
     bool TryResolveTargetFromSceneDepth(
         const UMyActorComponent& Detector,
@@ -337,6 +761,7 @@ namespace
         const FVector& RayOrigin,
         const FVector2D& BoxMin,
         const FVector2D& BoxMax,
+        const FVector2D& TargetPixel,
         float MaxSceneDepth,
         bool bHasReferenceTarget,
         const FVector& ReferenceTargetLocation,
@@ -368,6 +793,9 @@ namespace
 
         const float ScaleX = static_cast<float>(DepthWidth) / FMath::Max(static_cast<float>(Detector.LastFrameSourceWidth), 1.f);
         const float ScaleY = static_cast<float>(DepthHeight) / FMath::Max(static_cast<float>(Detector.LastFrameSourceHeight), 1.f);
+        const FVector2D TargetDepthPixel(
+            FMath::Clamp(TargetPixel.X * ScaleX, 0.f, static_cast<float>(DepthWidth - 1)),
+            FMath::Clamp(TargetPixel.Y * ScaleY, 0.f, static_cast<float>(DepthHeight - 1)));
 
         const float SourceMaxX = FMath::Max(static_cast<float>(Detector.LastFrameSourceWidth - 1), 0.f);
         const float SourceMaxY = FMath::Max(static_cast<float>(Detector.LastFrameSourceHeight - 1), 0.f);
@@ -435,6 +863,9 @@ namespace
                 ++OutStats.Valid;
                 if (Depth >= MinValidDepth && Depth <= EffectiveMaxSceneDepth)
                 {
+                    OutStats.ValidDepthSum += Depth;
+                    OutStats.ValidMinDepth = FMath::Min(OutStats.ValidMinDepth, Depth);
+                    OutStats.ValidMaxDepth = FMath::Max(OutStats.ValidMaxDepth, Depth);
                     Samples.Add({ Depth, FVector2D(static_cast<float>(X), static_cast<float>(Y)) });
                 }
             }
@@ -451,78 +882,104 @@ namespace
             return A.Depth < B.Depth;
         });
 
-        int32 ReferenceIndex = FMath::Clamp(FMath::FloorToInt((Samples.Num() - 1) * 0.1f), 0, Samples.Num() - 1);
-        if (bHasReferenceTarget && MaxReferenceTargetDistance > 0.f)
+        const FVector CameraForward = Camera.GetComponentTransform().GetUnitAxis(EAxis::X);
+        const float EffectiveMaxReferenceTargetDistance = MaxReferenceTargetDistance > 0.f
+            ? MaxReferenceTargetDistance
+            : 0.f;
+        const float InnerDepthDiagonal = FVector2D::Distance(
+            FVector2D(static_cast<float>(DepthMinX), static_cast<float>(DepthMinY)),
+            FVector2D(static_cast<float>(DepthMaxX), static_cast<float>(DepthMaxY)));
+        const float MaxTargetPixelDistance = FMath::Max(16.f, InnerDepthDiagonal * 0.6f);
+
+        struct FDepthClusterCandidate
         {
-            const float MaxReferenceDistanceSquared = FMath::Square(MaxReferenceTargetDistance);
-            float BestReferenceDistanceSquared = MaxReferenceDistanceSquared;
-            int32 BestReferenceIndex = INDEX_NONE;
-            const FVector CameraForward = Camera.GetComponentTransform().GetUnitAxis(EAxis::X);
-            for (int32 SampleIndex = 0; SampleIndex < Samples.Num(); ++SampleIndex)
+            double DepthSum = 0.0;
+            FVector2D PixelSum = FVector2D::ZeroVector;
+            int32 Count = 0;
+            float Score = -FLT_MAX;
+            float PixelDistance = 0.f;
+            float ReferenceDistance = -1.f;
+        };
+
+        FDepthClusterCandidate BestCluster;
+        for (int32 SeedIndex = 0; SeedIndex < Samples.Num(); ++SeedIndex)
+        {
+            const float ReferenceDepth = Samples[SeedIndex].Depth;
+            const float ClusterTolerance = FMath::Clamp(ReferenceDepth * 0.08f, 25.f, 250.f);
+
+            FDepthClusterCandidate Candidate;
+            for (const FDepthSample& Sample : Samples)
             {
-                const FDepthSample& Sample = Samples[SampleIndex];
-                const FVector SampleRayDirection = BuildCameraRayDirection(
-                    Camera,
-                    Sample.Pixel,
-                    DepthWidth,
-                    DepthHeight);
-                const float ForwardDot = FVector::DotProduct(SampleRayDirection, CameraForward);
-                if (ForwardDot <= KINDA_SMALL_NUMBER)
+                if (FMath::Abs(Sample.Depth - ReferenceDepth) > ClusterTolerance)
                 {
                     continue;
                 }
 
-                const float RayDistance = Sample.Depth / ForwardDot;
-                if (!FMath::IsFinite(RayDistance) || RayDistance <= 0.f || RayDistance > EffectiveMaxSceneDepth)
-                {
-                    continue;
-                }
-
-                const FVector SampleLocation = RayOrigin + (SampleRayDirection * RayDistance);
-                const float ReferenceDistanceSquared = FVector::DistSquared2D(SampleLocation, ReferenceTargetLocation);
-                if (ReferenceDistanceSquared < BestReferenceDistanceSquared)
-                {
-                    BestReferenceDistanceSquared = ReferenceDistanceSquared;
-                    BestReferenceIndex = SampleIndex;
-                }
+                Candidate.DepthSum += Sample.Depth;
+                Candidate.PixelSum += Sample.Pixel;
+                ++Candidate.Count;
             }
 
-            if (BestReferenceIndex != INDEX_NONE)
-            {
-                ReferenceIndex = BestReferenceIndex;
-            }
-        }
-
-        const float ReferenceDepth = Samples[ReferenceIndex].Depth;
-        const float ClusterTolerance = FMath::Clamp(ReferenceDepth * 0.08f, 25.f, 250.f);
-        double DepthSum = 0.0;
-        FVector2D PixelSum = FVector2D::ZeroVector;
-        for (const FDepthSample& Sample : Samples)
-        {
-            if (FMath::Abs(Sample.Depth - ReferenceDepth) > ClusterTolerance)
+            if (Candidate.Count <= 0)
             {
                 continue;
             }
 
-            DepthSum += Sample.Depth;
-            PixelSum += Sample.Pixel;
-            ++OutClusterSampleCount;
+            const float CandidateDepth = static_cast<float>(Candidate.DepthSum / Candidate.Count);
+            const FVector2D CandidatePixel = Candidate.PixelSum / static_cast<float>(Candidate.Count);
+            Candidate.PixelDistance = FVector2D::Distance(CandidatePixel, TargetDepthPixel);
+
+            float ReferenceScore = 0.f;
+            if (bHasReferenceTarget && EffectiveMaxReferenceTargetDistance > 0.f)
+            {
+                const FVector CandidateRayDirection = BuildCameraRayDirection(
+                    Camera,
+                    CandidatePixel,
+                    DepthWidth,
+                    DepthHeight);
+                const float ForwardDot = FVector::DotProduct(CandidateRayDirection, CameraForward);
+                if (ForwardDot > KINDA_SMALL_NUMBER)
+                {
+                    const float RayDistance = CandidateDepth / ForwardDot;
+                    if (FMath::IsFinite(RayDistance) && RayDistance > 0.f && RayDistance <= EffectiveMaxSceneDepth)
+                    {
+                        const FVector CandidateLocation = RayOrigin + (CandidateRayDirection * RayDistance);
+                        Candidate.ReferenceDistance = FVector::Dist2D(CandidateLocation, ReferenceTargetLocation);
+                        ReferenceScore = 1.f - FMath::Clamp(Candidate.ReferenceDistance / EffectiveMaxReferenceTargetDistance, 0.f, 1.f);
+                    }
+                }
+            }
+
+            const float CountScore = static_cast<float>(Candidate.Count) / static_cast<float>(Samples.Num());
+            const float PixelScore = 1.f - FMath::Clamp(Candidate.PixelDistance / MaxTargetPixelDistance, 0.f, 1.f);
+            const float DepthOrderScore = Samples.Num() > 1
+                ? 1.f - (static_cast<float>(SeedIndex) / static_cast<float>(Samples.Num() - 1))
+                : 1.f;
+            Candidate.Score = (CountScore * 2.0f) + (PixelScore * 1.25f) + (ReferenceScore * 1.5f) + (DepthOrderScore * 0.15f);
+
+            if (Candidate.Score > BestCluster.Score)
+            {
+                BestCluster = Candidate;
+            }
         }
 
-        if (OutClusterSampleCount <= 0)
+        if (BestCluster.Count <= 0)
         {
             return false;
         }
 
-        OutSceneDepth = static_cast<float>(DepthSum / OutClusterSampleCount);
-        OutDepthPixel = PixelSum / static_cast<float>(OutClusterSampleCount);
+        OutClusterSampleCount = BestCluster.Count;
+        OutSceneDepth = static_cast<float>(BestCluster.DepthSum / BestCluster.Count);
+        OutDepthPixel = BestCluster.PixelSum / static_cast<float>(BestCluster.Count);
+        OutStats.ClusterScore = BestCluster.Score;
+        OutStats.ClusterPixelDistance = BestCluster.PixelDistance;
+        OutStats.ClusterReferenceDistance = BestCluster.ReferenceDistance;
         const FVector RayDirection = BuildCameraRayDirection(
             Camera,
             OutDepthPixel,
             DepthWidth,
             DepthHeight);
 
-        const FVector CameraForward = Camera.GetComponentTransform().GetUnitAxis(EAxis::X);
         const float ForwardDot = FVector::DotProduct(RayDirection, CameraForward);
         if (ForwardDot <= KINDA_SMALL_NUMBER)
         {
@@ -539,15 +996,15 @@ namespace
         return true;
     }
 
-    APawn* GetPlayerPawn(const UObject* WorldContext)
-    {
-        APlayerController* PlayerController = UGameplayStatics::GetPlayerController(WorldContext, 0);
-        return PlayerController ? PlayerController->GetPawn() : nullptr;
-    }
-
     uint64 MakeCrowDebugKey(const AActor& ControlledActor, uint32 Slot)
     {
         return (static_cast<uint64>(ControlledActor.GetUniqueID()) << 8) | Slot;
+    }
+
+    bool IsDetectionDebugEnabled()
+    {
+        const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
+        return !Settings || Settings->bEnableDetectionDebugLogs;
     }
 
     void PrintCrowDetectionDebug(
@@ -560,8 +1017,9 @@ namespace
         float Duration = 0.25f)
     {
         const FString FullMessage = FString::Printf(TEXT("%s: %s"), *ControlledActor.GetName(), *Message);
+        const bool bGlobalDebugEnabled = IsDetectionDebugEnabled();
 
-        if (bDrawDebug && GEngine)
+        if (bGlobalDebugEnabled && bDrawDebug && GEngine)
         {
             GEngine->AddOnScreenDebugMessage(
                 MakeCrowDebugKey(ControlledActor, Slot),
@@ -570,8 +1028,7 @@ namespace
                 FullMessage);
         }
 
-        const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
-        if (bLogDebug || (Settings && Settings->bEnableDetectionDebugLogs))
+        if (bGlobalDebugEnabled && bLogDebug)
         {
             UE_LOG(LogTemp, Log, TEXT("CrowDetectionDebug: %s"), *FullMessage);
         }
@@ -597,8 +1054,8 @@ namespace
 
     void WriteTargetBlackboard(
         UBlackboardComponent& Blackboard,
-        const FBlackboardKeySelector& HasPersonKey,
-        const FBlackboardKeySelector& DetectedPersonLocationKey,
+        const FBlackboardKeySelector& HasTargetKey,
+        const FBlackboardKeySelector& DetectedTargetLocationKey,
         const FBlackboardKeySelector& DetectionConfidenceKey,
         const FBlackboardKeySelector& DetectedClassIdKey,
         const FBlackboardKeySelector& DetectedClassLabelKey,
@@ -607,8 +1064,8 @@ namespace
         int32 ClassId,
         const FString& ClassLabel)
     {
-        Blackboard.SetValueAsBool(HasPersonKey.SelectedKeyName, true);
-        Blackboard.SetValueAsVector(DetectedPersonLocationKey.SelectedKeyName, TargetLocation);
+        Blackboard.SetValueAsBool(HasTargetKey.SelectedKeyName, true);
+        Blackboard.SetValueAsVector(DetectedTargetLocationKey.SelectedKeyName, TargetLocation);
         Blackboard.SetValueAsFloat(DetectionConfidenceKey.SelectedKeyName, Confidence);
         WriteDetectedClassBlackboard(Blackboard, DetectedClassIdKey, DetectedClassLabelKey, ClassId, ClassLabel);
     }
@@ -620,21 +1077,21 @@ namespace
         return Offset.Size();
     }
 
-    void ClearPersonDetectionMemory(
+    void ClearTargetDetectionMemory(
         UBlackboardComponent& Blackboard,
-        const FBlackboardKeySelector& HasPersonKey,
-        const FBlackboardKeySelector& DetectedPersonLocationKey,
+        const FBlackboardKeySelector& HasTargetKey,
+        const FBlackboardKeySelector& DetectedTargetLocationKey,
         const FBlackboardKeySelector& DetectionConfidenceKey,
         const FBlackboardKeySelector& DetectedClassIdKey,
         const FBlackboardKeySelector& DetectedClassLabelKey,
-        FCrowPersonDetectionMemory& Memory)
+        FCrowTargetDetectionMemory& Memory)
     {
-        Memory = FCrowPersonDetectionMemory();
+        Memory = FCrowTargetDetectionMemory();
 
-        Blackboard.SetValueAsBool(HasPersonKey.SelectedKeyName, false);
-        if (!DetectedPersonLocationKey.SelectedKeyName.IsNone())
+        Blackboard.SetValueAsBool(HasTargetKey.SelectedKeyName, false);
+        if (!DetectedTargetLocationKey.SelectedKeyName.IsNone())
         {
-            Blackboard.ClearValue(DetectedPersonLocationKey.SelectedKeyName);
+            Blackboard.ClearValue(DetectedTargetLocationKey.SelectedKeyName);
         }
         if (!DetectionConfidenceKey.SelectedKeyName.IsNone())
         {
@@ -645,24 +1102,24 @@ namespace
 
     bool KeepMemoryActive(
         UBlackboardComponent& Blackboard,
-        const FBlackboardKeySelector& HasPersonKey,
-        const FBlackboardKeySelector& DetectedPersonLocationKey,
+        const FBlackboardKeySelector& HasTargetKey,
+        const FBlackboardKeySelector& DetectedTargetLocationKey,
         const FBlackboardKeySelector& DetectionConfidenceKey,
         const FBlackboardKeySelector& DetectedClassIdKey,
         const FBlackboardKeySelector& DetectedClassLabelKey,
-        FCrowPersonDetectionMemory& Memory,
+        FCrowTargetDetectionMemory& Memory,
         float CurrentTime,
-        float LosePersonAfterSeconds)
+        float LoseTargetAfterSeconds)
     {
         const bool bActionCompleted = Memory.bHasLastTarget &&
-            !HasPersonKey.SelectedKeyName.IsNone() &&
-            !Blackboard.GetValueAsBool(HasPersonKey.SelectedKeyName);
+            !HasTargetKey.SelectedKeyName.IsNone() &&
+            !Blackboard.GetValueAsBool(HasTargetKey.SelectedKeyName);
         if (bActionCompleted)
         {
-            ClearPersonDetectionMemory(
+            ClearTargetDetectionMemory(
                 Blackboard,
-                HasPersonKey,
-                DetectedPersonLocationKey,
+                HasTargetKey,
+                DetectedTargetLocationKey,
                 DetectionConfidenceKey,
                 DetectedClassIdKey,
                 DetectedClassLabelKey,
@@ -672,10 +1129,10 @@ namespace
 
         if (!Memory.bHasLastTarget)
         {
-            Blackboard.SetValueAsBool(HasPersonKey.SelectedKeyName, false);
-            if (!DetectedPersonLocationKey.SelectedKeyName.IsNone())
+            Blackboard.SetValueAsBool(HasTargetKey.SelectedKeyName, false);
+            if (!DetectedTargetLocationKey.SelectedKeyName.IsNone())
             {
-                Blackboard.ClearValue(DetectedPersonLocationKey.SelectedKeyName);
+                Blackboard.ClearValue(DetectedTargetLocationKey.SelectedKeyName);
             }
             if (!DetectionConfidenceKey.SelectedKeyName.IsNone())
             {
@@ -685,14 +1142,14 @@ namespace
             return false;
         }
 
-        const bool bExpired = LosePersonAfterSeconds > 0.f &&
-            (CurrentTime - Memory.LastDetectedTime) > LosePersonAfterSeconds;
+        const bool bExpired = LoseTargetAfterSeconds > 0.f &&
+            (CurrentTime - Memory.LastDetectedTime) > LoseTargetAfterSeconds;
         if (bExpired)
         {
-            ClearPersonDetectionMemory(
+            ClearTargetDetectionMemory(
                 Blackboard,
-                HasPersonKey,
-                DetectedPersonLocationKey,
+                HasTargetKey,
+                DetectedTargetLocationKey,
                 DetectionConfidenceKey,
                 DetectedClassIdKey,
                 DetectedClassLabelKey,
@@ -702,8 +1159,8 @@ namespace
 
         WriteTargetBlackboard(
             Blackboard,
-            HasPersonKey,
-            DetectedPersonLocationKey,
+            HasTargetKey,
+            DetectedTargetLocationKey,
             DetectionConfidenceKey,
             DetectedClassIdKey,
             DetectedClassLabelKey,
@@ -716,12 +1173,12 @@ namespace
 
     bool ApplyLockedTargetMemory(
         UBlackboardComponent& Blackboard,
-        const FBlackboardKeySelector& HasPersonKey,
-        const FBlackboardKeySelector& DetectedPersonLocationKey,
+        const FBlackboardKeySelector& HasTargetKey,
+        const FBlackboardKeySelector& DetectedTargetLocationKey,
         const FBlackboardKeySelector& DetectionConfidenceKey,
         const FBlackboardKeySelector& DetectedClassIdKey,
         const FBlackboardKeySelector& DetectedClassLabelKey,
-        FCrowPersonDetectionMemory& Memory,
+        FCrowTargetDetectionMemory& Memory,
         const FVector& DetectedTarget,
         float Confidence,
         int32 ClassId,
@@ -729,17 +1186,20 @@ namespace
         float CurrentTime,
         float SameTargetLocationThreshold,
         float NewTargetConfirmationSeconds,
+        float PendingTargetStabilityThreshold,
         bool& bOutSameTarget,
         bool& bOutPendingTarget,
         bool& bOutCommittedNewTarget,
+        float& OutPendingTargetAge,
         float& OutPlanarDelta)
     {
         bOutPendingTarget = false;
         bOutCommittedNewTarget = false;
+        OutPendingTargetAge = 0.f;
 
         const bool bHasActiveTarget = Memory.bHasLastTarget &&
-            !HasPersonKey.SelectedKeyName.IsNone() &&
-            Blackboard.GetValueAsBool(HasPersonKey.SelectedKeyName);
+            !HasTargetKey.SelectedKeyName.IsNone() &&
+            Blackboard.GetValueAsBool(HasTargetKey.SelectedKeyName);
         OutPlanarDelta = bHasActiveTarget
             ? CalculatePlanarDistance(DetectedTarget, Memory.LastTargetLocation)
             : 0.f;
@@ -751,19 +1211,22 @@ namespace
         {
             if (!bHasActiveTarget)
             {
+                Memory.LastTargetLocation = DetectedTarget;
                 Memory.bHasLastTarget = true;
                 bOutCommittedNewTarget = true;
             }
-            Memory.LastTargetLocation = DetectedTarget;
             Memory.bHasPendingTarget = false;
         }
         else
         {
+            const float EffectivePendingTargetStabilityThreshold = PendingTargetStabilityThreshold > 0.f
+                ? PendingTargetStabilityThreshold
+                : SameTargetLocationThreshold;
             const float PendingDelta = Memory.bHasPendingTarget
                 ? CalculatePlanarDistance(DetectedTarget, Memory.PendingTargetLocation)
                 : TNumericLimits<float>::Max();
             if (!Memory.bHasPendingTarget ||
-                (SameTargetLocationThreshold > 0.f && PendingDelta > SameTargetLocationThreshold))
+                (EffectivePendingTargetStabilityThreshold > 0.f && PendingDelta > EffectivePendingTargetStabilityThreshold))
             {
                 Memory.PendingTargetFirstDetectedTime = CurrentTime;
                 Memory.bHasPendingTarget = true;
@@ -774,14 +1237,16 @@ namespace
             Memory.PendingConfidence = Confidence;
             Memory.PendingClassId = ClassId;
             Memory.PendingClassLabel = ClassLabel;
+            OutPendingTargetAge = CurrentTime - Memory.PendingTargetFirstDetectedTime;
 
             if (NewTargetConfirmationSeconds <= 0.f ||
-                CurrentTime - Memory.PendingTargetFirstDetectedTime >= NewTargetConfirmationSeconds)
+                OutPendingTargetAge >= NewTargetConfirmationSeconds)
             {
                 Memory.LastTargetLocation = Memory.PendingTargetLocation;
                 Memory.bHasLastTarget = true;
                 Memory.bHasPendingTarget = false;
                 bOutCommittedNewTarget = true;
+                OutPendingTargetAge = 0.f;
             }
             else
             {
@@ -790,21 +1255,24 @@ namespace
         }
 
         Memory.LastDetectedTime = CurrentTime;
-        Memory.LastConfidence = Confidence;
-        Memory.LastClassId = ClassId;
-        Memory.LastClassLabel = ClassLabel;
+        if (!bOutPendingTarget)
+        {
+            Memory.LastConfidence = Confidence;
+            Memory.LastClassId = ClassId;
+            Memory.LastClassLabel = ClassLabel;
+        }
 
         WriteTargetBlackboard(
             Blackboard,
-            HasPersonKey,
-            DetectedPersonLocationKey,
+            HasTargetKey,
+            DetectedTargetLocationKey,
             DetectionConfidenceKey,
             DetectedClassIdKey,
             DetectedClassLabelKey,
             Memory.LastTargetLocation,
-            Confidence,
-            ClassId,
-            ClassLabel);
+            Memory.LastConfidence,
+            Memory.LastClassId,
+            Memory.LastClassLabel);
 
         return bOutSameTarget;
     }
@@ -812,19 +1280,20 @@ namespace
     bool ApplySharedDetection(
         UBlackboardComponent& Blackboard,
         const AActor& ControlledActor,
-        const FBlackboardKeySelector& HasPersonKey,
-        const FBlackboardKeySelector& DetectedPersonLocationKey,
+        const FBlackboardKeySelector& HasTargetKey,
+        const FBlackboardKeySelector& DetectedTargetLocationKey,
         const FBlackboardKeySelector& DetectionConfidenceKey,
         const FBlackboardKeySelector& DetectedClassIdKey,
         const FBlackboardKeySelector& DetectedClassLabelKey,
         const TArray<int32>& ActionableClassIds,
         const TArray<FName>& ActionableClassLabels,
-        FCrowPersonDetectionMemory& Memory,
+        FCrowTargetDetectionMemory& Memory,
         float CurrentTime,
         float MaxAgeSeconds,
         float MaxReporterDistance,
         float SameTargetLocationThreshold,
         float NewTargetConfirmationSeconds,
+        float PendingTargetStabilityThreshold,
         bool bDrawDebug,
         bool bLogDebug)
     {
@@ -861,11 +1330,12 @@ namespace
         bool bSameTarget = false;
         bool bPendingTarget = false;
         bool bCommittedNewTarget = false;
+        float PendingAge = 0.f;
         float PlanarDelta = 0.f;
         ApplyLockedTargetMemory(
             Blackboard,
-            HasPersonKey,
-            DetectedPersonLocationKey,
+            HasTargetKey,
+            DetectedTargetLocationKey,
             DetectionConfidenceKey,
             DetectedClassIdKey,
             DetectedClassLabelKey,
@@ -877,20 +1347,23 @@ namespace
             CurrentTime,
             SameTargetLocationThreshold,
             NewTargetConfirmationSeconds,
+            PendingTargetStabilityThreshold,
             bSameTarget,
             bPendingTarget,
             bCommittedNewTarget,
+            PendingAge,
             PlanarDelta);
 
         PrintCrowDetectionDebug(
             ControlledActor,
             FString::Printf(
-                TEXT("shared %s target=%s detected=%s planarDelta=%.1f threshold=%.1f confirm=%.2f class=%s[%d] conf=%.2f"),
+                TEXT("shared %s target=%s detected=%s planarDelta=%.1f threshold=%.1f pendingAge=%.2f confirm=%.2f class=%s[%d] conf=%.2f"),
                 bSameTarget ? TEXT("same") : (bPendingTarget ? TEXT("pending") : (bCommittedNewTarget ? TEXT("new") : TEXT("locked"))),
                 *Memory.LastTargetLocation.ToCompactString(),
                 *SharedTarget.ToCompactString(),
                 PlanarDelta,
                 SameTargetLocationThreshold,
+                PendingAge,
                 NewTargetConfirmationSeconds,
                 *SharedClassLabel,
                 SharedClassId,
@@ -904,28 +1377,25 @@ namespace
     }
 }
 
-UBTServ_UpdateCrowPersonDetection::UBTServ_UpdateCrowPersonDetection()
+UBTServ_UpdateCrowTargetDetection::UBTServ_UpdateCrowTargetDetection()
 {
     NodeName = TEXT("Update Crow YOLO Target Detection");
     Interval = 0.1f;
     RandomDeviation = 0.f;
 
-    HasPersonKey.SelectedKeyName = TEXT("HasDetectedPerson");
-    DetectedPersonLocationKey.SelectedKeyName = TEXT("DetectedPersonLocation");
+    HasTargetKey.SelectedKeyName = TEXT("HasDetectedTarget");
+    DetectedTargetLocationKey.SelectedKeyName = TEXT("DetectedTargetLocation");
     DetectionConfidenceKey.SelectedKeyName = TEXT("DetectionConfidence");
     DetectedClassIdKey.SelectedKeyName = TEXT("DetectedClassId");
     DetectedClassLabelKey.SelectedKeyName = TEXT("DetectedClassLabel");
-
-    ActionableClassIds.Add(0);
-    ActionableClassLabels.Add(TEXT("person"));
 }
 
-uint16 UBTServ_UpdateCrowPersonDetection::GetInstanceMemorySize() const
+uint16 UBTServ_UpdateCrowTargetDetection::GetInstanceMemorySize() const
 {
-    return sizeof(FCrowPersonDetectionMemory);
+    return sizeof(FCrowTargetDetectionMemory);
 }
 
-void UBTServ_UpdateCrowPersonDetection::TickNode(
+void UBTServ_UpdateCrowTargetDetection::TickNode(
     UBehaviorTreeComponent& OwnerComp,
     uint8* NodeMemory,
     float DeltaSeconds)
@@ -940,46 +1410,8 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         return;
     }
 
-    FCrowPersonDetectionMemory* Memory = reinterpret_cast<FCrowPersonDetectionMemory*>(NodeMemory);
+    FCrowTargetDetectionMemory* Memory = reinterpret_cast<FCrowTargetDetectionMemory*>(NodeMemory);
     const float CurrentTime = ControlledPawn->GetWorld() ? ControlledPawn->GetWorld()->GetTimeSeconds() : 0.f;
-
-    APawn* PlayerPawn = GetPlayerPawn(ControlledPawn);
-    if (bAllowPlayerPawnLocationFallback &&
-        bAlwaysFollowPlayerPawn &&
-        IsValid(PlayerPawn) &&
-        PlayerPawn != ControlledPawn)
-    {
-        const FVector TargetLocation = PlayerPawn->GetActorLocation() + TargetLocationOffset;
-        Memory->LastTargetLocation = TargetLocation;
-        Memory->LastRawTargetLocation = TargetLocation;
-        Memory->LastRawTargetTime = CurrentTime;
-        Memory->LastDetectedTime = CurrentTime;
-        Memory->LastConfidence = 1.f;
-        Memory->LastClassId = 0;
-        Memory->LastClassLabel = TEXT("person");
-        Memory->TargetVelocity = FVector::ZeroVector;
-        Memory->bHasLastTarget = true;
-        Memory->bHasRawTarget = true;
-
-        Blackboard->SetValueAsBool(HasPersonKey.SelectedKeyName, true);
-        Blackboard->SetValueAsVector(DetectedPersonLocationKey.SelectedKeyName, TargetLocation);
-        Blackboard->SetValueAsFloat(DetectionConfidenceKey.SelectedKeyName, 1.f);
-        WriteDetectedClassBlackboard(
-            *Blackboard,
-            DetectedClassIdKey,
-            DetectedClassLabelKey,
-            Memory->LastClassId,
-            Memory->LastClassLabel);
-
-        PrintCrowDetectionDebug(
-            *ControlledPawn,
-            FString::Printf(TEXT("always-follow target=%s"), *TargetLocation.ToCompactString()),
-            FColor::Green,
-            2,
-            bDrawDebug,
-            bLogDebug);
-        return;
-    }
 
     UMyActorComponent* Detector = ControlledPawn->FindComponentByClass<UMyActorComponent>();
     UCameraComponent* Camera = ControlledPawn->FindComponentByClass<UCameraComponent>();
@@ -988,8 +1420,8 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         if (bUseFlockSharedDetections && ApplySharedDetection(
             *Blackboard,
             *ControlledPawn,
-            HasPersonKey,
-            DetectedPersonLocationKey,
+            HasTargetKey,
+            DetectedTargetLocationKey,
             DetectionConfidenceKey,
             DetectedClassIdKey,
             DetectedClassLabelKey,
@@ -1001,6 +1433,7 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
             SharedDetectionMaxReporterDistance,
             SameTargetLocationThreshold,
             NewTargetConfirmationSeconds,
+            PendingTargetStabilityThreshold,
             bDrawDebug,
             bLogDebug))
         {
@@ -1009,14 +1442,14 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
 
         KeepMemoryActive(
             *Blackboard,
-            HasPersonKey,
-            DetectedPersonLocationKey,
+            HasTargetKey,
+            DetectedTargetLocationKey,
             DetectionConfidenceKey,
             DetectedClassIdKey,
             DetectedClassLabelKey,
             *Memory,
             CurrentTime,
-            LosePersonAfterSeconds);
+            LoseTargetAfterSeconds);
         PrintCrowDetectionDebug(
             *ControlledPawn,
             FString::Printf(
@@ -1039,8 +1472,8 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         if (bUseFlockSharedDetections && ApplySharedDetection(
             *Blackboard,
             *ControlledPawn,
-            HasPersonKey,
-            DetectedPersonLocationKey,
+            HasTargetKey,
+            DetectedTargetLocationKey,
             DetectionConfidenceKey,
             DetectedClassIdKey,
             DetectedClassLabelKey,
@@ -1052,6 +1485,7 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
             SharedDetectionMaxReporterDistance,
             SameTargetLocationThreshold,
             NewTargetConfirmationSeconds,
+            PendingTargetStabilityThreshold,
             bDrawDebug,
             bLogDebug))
         {
@@ -1060,14 +1494,14 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
 
         KeepMemoryActive(
             *Blackboard,
-            HasPersonKey,
-            DetectedPersonLocationKey,
+            HasTargetKey,
+            DetectedTargetLocationKey,
             DetectionConfidenceKey,
             DetectedClassIdKey,
             DetectedClassLabelKey,
             *Memory,
             CurrentTime,
-            LosePersonAfterSeconds);
+            LoseTargetAfterSeconds);
         PrintCrowDetectionDebug(
             *ControlledPawn,
             FString::Printf(
@@ -1086,27 +1520,27 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
     {
         KeepMemoryActive(
             *Blackboard,
-            HasPersonKey,
-            DetectedPersonLocationKey,
+            HasTargetKey,
+            DetectedTargetLocationKey,
             DetectionConfidenceKey,
             DetectedClassIdKey,
             DetectedClassLabelKey,
             *Memory,
             CurrentTime,
-            LosePersonAfterSeconds);
+            LoseTargetAfterSeconds);
         return;
     }
     Memory->LastProcessedFrameSequence = Detector->LastFrameSequence;
 
     if (Memory->bHasLastTarget &&
-        !HasPersonKey.SelectedKeyName.IsNone() &&
-        !Blackboard->GetValueAsBool(HasPersonKey.SelectedKeyName))
+        !HasTargetKey.SelectedKeyName.IsNone() &&
+        !Blackboard->GetValueAsBool(HasTargetKey.SelectedKeyName))
     {
         const int32 ProcessingFrameSequence = Memory->LastProcessedFrameSequence;
-        ClearPersonDetectionMemory(
+        ClearTargetDetectionMemory(
             *Blackboard,
-            HasPersonKey,
-            DetectedPersonLocationKey,
+            HasTargetKey,
+            DetectedTargetLocationKey,
             DetectionConfidenceKey,
             DetectedClassIdKey,
             DetectedClassLabelKey,
@@ -1114,11 +1548,11 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         Memory->LastProcessedFrameSequence = ProcessingFrameSequence;
     }
 
-    FDetectionBox PersonBox;
+    FDetectionBox TargetBox;
     bool bMatchedTrackedBox = false;
     float TrackMatchIoU = 0.f;
     float TrackMatchDistance = 0.f;
-    if (!FindTrackedPersonDetection(
+    if (!FindTrackedTargetDetection(
         *Detector,
         *Memory,
         ActionableClassIds,
@@ -1128,7 +1562,7 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         TrackMatchMinIoU,
         TrackMatchMaxCenterDistance,
         TrackSwitchConfidenceMargin,
-        PersonBox,
+        TargetBox,
         bMatchedTrackedBox,
         TrackMatchIoU,
         TrackMatchDistance))
@@ -1136,38 +1570,73 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         Memory->ConsecutiveDetections = 0;
         ++Memory->ConsecutiveMisses;
 
-        if (bUseFlockSharedDetections && ApplySharedDetection(
-            *Blackboard,
+        bool bUsedSharedFallback = false;
+        if (bUseFlockSharedDetections)
+        {
+            bUsedSharedFallback = ApplySharedDetection(
+                *Blackboard,
+                *ControlledPawn,
+                HasTargetKey,
+                DetectedTargetLocationKey,
+                DetectionConfidenceKey,
+                DetectedClassIdKey,
+                DetectedClassLabelKey,
+                ActionableClassIds,
+                ActionableClassLabels,
+                *Memory,
+                CurrentTime,
+                SharedDetectionMaxAgeSeconds,
+                SharedDetectionMaxReporterDistance,
+                SameTargetLocationThreshold,
+                NewTargetConfirmationSeconds,
+                PendingTargetStabilityThreshold,
+                bDrawDebug,
+                bLogDebug);
+        }
+
+        const FSceneDepthResolveStats EmptyDepthStats;
+        AppendDepthDetectionMetricRow(
             *ControlledPawn,
-            HasPersonKey,
-            DetectedPersonLocationKey,
-            DetectionConfidenceKey,
-            DetectedClassIdKey,
-            DetectedClassLabelKey,
-            ActionableClassIds,
-            ActionableClassLabels,
-            *Memory,
-            CurrentTime,
-            SharedDetectionMaxAgeSeconds,
-            SharedDetectionMaxReporterDistance,
-            SameTargetLocationThreshold,
-            NewTargetConfirmationSeconds,
-            bDrawDebug,
-            bLogDebug))
+            *Detector,
+            TargetLocationOffset,
+            bUsedSharedFallback ? TEXT("no_accepted_box_shared") : TEXT("no_accepted_box"),
+            false,
+            bUsedSharedFallback,
+            nullptr,
+            nullptr,
+            nullptr,
+            TargetRayBoxVerticalBias,
+            0.f,
+            0,
+            0,
+            FMath::Max(1, MinSceneDepthClusterSamples),
+            FMath::Clamp(MinSceneDepthClusterSampleRatio, 0.f, 1.f),
+            EmptyDepthStats,
+            nullptr,
+            nullptr,
+            false,
+            0.f,
+            0.f,
+            0.f,
+            false,
+            Memory->ConsecutiveDetections,
+            Memory->ConsecutiveMisses);
+
+        if (bUsedSharedFallback)
         {
             return;
         }
 
         KeepMemoryActive(
             *Blackboard,
-            HasPersonKey,
-            DetectedPersonLocationKey,
+            HasTargetKey,
+            DetectedTargetLocationKey,
             DetectionConfidenceKey,
             DetectedClassIdKey,
             DetectedClassLabelKey,
             *Memory,
             CurrentTime,
-            LosePersonAfterSeconds);
+            LoseTargetAfterSeconds);
         PrintCrowDetectionDebug(
             *ControlledPawn,
             FString::Printf(
@@ -1187,18 +1656,18 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
 
     if (bEnableYoloBoxTracking && Memory->bHasTrackedBox && bMatchedTrackedBox)
     {
-        PersonBox = SmoothBox(Memory->LastTrackedBox, PersonBox, DeltaSeconds, TrackBoxSmoothingSpeed);
+        TargetBox = SmoothBox(Memory->LastTrackedBox, TargetBox, DeltaSeconds, TrackBoxSmoothingSpeed);
     }
-    Memory->LastTrackedBox = PersonBox;
+    Memory->LastTrackedBox = TargetBox;
     Memory->bHasTrackedBox = true;
 
     const FVector RayOrigin = Camera->GetComponentLocation();
-    const FVector2D BoxMin = GetBoxMin(PersonBox);
-    const FVector2D BoxMax = GetBoxMax(PersonBox);
+    const FVector2D BoxMin = GetBoxMin(TargetBox);
+    const FVector2D BoxMax = GetBoxMax(TargetBox);
     const FVector2D TargetPixel(
-        FMath::Clamp(PersonBox.Center.X, 0.f, FMath::Max(static_cast<float>(Detector->LastFrameSourceWidth - 1), 0.f)),
+        FMath::Clamp(TargetBox.Center.X, 0.f, FMath::Max(static_cast<float>(Detector->LastFrameSourceWidth - 1), 0.f)),
         FMath::Clamp(
-            PersonBox.Center.Y + (PersonBox.Size.Y * TargetRayBoxVerticalBias),
+            TargetBox.Center.Y + (TargetBox.Size.Y * TargetRayBoxVerticalBias),
             0.f,
             FMath::Max(static_cast<float>(Detector->LastFrameSourceHeight - 1), 0.f)));
     const FVector DetectionBoxRayDirection = BuildCameraRayDirection(
@@ -1215,14 +1684,16 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
     int32 DepthClusterSampleCount = 0;
     FSceneDepthResolveStats DepthResolveStats;
     const bool bHasActiveLockedTarget = Memory->bHasLastTarget &&
-        !HasPersonKey.SelectedKeyName.IsNone() &&
-        Blackboard->GetValueAsBool(HasPersonKey.SelectedKeyName);
+        !HasTargetKey.SelectedKeyName.IsNone() &&
+        Blackboard->GetValueAsBool(HasTargetKey.SelectedKeyName);
     const bool bHasRecentRawTarget = Memory->bHasRawTarget &&
-        CurrentTime - Memory->LastRawTargetTime <= LosePersonAfterSeconds;
+        CurrentTime - Memory->LastRawTargetTime <= LoseTargetAfterSeconds;
     const bool bHasDepthReferenceTarget = bHasActiveLockedTarget || bHasRecentRawTarget;
     const FVector DepthReferenceTargetLocation = bHasActiveLockedTarget
         ? Memory->LastTargetLocation
         : Memory->LastRawTargetLocation;
+    const int32 RequiredDepthClusterSamples = FMath::Max(1, MinSceneDepthClusterSamples);
+    const float RequiredDepthClusterRatio = FMath::Clamp(MinSceneDepthClusterSampleRatio, 0.f, 1.f);
 
     if (!TryResolveTargetFromSceneDepth(
         *Detector,
@@ -1230,6 +1701,7 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         RayOrigin,
         BoxMin,
         BoxMax,
+        TargetPixel,
         TraceDistance,
         bHasDepthReferenceTarget,
         DepthReferenceTargetLocation,
@@ -1244,42 +1716,76 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         Memory->ConsecutiveDetections = 0;
         ++Memory->ConsecutiveMisses;
 
-        if (bUseFlockSharedDetections && ApplySharedDetection(
-            *Blackboard,
+        bool bUsedSharedFallback = false;
+        if (bUseFlockSharedDetections)
+        {
+            bUsedSharedFallback = ApplySharedDetection(
+                *Blackboard,
+                *ControlledPawn,
+                HasTargetKey,
+                DetectedTargetLocationKey,
+                DetectionConfidenceKey,
+                DetectedClassIdKey,
+                DetectedClassLabelKey,
+                ActionableClassIds,
+                ActionableClassLabels,
+                *Memory,
+                CurrentTime,
+                SharedDetectionMaxAgeSeconds,
+                SharedDetectionMaxReporterDistance,
+                SameTargetLocationThreshold,
+                NewTargetConfirmationSeconds,
+                PendingTargetStabilityThreshold,
+                bDrawDebug,
+                bLogDebug);
+        }
+
+        AppendDepthDetectionMetricRow(
             *ControlledPawn,
-            HasPersonKey,
-            DetectedPersonLocationKey,
-            DetectionConfidenceKey,
-            DetectedClassIdKey,
-            DetectedClassLabelKey,
-            ActionableClassIds,
-            ActionableClassLabels,
-            *Memory,
-            CurrentTime,
-            SharedDetectionMaxAgeSeconds,
-            SharedDetectionMaxReporterDistance,
-            SameTargetLocationThreshold,
-            NewTargetConfirmationSeconds,
-            bDrawDebug,
-            bLogDebug))
+            *Detector,
+            TargetLocationOffset,
+            bUsedSharedFallback ? TEXT("depth_miss_shared") : TEXT("depth_miss"),
+            false,
+            bUsedSharedFallback,
+            &TargetBox,
+            &TargetPixel,
+            nullptr,
+            TargetRayBoxVerticalBias,
+            SceneDepth,
+            DepthSampleCount,
+            DepthClusterSampleCount,
+            RequiredDepthClusterSamples,
+            RequiredDepthClusterRatio,
+            DepthResolveStats,
+            nullptr,
+            nullptr,
+            bMatchedTrackedBox,
+            TrackMatchIoU,
+            TrackMatchDistance,
+            0.f,
+            false,
+            Memory->ConsecutiveDetections,
+            Memory->ConsecutiveMisses);
+
+        if (bUsedSharedFallback)
         {
             return;
         }
 
         KeepMemoryActive(
             *Blackboard,
-            HasPersonKey,
-            DetectedPersonLocationKey,
+            HasTargetKey,
+            DetectedTargetLocationKey,
             DetectionConfidenceKey,
             DetectedClassIdKey,
             DetectedClassLabelKey,
             *Memory,
             CurrentTime,
-            LosePersonAfterSeconds);
+            LoseTargetAfterSeconds);
         PrintCrowDetectionDebug(
             *ControlledPawn,
             FString::Printf(
-                TEXT("scene depth miss targetPixel=%s boxMin=%s boxMax=%s ray=%s depthSize=%dx%d depthPixels=%d tested=%d valid=%d tooNear=%d tooFar=%d nonFinite=%d depthMin=%.1f depthMax=%.1f depthAvg=%.1f minPixel=%s maxPixel=%s samples=%d cluster=%d misses=%d"),
+                TEXT("scene depth miss targetPixel=%s boxMin=%s boxMax=%s ray=%s depthSize=%dx%d depthPixels=%d tested=%d valid=%d tooNear=%d tooFar=%d nonFinite=%d depthMin=%.1f depthMax=%.1f depthAvg=%.1f minPixel=%s maxPixel=%s samples=%d cluster=%d clusterScore=%.2f clusterPixelDist=%.1f clusterRefDist=%.1f misses=%d"),
                 *TargetPixel.ToString(),
                 *BoxMin.ToString(),
                 *BoxMax.ToString(),
@@ -1299,6 +1805,9 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
                 *DepthResolveStats.MaxDepthPixel.ToString(),
                 DepthSampleCount,
                 DepthClusterSampleCount,
+                DepthResolveStats.ClusterScore,
+                DepthResolveStats.ClusterPixelDistance,
+                DepthResolveStats.ClusterReferenceDistance,
                 Memory->ConsecutiveMisses),
             FColor::Orange,
             9,
@@ -1307,31 +1816,56 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         return;
     }
 
-    const int32 RequiredDepthClusterSamples = FMath::Max(1, MinSceneDepthClusterSamples);
     const float DepthClusterSampleRatio = DepthSampleCount > 0
         ? static_cast<float>(DepthClusterSampleCount) / static_cast<float>(DepthSampleCount)
         : 0.f;
-    const float RequiredDepthClusterRatio = FMath::Clamp(MinSceneDepthClusterSampleRatio, 0.f, 1.f);
     if (DepthClusterSampleCount < RequiredDepthClusterSamples ||
         DepthClusterSampleRatio < RequiredDepthClusterRatio)
     {
         Memory->ConsecutiveDetections = 0;
         ++Memory->ConsecutiveMisses;
+        const FVector MetricTargetLocation = TargetLocation + TargetLocationOffset;
+        AppendDepthDetectionMetricRow(
+            *ControlledPawn,
+            *Detector,
+            TargetLocationOffset,
+            TEXT("weak_cluster"),
+            false,
+            false,
+            &TargetBox,
+            &TargetPixel,
+            &ResolvedDepthPixel,
+            TargetRayBoxVerticalBias,
+            SceneDepth,
+            DepthSampleCount,
+            DepthClusterSampleCount,
+            RequiredDepthClusterSamples,
+            RequiredDepthClusterRatio,
+            DepthResolveStats,
+            &MetricTargetLocation,
+            nullptr,
+            bMatchedTrackedBox,
+            TrackMatchIoU,
+            TrackMatchDistance,
+            0.f,
+            false,
+            Memory->ConsecutiveDetections,
+            Memory->ConsecutiveMisses);
 
         KeepMemoryActive(
             *Blackboard,
-            HasPersonKey,
-            DetectedPersonLocationKey,
+            HasTargetKey,
+            DetectedTargetLocationKey,
             DetectionConfidenceKey,
             DetectedClassIdKey,
             DetectedClassLabelKey,
             *Memory,
             CurrentTime,
-            LosePersonAfterSeconds);
+            LoseTargetAfterSeconds);
         PrintCrowDetectionDebug(
             *ControlledPawn,
             FString::Printf(
-                TEXT("scene depth weak cluster targetPixel=%s depthPixel=%s boxMin=%s boxMax=%s depth=%.1f samples=%d cluster=%d minCluster=%d ratio=%.3f minRatio=%.3f misses=%d seq=%d"),
+                TEXT("scene depth weak cluster targetPixel=%s depthPixel=%s boxMin=%s boxMax=%s depth=%.1f samples=%d cluster=%d minCluster=%d ratio=%.3f minRatio=%.3f clusterScore=%.2f clusterPixelDist=%.1f clusterRefDist=%.1f misses=%d seq=%d"),
                 *TargetPixel.ToString(),
                 *ResolvedDepthPixel.ToString(),
                 *BoxMin.ToString(),
@@ -1342,6 +1876,9 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
                 RequiredDepthClusterSamples,
                 DepthClusterSampleRatio,
                 RequiredDepthClusterRatio,
+                DepthResolveStats.ClusterScore,
+                DepthResolveStats.ClusterPixelDistance,
+                DepthResolveStats.ClusterReferenceDistance,
                 Memory->ConsecutiveMisses,
                 Detector->LastFrameSequence),
             FColor::Orange,
@@ -1357,7 +1894,7 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
     float RawTargetJumpDistance = 0.f;
     if (MaxTrackedTargetJumpDistance > 0.f &&
         Memory->bHasRawTarget &&
-        CurrentTime - Memory->LastRawTargetTime <= LosePersonAfterSeconds)
+        CurrentTime - Memory->LastRawTargetTime <= LoseTargetAfterSeconds)
     {
         RawTargetJumpDistance = FVector::Dist(TargetLocation, Memory->LastRawTargetLocation);
         if (RawTargetJumpDistance > MaxTrackedTargetJumpDistance)
@@ -1373,7 +1910,7 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
     if (bPredictTrackedTargetMotion && Memory->bHasRawTarget && bMatchedTrackedBox && !bClampedTargetJump)
     {
         const float TimeSinceLastRawTarget = CurrentTime - Memory->LastRawTargetTime;
-        if (TimeSinceLastRawTarget > KINDA_SMALL_NUMBER && TimeSinceLastRawTarget < LosePersonAfterSeconds)
+        if (TimeSinceLastRawTarget > KINDA_SMALL_NUMBER && TimeSinceLastRawTarget < LoseTargetAfterSeconds)
         {
             FVector InstantVelocity = (TargetLocation - Memory->LastRawTargetLocation) / TimeSinceLastRawTarget;
             if (TargetVelocitySmoothingSpeed > 0.f)
@@ -1396,21 +1933,6 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         }
     }
 
-    const bool bHasRealTarget = IsValid(PlayerPawn) && PlayerPawn != ControlledPawn;
-    const FVector RealPawnLocation = bHasRealTarget ? PlayerPawn->GetActorLocation() : FVector::ZeroVector;
-    const FVector RealComparableTargetLocation = bHasRealTarget
-        ? RealPawnLocation + TargetLocationOffset
-        : FVector::ZeroVector;
-    const float RealTargetDelta2D = bHasRealTarget
-        ? CalculatePlanarDistance(PredictedTargetLocation, RealComparableTargetLocation)
-        : -1.f;
-    const FString RealPawnLocationText = bHasRealTarget
-        ? RealPawnLocation.ToCompactString()
-        : FString(TEXT("None"));
-    const FString RealComparableTargetLocationText = bHasRealTarget
-        ? RealComparableTargetLocation.ToCompactString()
-        : FString(TEXT("None"));
-
     Memory->LastRawTargetLocation = TargetLocation;
     Memory->LastRawTargetTime = CurrentTime;
     Memory->bHasRawTarget = true;
@@ -1421,26 +1943,52 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
     const bool bConfirmed = Memory->ConsecutiveDetections >= FMath::Max(1, RequiredConsecutiveDetections);
     if (!bConfirmed)
     {
+        AppendDepthDetectionMetricRow(
+            *ControlledPawn,
+            *Detector,
+            TargetLocationOffset,
+            TEXT("candidate"),
+            true,
+            false,
+            &TargetBox,
+            &TargetPixel,
+            &ResolvedDepthPixel,
+            TargetRayBoxVerticalBias,
+            SceneDepth,
+            DepthSampleCount,
+            DepthClusterSampleCount,
+            RequiredDepthClusterSamples,
+            RequiredDepthClusterRatio,
+            DepthResolveStats,
+            &TargetLocation,
+            &PredictedTargetLocation,
+            bMatchedTrackedBox,
+            TrackMatchIoU,
+            TrackMatchDistance,
+            RawTargetJumpDistance,
+            bClampedTargetJump,
+            Memory->ConsecutiveDetections,
+            Memory->ConsecutiveMisses);
+
         KeepMemoryActive(
             *Blackboard,
-            HasPersonKey,
-            DetectedPersonLocationKey,
+            HasTargetKey,
+            DetectedTargetLocationKey,
             DetectionConfidenceKey,
             DetectedClassIdKey,
             DetectedClassLabelKey,
             *Memory,
             CurrentTime,
-            LosePersonAfterSeconds);
+            LoseTargetAfterSeconds);
         PrintCrowDetectionDebug(
             *ControlledPawn,
             FString::Printf(
-                TEXT("candidate target=%s realPawn=%s realTarget=%s realDelta2D=%.1f depth=%.1f conf=%.2f track=%s jump=%.1f clamped=%s pixel=%s depthPixel=%s samples=%d/%d boxMin=%s boxMax=%s hits=%d/%d seq=%d"),
+                TEXT("candidate target=%s class=%s[%d] depth=%.1f conf=%.2f track=%s jump=%.1f clamped=%s pixel=%s depthPixel=%s samples=%d/%d clusterScore=%.2f clusterPixelDist=%.1f clusterRefDist=%.1f boxMin=%s boxMax=%s hits=%d/%d seq=%d"),
                 *PredictedTargetLocation.ToCompactString(),
-                *RealPawnLocationText,
-                *RealComparableTargetLocationText,
-                RealTargetDelta2D,
+                *TargetBox.ClassLabel,
+                TargetBox.ClassId,
                 SceneDepth,
-                PersonBox.Confidence,
+                TargetBox.Confidence,
                 bMatchedTrackedBox ? TEXT("matched") : TEXT("new"),
                 RawTargetJumpDistance,
                 bClampedTargetJump ? TEXT("yes") : TEXT("no"),
@@ -1448,6 +1996,9 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
                 *ResolvedDepthPixel.ToString(),
                 DepthClusterSampleCount,
                 DepthSampleCount,
+                DepthResolveStats.ClusterScore,
+                DepthResolveStats.ClusterPixelDistance,
+                DepthResolveStats.ClusterReferenceDistance,
                 *BoxMin.ToString(),
                 *BoxMax.ToString(),
                 Memory->ConsecutiveDetections,
@@ -1463,28 +2014,57 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
     bool bSameTargetRedetected = false;
     bool bPendingTarget = false;
     bool bCommittedNewTarget = false;
+    float PendingTargetAge = 0.f;
     float TargetLocationDelta = 0.f;
     ApplyLockedTargetMemory(
         *Blackboard,
-        HasPersonKey,
-        DetectedPersonLocationKey,
+        HasTargetKey,
+        DetectedTargetLocationKey,
         DetectionConfidenceKey,
         DetectedClassIdKey,
         DetectedClassLabelKey,
         *Memory,
         PredictedTargetLocation,
-        PersonBox.Confidence,
-        PersonBox.ClassId,
-        PersonBox.ClassLabel,
+        TargetBox.Confidence,
+        TargetBox.ClassId,
+        TargetBox.ClassLabel,
         CurrentTime,
         SameTargetLocationThreshold,
         NewTargetConfirmationSeconds,
+        PendingTargetStabilityThreshold,
         bSameTargetRedetected,
         bPendingTarget,
         bCommittedNewTarget,
+        PendingTargetAge,
         TargetLocationDelta);
 
     const FVector MemorizedTargetLocation = Memory->LastTargetLocation;
+    AppendDepthDetectionMetricRow(
+        *ControlledPawn,
+        *Detector,
+        TargetLocationOffset,
+        bSameTargetRedetected ? TEXT("same") : (bPendingTarget ? TEXT("pending") : (bCommittedNewTarget ? TEXT("new") : TEXT("locked"))),
+        true,
+        false,
+        &TargetBox,
+        &TargetPixel,
+        &ResolvedDepthPixel,
+        TargetRayBoxVerticalBias,
+        SceneDepth,
+        DepthSampleCount,
+        DepthClusterSampleCount,
+        RequiredDepthClusterSamples,
+        RequiredDepthClusterRatio,
+        DepthResolveStats,
+        &TargetLocation,
+        &PredictedTargetLocation,
+        bMatchedTrackedBox,
+        TrackMatchIoU,
+        TrackMatchDistance,
+        RawTargetJumpDistance,
+        bClampedTargetJump,
+        Memory->ConsecutiveDetections,
+        Memory->ConsecutiveMisses);
 
     if (bPublishDetectionsToFlock)
     {
@@ -1495,9 +2075,9 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
                 ShareSubsystem->PublishTargetDetection(
                     ControlledPawn,
                     MemorizedTargetLocation,
-                    PersonBox.Confidence,
-                    PersonBox.ClassId,
-                    PersonBox.ClassLabel);
+                    TargetBox.Confidence,
+                    TargetBox.ClassId,
+                    TargetBox.ClassLabel);
             }
         }
     }
@@ -1505,21 +2085,23 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
     PrintCrowDetectionDebug(
         *ControlledPawn,
         FString::Printf(
-            TEXT("%s target=%s detected=%s realPawn=%s realTarget=%s realDelta2D=%.1f planarDelta=%.1f threshold=%.1f class=%s[%d] source=scene-depth depth=%.1f depthPixel=%s samples=%d/%d track=%s iou=%.2f centerDist=%.2f jump=%.1f clamped=%s velocity=%s predicted=%s conf=%.2f pixel=%s box=%s size=%s detections=%d seq=%d hits=%d"),
+            TEXT("%s target=%s detected=%s planarDelta=%.1f threshold=%.1f pendingAge=%.2f confirm=%.2f class=%s[%d] source=scene-depth depth=%.1f depthPixel=%s samples=%d/%d clusterScore=%.2f clusterPixelDist=%.1f clusterRefDist=%.1f track=%s iou=%.2f centerDist=%.2f jump=%.1f clamped=%s velocity=%s predicted=%s conf=%.2f pixel=%s box=%s size=%s detections=%d seq=%d hits=%d"),
             bSameTargetRedetected ? TEXT("same") : (bPendingTarget ? TEXT("pending") : (bCommittedNewTarget ? TEXT("new") : TEXT("locked"))),
             *MemorizedTargetLocation.ToCompactString(),
             *PredictedTargetLocation.ToCompactString(),
-            *RealPawnLocationText,
-            *RealComparableTargetLocationText,
-            RealTargetDelta2D,
             TargetLocationDelta,
             SameTargetLocationThreshold,
-            *PersonBox.ClassLabel,
-            PersonBox.ClassId,
+            PendingTargetAge,
+            NewTargetConfirmationSeconds,
+            *TargetBox.ClassLabel,
+            TargetBox.ClassId,
             SceneDepth,
             *ResolvedDepthPixel.ToString(),
             DepthClusterSampleCount,
             DepthSampleCount,
+            DepthResolveStats.ClusterScore,
+            DepthResolveStats.ClusterPixelDistance,
+            DepthResolveStats.ClusterReferenceDistance,
             bMatchedTrackedBox ? TEXT("matched") : TEXT("new"),
             TrackMatchIoU,
             TrackMatchDistance,
@@ -1527,10 +2109,10 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
             bClampedTargetJump ? TEXT("yes") : TEXT("no"),
             *Memory->TargetVelocity.ToCompactString(),
             *PredictedTargetLocation.ToCompactString(),
-            PersonBox.Confidence,
+            TargetBox.Confidence,
             *TargetPixel.ToString(),
-            *PersonBox.Center.ToString(),
-            *PersonBox.Size.ToString(),
+            *TargetBox.Center.ToString(),
+            *TargetBox.Size.ToString(),
             Detector->LastFrameDetections.Num(),
             Detector->LastFrameSequence,
             Memory->ConsecutiveDetections),
@@ -1539,7 +2121,7 @@ void UBTServ_UpdateCrowPersonDetection::TickNode(
         bDrawDebug,
         bLogDebug);
 
-    if (bDrawDebug)
+    if (bDrawDebug && IsDetectionDebugEnabled())
     {
         if (UWorld* World = ControlledPawn->GetWorld())
         {

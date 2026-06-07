@@ -1,6 +1,6 @@
 import ultralytics
 
-model = ultralytics.YOLO("yolo26x.pt")
+model = ultralytics.YOLO("yolo26s.pt")
 
 model.export(
     format="onnx",

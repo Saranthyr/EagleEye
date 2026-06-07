@@ -3,15 +3,15 @@
 #include "CoreMinimal.h"
 #include "BehaviorTree/BTService.h"
 #include "BehaviorTree/BehaviorTreeTypes.h"
-#include "BTServ_UpdateCrowPersonDetection.generated.h"
+#include "BTServ_UpdateCrowTargetDetection.generated.h"
 
 UCLASS()
-class EAGLEEYE_API UBTServ_UpdateCrowPersonDetection : public UBTService
+class EAGLEEYE_API UBTServ_UpdateCrowTargetDetection : public UBTService
 {
     GENERATED_BODY()
 
 public:
-    UBTServ_UpdateCrowPersonDetection();
+    UBTServ_UpdateCrowTargetDetection();
 
 protected:
     virtual uint16 GetInstanceMemorySize() const override;
@@ -21,11 +21,11 @@ protected:
         uint8* NodeMemory,
         float DeltaSeconds) override;
 
-    UPROPERTY(EditAnywhere, Category="Blackboard")
-    FBlackboardKeySelector HasPersonKey;
+    UPROPERTY(EditAnywhere, Category="Blackboard", meta=(DisplayName="Has Target Key"))
+    FBlackboardKeySelector HasTargetKey;
 
-    UPROPERTY(EditAnywhere, Category="Blackboard")
-    FBlackboardKeySelector DetectedPersonLocationKey;
+    UPROPERTY(EditAnywhere, Category="Blackboard", meta=(DisplayName="Detected Target Location Key"))
+    FBlackboardKeySelector DetectedTargetLocationKey;
 
     UPROPERTY(EditAnywhere, Category="Blackboard")
     FBlackboardKeySelector DetectionConfidenceKey;
@@ -45,20 +45,17 @@ protected:
     UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="100.0"))
     float TraceDistance = 10000.f;
 
-    UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="100.0"))
-    float FallbackTargetDistance = 2500.f;
-
-    UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="0.0"))
-    float PlayerRaySnapRadius = 350.f;
-
-    UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="0.0"))
-    float LosePersonAfterSeconds = 1.25f;
+    UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="0.0", DisplayName="Lose Target After Seconds"))
+    float LoseTargetAfterSeconds = 1.25f;
 
     UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="0.0"))
     float SameTargetLocationThreshold = 450.f;
 
     UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="0.0"))
     float NewTargetConfirmationSeconds = 0.8f;
+
+    UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="0.0"))
+    float PendingTargetStabilityThreshold = 250.f;
 
     UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="0.0"))
     float MaxDetectionFrameAgeSeconds = 0.4f;
@@ -107,18 +104,6 @@ protected:
 
     UPROPERTY(EditAnywhere, Category="YOLO Tracking", meta=(ClampMin="0.0", EditCondition="bPredictTrackedTargetMotion"))
     float TargetVelocitySmoothingSpeed = 6.0f;
-
-    UPROPERTY(EditAnywhere, Category="Detection")
-    bool bAlwaysFollowPlayerPawn = false;
-
-    UPROPERTY(EditAnywhere, Category="Detection")
-    bool bAllowPlayerPawnLocationFallback = false;
-
-    UPROPERTY(EditAnywhere, Category="Detection")
-    bool bPreferPlayerPawnLocation = false;
-
-    UPROPERTY(EditAnywhere, Category="Detection", meta=(EditCondition="bPreferPlayerPawnLocation"))
-    bool bRequireRaySnapForPlayerPawnLocation = false;
 
     UPROPERTY(EditAnywhere, Category="Detection")
     FVector TargetLocationOffset = FVector(0.f, 0.f, 150.f);

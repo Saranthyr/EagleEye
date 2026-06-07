@@ -15,3 +15,13 @@ ADetectionModelHostActor::ADetectionModelHostActor()
     ModelHostComponent->SetupAttachment(SceneRoot);
     ModelHostComponent->SetSharedVisionModelHost(true);
 }
+
+void ADetectionModelHostActor::BeginPlay()
+{
+    Super::BeginPlay();
+
+    if (bPreloadModelOnBeginPlay && ModelHostComponent)
+    {
+        ModelHostComponent->EnsureModelLoaded();
+    }
+}

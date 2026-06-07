@@ -78,6 +78,10 @@ float ABotCharacter::TakeDamage(
 {
     const float DamageAppliedByParent = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
     const float DamageToApply = DamageAppliedByParent > 0.f ? DamageAppliedByParent : DamageAmount;
+    if (DamageToApply < 0.f)
+    {
+        return Heal(-DamageToApply);
+    }
     return ApplyHealthDamage(DamageToApply, EventInstigator, DamageCauser);
 }
 
@@ -225,7 +229,8 @@ bool ABotCharacter::TryThrowProjectileAtActor(AActor* TargetActor)
         return false;
     }
 
-    Projectile->SetDamage(ProjectileDamage);
+    const bool bHealingProjectile = IsCloseDamageHealing() && TargetActor->IsA<ABotCharacter>();
+    Projectile->SetDamage(bHealingProjectile ? -FMath::Abs(ProjectileDamage) : ProjectileDamage);
     Projectile->SetProjectileSpeed(ProjectileSpeed);
     Projectile->FireInDirection(Direction);
     LastProjectileAttackTime = CurrentTime;
@@ -319,7 +324,9 @@ void ABotCharacter::TickCloseDamageHitbox()
     }
 
     TArray<AActor*> OverlappingActors;
-    CloseDamageHitbox->GetOverlappingActors(OverlappingActors, AEagleEyeCharacter::StaticClass());
+    CloseDamageHitbox->GetOverlappingActors(
+        OverlappingActors,
+        IsCloseDamageHealing() ? ABotCharacter::StaticClass() : AEagleEyeCharacter::StaticClass());
     for (AActor* OverlappingActor : OverlappingActors)
     {
         TryApplyCloseDamage(OverlappingActor);
@@ -328,7 +335,7 @@ void ABotCharacter::TickCloseDamageHitbox()
 
 bool ABotCharacter::TryApplyCloseDamage(AActor* TargetActor)
 {
-    if (bIsDead || !bCloseDamageHitboxEnabled || !IsValidDamageTarget(TargetActor) || CloseDamage <= 0.f)
+    if (bIsDead || !bCloseDamageHitboxEnabled || !IsValidDamageTarget(TargetActor) || FMath::IsNearlyZero(CloseDamage))
     {
         return false;
     }
@@ -343,6 +350,20 @@ bool ABotCharacter::TryApplyCloseDamage(AActor* TargetActor)
     if (LastCloseDamageActor.Get() == TargetActor && CurrentTime - LastCloseDamageTime < CloseDamageCooldownSeconds)
     {
         return false;
+    }
+
+    if (CloseDamage < 0.f)
+    {
+        ABotCharacter* TargetBot = Cast<ABotCharacter>(TargetActor);
+        const float AppliedHeal = TargetBot ? TargetBot->Heal(-CloseDamage) : 0.f;
+        if (AppliedHeal <= 0.f)
+        {
+            return false;
+        }
+
+        LastCloseDamageActor = TargetActor;
+        LastCloseDamageTime = CurrentTime;
+        return true;
     }
 
     const float AppliedDamage = UGameplayStatics::ApplyDamage(
@@ -367,6 +388,14 @@ bool ABotCharacter::IsValidDamageTarget(const AActor* TargetActor) const
     if (bIsDead || !IsValid(TargetActor) || TargetActor == this)
     {
         return false;
+    }
+
+    if (IsCloseDamageHealing())
+    {
+        const ABotCharacter* TargetBot = Cast<ABotCharacter>(TargetActor);
+        return TargetBot &&
+            !TargetBot->IsDead() &&
+            TargetBot->GetCurrentHealth() < TargetBot->GetMaxHealth();
     }
 
     const APawn* Pawn = Cast<APawn>(TargetActor);
@@ -421,6 +450,21 @@ float ABotCharacter::Heal(float HealAmount)
     }
 
     return AppliedHeal;
+}
+
+float ABotCharacter::GetHealthPercent() const
+{
+    return MaxHealth > KINDA_SMALL_NUMBER ? CurrentHealth / MaxHealth : 0.f;
+}
+
+bool ABotCharacter::NeedsHealing(float HealthPercentThreshold) const
+{
+    if (bIsDead || CurrentHealth >= MaxHealth)
+    {
+        return false;
+    }
+
+    return GetHealthPercent() < FMath::Clamp(HealthPercentThreshold, 0.f, 1.f);
 }
 
 void ABotCharacter::ResetHealth()

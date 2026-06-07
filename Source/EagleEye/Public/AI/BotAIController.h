@@ -2,12 +2,15 @@
 
 #include "CoreMinimal.h"
 #include "AIController.h"
+#include "AI/BotRandomMovementSettings.h"
 #include "Perception/AIPerceptionTypes.h"
 #include "BotAIController.generated.h"
 
 class UAIPerceptionComponent;
 class UAISenseConfig_Sight;
 class UBehaviorTree;
+class UBlackboardComponent;
+class ABotCharacter;
 
 UCLASS()
 class EAGLEEYE_API ABotAIController : public AAIController
@@ -19,6 +22,9 @@ public:
 
     virtual void OnPossess(APawn* InPawn) override;
     virtual void Tick(float DeltaSeconds) override;
+
+    UFUNCTION(BlueprintCallable, Category="AI|Random Movement")
+    void ApplyRandomMovementSettings(const FBotRandomMovementSettings& InSettings);
 
 protected:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="AI")
@@ -39,11 +45,11 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Blackboard")
     FName HasLineOfSightKey = TEXT("HasLineOfSight");
 
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Blackboard")
-    FName HasDetectedPersonKey = TEXT("HasDetectedPerson");
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Blackboard", meta=(DisplayName="Has Detected Target Key"))
+    FName HasDetectedTargetKey = TEXT("HasDetectedTarget");
 
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Blackboard")
-    FName DetectedPersonLocationKey = TEXT("DetectedPersonLocation");
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Blackboard", meta=(DisplayName="Detected Target Location Key"))
+    FName DetectedTargetLocationKey = TEXT("DetectedTargetLocation");
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Combat")
     bool bFocusProjectileTarget = false;
@@ -63,50 +69,26 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Perception")
     float MaxSightAge = 2.5f;
 
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Flight")
-    bool bEnableRandomFlight = true;
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Healing")
+    bool bEnableAllyHealing = true;
 
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Flight", meta=(ClampMin="0.0"))
-    float FlightRadius = 1800.f;
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Healing", meta=(ClampMin="0.0", ClampMax="1.0"))
+    float HealingHealthPercentThreshold = 0.65f;
 
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Flight", meta=(ClampMin="0.0"))
-    float FlightAcceptanceRadius = 180.f;
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Healing", meta=(ClampMin="0.0"))
+    float HealingSearchRadius = 5000.f;
 
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Flight")
-    float PreferredFlightHeight = 500.f;
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Healing", meta=(ClampMin="0.0"))
+    float HealingTargetRefreshSeconds = 0.25f;
 
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Flight", meta=(ClampMin="0.0"))
-    float FlightHeightVariance = 250.f;
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Healing", meta=(ClampMin="0.0"))
+    float HealingMeleeApproachMaxRange = 3000.f;
 
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Flight", meta=(ClampMin="0.0"))
-    float DestinationHoldMinSeconds = 0.5f;
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Healing")
+    bool bUseRangedHealingWhenMeleeUnreachable = true;
 
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Flight", meta=(ClampMin="0.0"))
-    float DestinationHoldMaxSeconds = 2.0f;
-
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Flight")
-    FName RandomFlightBlockedByKey = TEXT("HasDetectedPerson");
-
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Walking")
-    bool bEnableRandomWalking = true;
-
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Walking", meta=(ClampMin="0.0"))
-    float WalkRadius = 1200.f;
-
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Walking", meta=(ClampMin="0.0"))
-    float WalkAcceptanceRadius = 120.f;
-
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Walking")
-    FVector WalkingNavProjectionExtent = FVector(300.f, 300.f, 500.f);
-
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Walking", meta=(ClampMin="0.0"))
-    float WalkDestinationHoldMinSeconds = 0.5f;
-
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Walking", meta=(ClampMin="0.0"))
-    float WalkDestinationHoldMaxSeconds = 2.0f;
-
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Walking")
-    FName RandomWalkingBlockedByKey = TEXT("HasDetectedPerson");
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="AI|Random Movement")
+    FBotRandomMovementSettings DefaultRandomMovementSettings;
 
 private:
     UFUNCTION()
@@ -116,21 +98,33 @@ private:
     bool ShouldUseRandomFlight(const APawn* ControlledPawn) const;
     bool ShouldUseRandomWalking(const APawn* ControlledPawn) const;
     bool IsBlackboardKeyBlockingRandomMovement(FName KeyName) const;
+    bool IsValidHealingTarget(const ABotCharacter* HealerBot, const ABotCharacter* TargetBot) const;
+    bool ShouldUseMeleeHealing(const ABotCharacter& HealerBot, const ABotCharacter& TargetBot) const;
+    bool CanReachHealingTargetForMelee(const ABotCharacter& HealerBot, const ABotCharacter& TargetBot) const;
+    ABotCharacter* FindHealingTarget(const ABotCharacter* HealerBot) const;
     void StartBehaviorTreeForPawn(APawn* InPawn);
     void UpdateBlackboardTarget(AActor* TargetActor, bool bHasLineOfSight);
+    void UpdateHealingTarget(float DeltaSeconds);
+    void ClearHealingTarget(UBlackboardComponent& BlackboardComponent);
+    void ClearHealingBlackboardTarget(UBlackboardComponent& BlackboardComponent);
+    void ResetRandomMovementState();
     void UpdateRandomFlight(float DeltaSeconds);
     void UpdateRandomWalking(float DeltaSeconds);
     void PickRandomFlightDestination();
     void PickRandomWalkDestination();
 
+    FBotRandomMovementSettings ActiveRandomMovementSettings;
     TWeakObjectPtr<AActor> CurrentTargetActor;
     FVector LastKnownTargetLocation = FVector::ZeroVector;
     FVector FlightOrigin = FVector::ZeroVector;
     FVector CurrentFlightDestination = FVector::ZeroVector;
     FVector WalkOrigin = FVector::ZeroVector;
     FVector CurrentWalkDestination = FVector::ZeroVector;
+    TWeakObjectPtr<ABotCharacter> CurrentHealingTarget;
     float DestinationHoldTimeRemaining = 0.f;
     float WalkDestinationHoldTimeRemaining = 0.f;
+    float LastHealingTargetSearchTime = -FLT_MAX;
+    bool bCurrentHealingTargetUsesMelee = false;
     bool bHasLastKnownTargetLocation = false;
     bool bHasFlightOrigin = false;
     bool bHasFlightDestination = false;

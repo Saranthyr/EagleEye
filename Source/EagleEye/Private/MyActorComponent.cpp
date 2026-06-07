@@ -417,6 +417,7 @@ namespace
     constexpr double FfmpegStopTimeoutSeconds = 3.0;
     constexpr double FfmpegFastShutdownTimeoutSeconds = 1.0;
     constexpr double FfmpegTerminateTimeoutSeconds = 0.5;
+    TSet<FString> ResetFrameTimingLogsThisRun;
     TSet<FString> ResetFovDetectionMetricsTablesThisRun;
 
     FString EscapeCsvField(const FString& Value)
@@ -507,24 +508,97 @@ bool UMyActorComponent::ShouldLogFrameTimings() const
     return bLogFrameTimings && (!Settings || Settings->bEnableDetectionPerformanceLogs);
 }
 
+FString UMyActorComponent::GetFrameTimingRuntimeFileSuffix() const
+{
+    switch (EffectiveInferenceBackend)
+    {
+    case EDetectionInferenceBackend::TensorRT:
+        return TEXT("TensorRT");
+    case EDetectionInferenceBackend::ONNXRuntime:
+#if WITH_ONNXRUNTIME
+        switch (EffectiveOnnxRuntimeExecutionProvider)
+        {
+        case EOnnxRuntimeExecutionProvider::DirectML:
+            return TEXT("ONNXRuntime_DirectML");
+        case EOnnxRuntimeExecutionProvider::MIGraphX:
+            return TEXT("ONNXRuntime_MIGraphX");
+        case EOnnxRuntimeExecutionProvider::CPU:
+            return TEXT("ONNXRuntime_CPU");
+        case EOnnxRuntimeExecutionProvider::Auto:
+        default:
+            return TEXT("ONNXRuntime_Auto");
+        }
+#else
+        return TEXT("ONNXRuntime");
+#endif
+    case EDetectionInferenceBackend::OpenCVDNN:
+        return TEXT("OpenCVDNN");
+    case EDetectionInferenceBackend::Auto:
+    default:
+        return TEXT("Auto");
+    }
+}
+
+FString UMyActorComponent::GetFrameTimingRuntimeLabel() const
+{
+    if (EffectiveInferenceBackend == EDetectionInferenceBackend::ONNXRuntime)
+    {
+#if WITH_ONNXRUNTIME
+        return FString::Printf(TEXT("ONNX Runtime %s"), OnnxProviderToString(EffectiveOnnxRuntimeExecutionProvider));
+#else
+        return TEXT("ONNX Runtime");
+#endif
+    }
+
+    return BackendToString(EffectiveInferenceBackend);
+}
+
+FString UMyActorComponent::ResolveFrameTimeCsvPathForCurrentRuntime() const
+{
+    if (!FrameTimeCsvPath.IsEmpty())
+    {
+        return FrameTimeCsvPath;
+    }
+
+    return FPaths::Combine(
+        FPaths::ProjectSavedDir(),
+        TEXT("Profiling"),
+        FString::Printf(TEXT("DetectionFrameTimes_%s.csv"), *GetFrameTimingRuntimeFileSuffix()));
+}
+
 void UMyActorComponent::InitFrameTimingLog()
 {
-    if (!bRecordFrameTimes)
+    if (!bRecordFrameTimes || !bIsModelLoaded)
     {
         return;
     }
 
     FScopeLock Lock(&FrameTimeLogMutex);
-    if (bFrameTimingLogInitialized)
+    const FString DesiredFrameTimeCsvPath = ResolveFrameTimeCsvPathForCurrentRuntime();
+    if (bFrameTimingLogInitialized && ResolvedFrameTimeCsvPath == DesiredFrameTimeCsvPath)
     {
         return;
     }
 
-    ResolvedFrameTimeCsvPath = FrameTimeCsvPath;
-    if (ResolvedFrameTimeCsvPath.IsEmpty())
+    if (bFrameTimingLogInitialized && FrameTimeLogBuffer.Num() > 0 && !ResolvedFrameTimeCsvPath.IsEmpty())
     {
-        ResolvedFrameTimeCsvPath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Profiling"), TEXT("DetectionFrameTimes.csv"));
+        FString Batch;
+        Batch.Reserve(FrameTimeLogBuffer.Num() * 96);
+        for (const FString& Line : FrameTimeLogBuffer)
+        {
+            Batch += Line;
+        }
+
+        FFileHelper::SaveStringToFile(
+            Batch,
+            *ResolvedFrameTimeCsvPath,
+            FFileHelper::EEncodingOptions::AutoDetect,
+            &IFileManager::Get(),
+            FILEWRITE_Append);
+        FrameTimeLogBuffer.Reset();
     }
+
+    ResolvedFrameTimeCsvPath = DesiredFrameTimeCsvPath;
 
     const FString Directory = FPaths::GetPath(ResolvedFrameTimeCsvPath);
     if (!Directory.IsEmpty())
@@ -532,10 +606,13 @@ void UMyActorComponent::InitFrameTimingLog()
         IFileManager::Get().MakeDirectory(*Directory, true);
     }
 
-    if (bResetFrameTimeLogOnBeginPlay && IFileManager::Get().FileExists(*ResolvedFrameTimeCsvPath))
+    if (bResetFrameTimeLogOnBeginPlay &&
+        !ResetFrameTimingLogsThisRun.Contains(ResolvedFrameTimeCsvPath) &&
+        IFileManager::Get().FileExists(*ResolvedFrameTimeCsvPath))
     {
         IFileManager::Get().Delete(*ResolvedFrameTimeCsvPath, false, true, true);
     }
+    ResetFrameTimingLogsThisRun.Add(ResolvedFrameTimeCsvPath);
 
     if (!IFileManager::Get().FileExists(*ResolvedFrameTimeCsvPath))
     {
@@ -704,7 +781,9 @@ void UMyActorComponent::AppendFrameTimingLogLine(
         return;
     }
 
-    const FString BackendLabel = BackendToString(EffectiveInferenceBackend);
+    InitFrameTimingLog();
+
+    const FString BackendLabel = GetFrameTimingRuntimeLabel();
     const FString Line = FString::Printf(
         TEXT("%d,%s,%d,%d,%.4f,%.4f,%d\n"),
         Sequence,
@@ -761,30 +840,7 @@ void UMyActorComponent::BeginPlay() {
             *GRHIAdapterName,
             bSharedVisionModelHost ? TEXT("true") : TEXT("false"));
 
-        FString ResolvedNamesPath = ResolveRuntimeFilePath(TEXT("coco.names"));
-        FString ResolvedModelPath = ResolveRuntimeFilePath(TEXT("yolo26x.plan"));
-        FString ResolvedCfgPath = ResolveRuntimeFilePath(TEXT("yolov7.cfg"));
-
-        if (!ModelPathOverride.IsEmpty())
-        {
-            ResolvedModelPath = ResolveRuntimeFilePath(ModelPathOverride);
-        }
-        if (!DarknetCfgPathOverride.IsEmpty())
-        {
-            ResolvedCfgPath = ResolveRuntimeFilePath(DarknetCfgPathOverride);
-        }
-        if (!NamesPathOverride.IsEmpty())
-        {
-            ResolvedNamesPath = ResolveRuntimeFilePath(NamesPathOverride);
-        }
-
-        NamesPath = ToUtf8Path(ResolvedNamesPath);
-        WeightsPath = ToUtf8Path(ResolvedModelPath);
-        CfgPath = ToUtf8Path(ResolvedCfgPath);
-
-        UE_LOG(LogTemp, Log, TEXT("Detection model path: %s"), *ResolvedModelPath);
-        UE_LOG(LogTemp, Log, TEXT("Detection names path: %s"), *ResolvedNamesPath);
-
+        ResolveConfiguredRuntimePaths();
         get_class_names();
         InitFrameTimingLog();
         if (!bUseSharedVisionModel && !bSharedVisionModelHost)
@@ -1104,6 +1160,73 @@ void UMyActorComponent::ApplyProjectDetectionSettings()
     FrameTimeCsvPath = Settings->FrameTimeCsvPath;
     bResetFrameTimeLogOnBeginPlay = Settings->bResetFrameTimeLogOnBeginPlay;
     FrameTimeFlushInterval = FMath::Clamp(Settings->FrameTimeFlushInterval, 1, 600);
+}
+
+void UMyActorComponent::ResolveConfiguredRuntimePaths()
+{
+    const FString ResolvedNamesPath = ResolveRuntimeFilePath(
+        NamesPathOverride.IsEmpty() ? TEXT("coco.names") : NamesPathOverride);
+    const FString ResolvedModelPath = ResolveRuntimeFilePath(
+        ModelPathOverride.IsEmpty() ? TEXT("yolo26x.plan") : ModelPathOverride);
+    const FString ResolvedCfgPath = ResolveRuntimeFilePath(
+        DarknetCfgPathOverride.IsEmpty() ? TEXT("yolov7.cfg") : DarknetCfgPathOverride);
+
+    NamesPath = ToUtf8Path(ResolvedNamesPath);
+    WeightsPath = ToUtf8Path(ResolvedModelPath);
+    CfgPath = ToUtf8Path(ResolvedCfgPath);
+
+    UE_LOG(LogTemp, Log, TEXT("Detection model path: %s"), *ResolvedModelPath);
+    UE_LOG(LogTemp, Log, TEXT("Detection names path: %s"), *ResolvedNamesPath);
+    UE_LOG(LogTemp, Log, TEXT("Detection cfg path: %s"), *ResolvedCfgPath);
+}
+
+void UMyActorComponent::ApplyRuntimeDetectionSettingsFromConfig(bool bReloadModel)
+{
+    const bool bRestartLocalWorker = bWorkerRunning.load();
+    if (bRestartLocalWorker)
+    {
+        StopWorker();
+    }
+
+    ApplyProjectDetectionSettings();
+    ResolveConfiguredRuntimePaths();
+    get_class_names();
+
+    if (bReloadModel)
+    {
+        FScopeLock Lock(&InferenceMutex);
+        ReleaseTensorRT();
+        ReleaseOnnxRuntime();
+        OpenCVDnnNet = cv::dnn::Net();
+        bIsModelLoaded = false;
+        ResetInferenceOutputState();
+    }
+
+    if (bRestartLocalWorker)
+    {
+        StartWorker();
+    }
+}
+
+bool UMyActorComponent::EnsureModelLoaded()
+{
+    if (bUseFovOnlyPersonDetection)
+    {
+        return false;
+    }
+
+    if (bIsModelLoaded)
+    {
+        return true;
+    }
+
+    ApplyProjectDetectionSettings();
+    ResolveConfiguredRuntimePaths();
+    get_class_names();
+    InitFrameTimingLog();
+
+    FScopeLock InferenceLock(&InferenceMutex);
+    return bIsModelLoaded || LoadYOLO();
 }
 
 FString UMyActorComponent::ResolveOwnerCameraVideoPath() const
@@ -2192,6 +2315,7 @@ void UMyActorComponent::StartWorker()
                 const double FrameT0 = FPlatformTime::Seconds();
                 try
                 {
+                    FScopeLock InferenceLock(&InferenceMutex);
                     if (!bIsModelLoaded && !LoadYOLO())
                     {
                         Det.Reset();
@@ -2327,6 +2451,7 @@ TArray<FDetectionResult> UMyActorComponent::ProcessSharedVisionFrame(
     int32 Height,
     double* OutInferenceMs)
 {
+    FScopeLock InferenceLock(&InferenceMutex);
     if (!bIsModelLoaded && !LoadYOLO())
     {
         return {};

@@ -120,7 +120,10 @@ bool ABotDamageProjectile::TryDamageActor(AActor* OtherActor, const FHitResult& 
     const bool bIsBotTarget = OtherActor->IsA<ABotCharacter>();
     const bool bOwnerIsBot = GetOwner() && GetOwner()->IsA<ABotCharacter>();
     const bool bOwnerIsPlayer = GetOwner() && GetOwner()->IsA<AEagleEyeCharacter>();
-    if ((bOwnerIsBot && !bIsPlayerTarget) || (bOwnerIsPlayer && !bIsBotTarget) || (!bOwnerIsBot && !bOwnerIsPlayer && !bIsPlayerTarget && !bIsBotTarget))
+    const bool bHealingProjectile = Damage < 0.f;
+    if ((bOwnerIsBot && (bHealingProjectile ? !bIsBotTarget : !bIsPlayerTarget)) ||
+        (bOwnerIsPlayer && !bIsBotTarget) ||
+        (!bOwnerIsBot && !bOwnerIsPlayer && !bIsPlayerTarget && !bIsBotTarget))
     {
         return false;
     }

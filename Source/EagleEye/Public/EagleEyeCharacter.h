@@ -62,6 +62,7 @@ public:
 	AEagleEyeCharacter();
 
 	virtual void Tick(float DeltaSeconds) override;
+	virtual void Landed(const FHitResult& Hit) override;
 
 	virtual float TakeDamage(
 		float DamageAmount,
@@ -74,6 +75,27 @@ public:
 
 	UFUNCTION(BlueprintCallable, Exec, Category="Detection|Recording")
 	void StopBotViewportRecordings();
+
+	UFUNCTION(BlueprintCallable, Exec, Category="Detection|Settings")
+	void ToggleDetectionSettingsMenuInput();
+
+	UFUNCTION(BlueprintCallable, Category="Detection|Settings")
+	void DetectionSettingsMenuUpInput();
+
+	UFUNCTION(BlueprintCallable, Category="Detection|Settings")
+	void DetectionSettingsMenuDownInput();
+
+	UFUNCTION(BlueprintCallable, Category="Detection|Settings")
+	void DetectionSettingsMenuLeftInput();
+
+	UFUNCTION(BlueprintCallable, Category="Detection|Settings")
+	void DetectionSettingsMenuRightInput();
+
+	UFUNCTION(BlueprintCallable, Category="Detection|Settings")
+	void DetectionSettingsMenuConfirmInput();
+
+	UFUNCTION(BlueprintCallable, Category="Detection|Settings")
+	void DetectionSettingsMenuCancelInput();
 
 	UFUNCTION(BlueprintCallable, Category="Gameplay|Health")
 	float ApplyHealthDamage(float DamageAmount, AController* EventInstigator = nullptr, AActor* DamageCauser = nullptr);
@@ -118,6 +140,10 @@ protected:
 	void Look(const FInputActionValue& Value);
 	void MeleeAttackInput();
 	void ProjectileAttackInput();
+	void ApplyRealisticCamera(float DeltaSeconds);
+	void ApplySmoothedLookInput(float DeltaSeconds);
+	void UpdateCameraMotion(float DeltaSeconds);
+	void AddCameraImpulse(const FVector& LocationImpulse, const FRotator& RotationImpulse);
 
 	ABotCharacter* FindNearestBotForRecording() const;
 	void TickMeleeHitbox();
@@ -184,6 +210,66 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Attack|Projectile")
 	FVector ProjectileSpawnOffset = FVector(80.f, 0.f, -10.f);
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic")
+	bool bEnableRealisticCamera = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="5.0", ClampMax="170.0"))
+	float CameraFieldOfView = 85.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="-89.0", ClampMax="0.0"))
+	float CameraPitchMin = -75.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0", ClampMax="89.0"))
+	float CameraPitchMax = 75.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float LookInputSmoothingSpeed = 28.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float WalkBobFrequency = 1.75f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float IdleBobFrequency = 0.35f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float BobVerticalAmplitude = 1.6f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float BobHorizontalAmplitude = 0.75f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float IdleBobAmplitude = 0.25f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float LookSwayPitchAmount = 0.35f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float LookSwayYawAmount = 0.25f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float LookSwayRollAmount = 1.25f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float MoveSwayRollAmount = 1.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float CameraMotionInterpSpeed = 12.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float CameraImpulseReturnSpeed = 9.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float LandingImpulseScale = 0.006f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float MaxLandingImpulse = 5.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float DamageImpulseScale = 0.035f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Camera|Realistic", meta=(ClampMin="0.0"))
+	float MaxDamageImpulse = 4.f;
+
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Gameplay|Health")
 	float CurrentHealth = 100.f;
 
@@ -194,6 +280,14 @@ protected:
 	float LastMeleeAttackTime = -TNumericLimits<float>::Max();
 	float MeleeHitboxDisableTime = -TNumericLimits<float>::Max();
 	float LastProjectileAttackTime = -TNumericLimits<float>::Max();
+	float CameraBobPhase = 0.f;
+	float LastFallingSpeed = 0.f;
+	FVector2D PendingLookInput = FVector2D::ZeroVector;
+	FVector2D SmoothedLookInput = FVector2D::ZeroVector;
+	FVector CameraMotionLocation = FVector::ZeroVector;
+	FVector CameraImpulseLocation = FVector::ZeroVector;
+	FRotator CameraMotionRotation = FRotator::ZeroRotator;
+	FRotator CameraImpulseRotation = FRotator::ZeroRotator;
 	bool bMeleeHitboxEnabled = false;
 
 protected:

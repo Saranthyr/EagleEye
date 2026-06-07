@@ -4,11 +4,63 @@
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "Navigation/PathFollowingComponent.h"
+#include "NavigationPath.h"
 #include "NavigationSystem.h"
 #include "Perception/AIPerceptionComponent.h"
 #include "Perception/AIPerceptionTypes.h"
 #include "Perception/AISenseConfig_Sight.h"
+
+namespace
+{
+    bool AreRandomMovementSettingsNearlyEqual(
+        const FBotRandomMovementSettings& A,
+        const FBotRandomMovementSettings& B)
+    {
+        return A.bEnableRandomFlight == B.bEnableRandomFlight &&
+            FMath::IsNearlyEqual(A.FlightRadius, B.FlightRadius) &&
+            FMath::IsNearlyEqual(A.FlightAcceptanceRadius, B.FlightAcceptanceRadius) &&
+            FMath::IsNearlyEqual(A.PreferredFlightHeight, B.PreferredFlightHeight) &&
+            FMath::IsNearlyEqual(A.FlightHeightVariance, B.FlightHeightVariance) &&
+            FMath::IsNearlyEqual(A.DestinationHoldMinSeconds, B.DestinationHoldMinSeconds) &&
+            FMath::IsNearlyEqual(A.DestinationHoldMaxSeconds, B.DestinationHoldMaxSeconds) &&
+            A.RandomFlightBlockedByKey == B.RandomFlightBlockedByKey &&
+            A.bEnableRandomWalking == B.bEnableRandomWalking &&
+            FMath::IsNearlyEqual(A.WalkRadius, B.WalkRadius) &&
+            FMath::IsNearlyEqual(A.WalkAcceptanceRadius, B.WalkAcceptanceRadius) &&
+            A.WalkingNavProjectionExtent.Equals(B.WalkingNavProjectionExtent) &&
+            FMath::IsNearlyEqual(A.WalkDestinationHoldMinSeconds, B.WalkDestinationHoldMinSeconds) &&
+            FMath::IsNearlyEqual(A.WalkDestinationHoldMaxSeconds, B.WalkDestinationHoldMaxSeconds) &&
+            A.RandomWalkingBlockedByKey == B.RandomWalkingBlockedByKey;
+    }
+
+    bool HasCustomRandomMovementSettings(const FBotRandomMovementSettings& Settings)
+    {
+        const FBotRandomMovementSettings DefaultSettings;
+        return !AreRandomMovementSettingsNearlyEqual(Settings, DefaultSettings);
+    }
+
+    FBotRandomMovementSettings SanitizeRandomMovementSettings(const FBotRandomMovementSettings& Settings)
+    {
+        FBotRandomMovementSettings Sanitized = Settings;
+        Sanitized.FlightRadius = FMath::Max(0.f, Settings.FlightRadius);
+        Sanitized.FlightAcceptanceRadius = FMath::Max(0.f, Settings.FlightAcceptanceRadius);
+        Sanitized.FlightHeightVariance = FMath::Max(0.f, Settings.FlightHeightVariance);
+        Sanitized.DestinationHoldMinSeconds = FMath::Max(0.f, Settings.DestinationHoldMinSeconds);
+        Sanitized.DestinationHoldMaxSeconds = FMath::Max(
+            Sanitized.DestinationHoldMinSeconds,
+            Settings.DestinationHoldMaxSeconds);
+        Sanitized.WalkRadius = FMath::Max(0.f, Settings.WalkRadius);
+        Sanitized.WalkAcceptanceRadius = FMath::Max(0.f, Settings.WalkAcceptanceRadius);
+        Sanitized.WalkingNavProjectionExtent = Settings.WalkingNavProjectionExtent.ComponentMax(FVector::ZeroVector);
+        Sanitized.WalkDestinationHoldMinSeconds = FMath::Max(0.f, Settings.WalkDestinationHoldMinSeconds);
+        Sanitized.WalkDestinationHoldMaxSeconds = FMath::Max(
+            Sanitized.WalkDestinationHoldMinSeconds,
+            Settings.WalkDestinationHoldMaxSeconds);
+        return Sanitized;
+    }
+}
 
 ABotAIController::ABotAIController()
 {
@@ -37,6 +89,15 @@ ABotAIController::ABotAIController()
 void ABotAIController::OnPossess(APawn* InPawn)
 {
     Super::OnPossess(InPawn);
+
+    ActiveRandomMovementSettings = SanitizeRandomMovementSettings(DefaultRandomMovementSettings);
+    ResetRandomMovementState();
+
+    if (const ABotCharacter* BotCharacter = Cast<ABotCharacter>(InPawn);
+        BotCharacter && HasCustomRandomMovementSettings(BotCharacter->GetRandomMovementSettings()))
+    {
+        ApplyRandomMovementSettings(BotCharacter->GetRandomMovementSettings());
+    }
 
     if (!PerceptionComponentRef)
     {
@@ -99,6 +160,22 @@ void ABotAIController::OnPossess(APawn* InPawn)
     StartBehaviorTreeForPawn(InPawn);
 }
 
+void ABotAIController::ApplyRandomMovementSettings(const FBotRandomMovementSettings& InSettings)
+{
+    ActiveRandomMovementSettings = SanitizeRandomMovementSettings(InSettings);
+    ResetRandomMovementState();
+}
+
+void ABotAIController::ResetRandomMovementState()
+{
+    bHasFlightOrigin = false;
+    bHasFlightDestination = false;
+    bHasWalkOrigin = false;
+    bHasWalkDestination = false;
+    DestinationHoldTimeRemaining = 0.f;
+    WalkDestinationHoldTimeRemaining = 0.f;
+}
+
 void ABotAIController::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
@@ -113,35 +190,35 @@ void ABotAIController::Tick(float DeltaSeconds)
         }
     }
 
-    UpdateRandomFlight(DeltaSeconds);
-    UpdateRandomWalking(DeltaSeconds);
-
     UBlackboardComponent* BlackboardComponent = GetBlackboardComponent();
     if (!BlackboardComponent)
     {
         return;
     }
 
-    if (!BlackboardComponent->GetValueAsBool(HasDetectedPersonKey))
+    UpdateHealingTarget(DeltaSeconds);
+    UpdateRandomFlight(DeltaSeconds);
+    UpdateRandomWalking(DeltaSeconds);
+
+    if (!BlackboardComponent->GetValueAsBool(HasDetectedTargetKey))
     {
         ClearFocus(EAIFocusPriority::Gameplay);
         return;
     }
 
-    const FVector NeuralTargetLocation = BlackboardComponent->GetValueAsVector(DetectedPersonLocationKey);
-    BlackboardComponent->SetValueAsVector(TargetLocationKey, NeuralTargetLocation);
+    const FVector DetectedTargetLocation = BlackboardComponent->GetValueAsVector(DetectedTargetLocationKey);
+    BlackboardComponent->SetValueAsVector(TargetLocationKey, DetectedTargetLocation);
     if (bFocusProjectileTarget)
     {
-        SetFocalPoint(NeuralTargetLocation, EAIFocusPriority::Gameplay);
-    }
-    else
-    {
-        ClearFocus(EAIFocusPriority::Gameplay);
+        SetFocalPoint(DetectedTargetLocation, EAIFocusPriority::Gameplay);
     }
 
     if (ABotCharacter* BotCharacter = Cast<ABotCharacter>(GetPawn()))
     {
-        BotCharacter->TryThrowProjectileAtLocation(NeuralTargetLocation);
+        if (!BotCharacter->IsCloseDamageHealing())
+        {
+            BotCharacter->TryThrowProjectileAtLocation(DetectedTargetLocation);
+        }
     }
 }
 
@@ -187,7 +264,7 @@ bool ABotAIController::IsPlayerTarget(const AActor* Actor) const
 
 bool ABotAIController::ShouldUseRandomFlight(const APawn* ControlledPawn) const
 {
-    if (!bEnableRandomFlight || !ControlledPawn)
+    if (!ActiveRandomMovementSettings.bEnableRandomFlight || !ControlledPawn)
     {
         return false;
     }
@@ -198,7 +275,7 @@ bool ABotAIController::ShouldUseRandomFlight(const APawn* ControlledPawn) const
 
 bool ABotAIController::ShouldUseRandomWalking(const APawn* ControlledPawn) const
 {
-    if (!bEnableRandomWalking || !ControlledPawn)
+    if (!ActiveRandomMovementSettings.bEnableRandomWalking || !ControlledPawn)
     {
         return false;
     }
@@ -220,6 +297,191 @@ bool ABotAIController::IsBlackboardKeyBlockingRandomMovement(FName KeyName) cons
     }
 
     return false;
+}
+
+bool ABotAIController::IsValidHealingTarget(const ABotCharacter* HealerBot, const ABotCharacter* TargetBot) const
+{
+    if (!IsValid(HealerBot) || !IsValid(TargetBot) || HealerBot == TargetBot || TargetBot->IsDead())
+    {
+        return false;
+    }
+
+    if (!TargetBot->NeedsHealing(HealingHealthPercentThreshold))
+    {
+        return false;
+    }
+
+    if (HealingSearchRadius > 0.f &&
+        FVector::DistSquared(HealerBot->GetActorLocation(), TargetBot->GetActorLocation()) >
+            FMath::Square(HealingSearchRadius))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool ABotAIController::ShouldUseMeleeHealing(const ABotCharacter& HealerBot, const ABotCharacter& TargetBot) const
+{
+    if (HealerBot.GetBotLocomotionMode() != TargetBot.GetBotLocomotionMode())
+    {
+        return false;
+    }
+
+    return CanReachHealingTargetForMelee(HealerBot, TargetBot);
+}
+
+bool ABotAIController::CanReachHealingTargetForMelee(const ABotCharacter& HealerBot, const ABotCharacter& TargetBot) const
+{
+    const float DistanceSq = FVector::DistSquared(HealerBot.GetActorLocation(), TargetBot.GetActorLocation());
+    if (HealingMeleeApproachMaxRange > 0.f && DistanceSq > FMath::Square(HealingMeleeApproachMaxRange))
+    {
+        return false;
+    }
+
+    if (HealerBot.IsFlyingBot())
+    {
+        return true;
+    }
+
+    if (!HealerBot.IsWalkingBot())
+    {
+        return false;
+    }
+
+    UWorld* World = HealerBot.GetWorld();
+    if (!World)
+    {
+        return false;
+    }
+
+    UNavigationPath* Path = UNavigationSystemV1::FindPathToLocationSynchronously(
+        World,
+        HealerBot.GetActorLocation(),
+        TargetBot.GetActorLocation(),
+        const_cast<ABotCharacter*>(&HealerBot));
+    return Path && Path->IsValid() && !Path->IsPartial();
+}
+
+ABotCharacter* ABotAIController::FindHealingTarget(const ABotCharacter* HealerBot) const
+{
+    if (!IsValid(HealerBot))
+    {
+        return nullptr;
+    }
+
+    UWorld* World = HealerBot->GetWorld();
+    if (!World)
+    {
+        return nullptr;
+    }
+
+    ABotCharacter* BestTarget = nullptr;
+    float BestHealthPercent = TNumericLimits<float>::Max();
+    float BestDistanceSq = TNumericLimits<float>::Max();
+
+    for (TActorIterator<ABotCharacter> It(World); It; ++It)
+    {
+        ABotCharacter* Candidate = *It;
+        if (!IsValidHealingTarget(HealerBot, Candidate))
+        {
+            continue;
+        }
+
+        const float CandidateHealthPercent = Candidate->GetHealthPercent();
+        const float CandidateDistanceSq = FVector::DistSquared(
+            HealerBot->GetActorLocation(),
+            Candidate->GetActorLocation());
+        if (!BestTarget ||
+            CandidateHealthPercent < BestHealthPercent ||
+            (FMath::IsNearlyEqual(CandidateHealthPercent, BestHealthPercent) &&
+                CandidateDistanceSq < BestDistanceSq))
+        {
+            BestTarget = Candidate;
+            BestHealthPercent = CandidateHealthPercent;
+            BestDistanceSq = CandidateDistanceSq;
+        }
+    }
+
+    return BestTarget;
+}
+
+void ABotAIController::UpdateHealingTarget(float DeltaSeconds)
+{
+    ABotCharacter* HealerBot = Cast<ABotCharacter>(GetPawn());
+    UBlackboardComponent* BlackboardComponent = GetBlackboardComponent();
+    if (!BlackboardComponent)
+    {
+        return;
+    }
+
+    if (!bEnableAllyHealing || !HealerBot || !HealerBot->IsCloseDamageHealing())
+    {
+        CurrentHealingTarget = nullptr;
+        bCurrentHealingTargetUsesMelee = false;
+        return;
+    }
+
+    UWorld* World = GetWorld();
+    if (!World)
+    {
+        ClearHealingTarget(*BlackboardComponent);
+        return;
+    }
+
+    const float CurrentTime = World->GetTimeSeconds();
+    ABotCharacter* TargetBot = CurrentHealingTarget.Get();
+    const bool bShouldRefreshTarget =
+        !IsValidHealingTarget(HealerBot, TargetBot) ||
+        CurrentTime - LastHealingTargetSearchTime >= HealingTargetRefreshSeconds;
+    if (bShouldRefreshTarget)
+    {
+        TargetBot = FindHealingTarget(HealerBot);
+        CurrentHealingTarget = TargetBot;
+        LastHealingTargetSearchTime = CurrentTime;
+    }
+
+    if (!TargetBot)
+    {
+        ClearHealingTarget(*BlackboardComponent);
+        return;
+    }
+
+    bCurrentHealingTargetUsesMelee = ShouldUseMeleeHealing(*HealerBot, *TargetBot);
+    if (!bCurrentHealingTargetUsesMelee)
+    {
+        ClearHealingBlackboardTarget(*BlackboardComponent);
+        ClearFocus(EAIFocusPriority::Gameplay);
+        if (bUseRangedHealingWhenMeleeUnreachable)
+        {
+            HealerBot->TryThrowProjectileAtActor(TargetBot);
+        }
+        return;
+    }
+
+    const FVector TargetLocation = TargetBot->GetActorLocation();
+    BlackboardComponent->SetValueAsBool(HasDetectedTargetKey, true);
+    BlackboardComponent->SetValueAsBool(HasLineOfSightKey, true);
+    BlackboardComponent->SetValueAsObject(TargetActorKey, TargetBot);
+    BlackboardComponent->SetValueAsVector(TargetLocationKey, TargetLocation);
+    BlackboardComponent->SetValueAsVector(DetectedTargetLocationKey, TargetLocation);
+    SetFocalPoint(TargetLocation, EAIFocusPriority::Gameplay);
+}
+
+void ABotAIController::ClearHealingTarget(UBlackboardComponent& BlackboardComponent)
+{
+    CurrentHealingTarget = nullptr;
+    bCurrentHealingTargetUsesMelee = false;
+    ClearHealingBlackboardTarget(BlackboardComponent);
+}
+
+void ABotAIController::ClearHealingBlackboardTarget(UBlackboardComponent& BlackboardComponent)
+{
+    BlackboardComponent.SetValueAsBool(HasDetectedTargetKey, false);
+    BlackboardComponent.SetValueAsBool(HasLineOfSightKey, false);
+    BlackboardComponent.ClearValue(TargetActorKey);
+    BlackboardComponent.ClearValue(TargetLocationKey);
+    BlackboardComponent.ClearValue(DetectedTargetLocationKey);
 }
 
 void ABotAIController::StartBehaviorTreeForPawn(APawn* InPawn)
@@ -278,7 +540,7 @@ void ABotAIController::UpdateRandomFlight(float DeltaSeconds)
         return;
     }
 
-    if (IsBlackboardKeyBlockingRandomMovement(RandomFlightBlockedByKey))
+    if (IsBlackboardKeyBlockingRandomMovement(ActiveRandomMovementSettings.RandomFlightBlockedByKey))
     {
         StopMovement();
         bHasFlightDestination = false;
@@ -299,7 +561,7 @@ void ABotAIController::UpdateRandomFlight(float DeltaSeconds)
     const FVector CurrentLocation = ControlledPawn->GetActorLocation();
     const FVector ToDestination = CurrentFlightDestination - CurrentLocation;
 
-    if (ToDestination.SizeSquared() <= FMath::Square(FlightAcceptanceRadius))
+    if (ToDestination.SizeSquared() <= FMath::Square(ActiveRandomMovementSettings.FlightAcceptanceRadius))
     {
         DestinationHoldTimeRemaining -= DeltaSeconds;
         if (DestinationHoldTimeRemaining <= 0.f)
@@ -320,7 +582,7 @@ void ABotAIController::UpdateRandomWalking(float DeltaSeconds)
         return;
     }
 
-    if (IsBlackboardKeyBlockingRandomMovement(RandomWalkingBlockedByKey))
+    if (IsBlackboardKeyBlockingRandomMovement(ActiveRandomMovementSettings.RandomWalkingBlockedByKey))
     {
         StopMovement();
         bHasWalkDestination = false;
@@ -345,7 +607,7 @@ void ABotAIController::UpdateRandomWalking(float DeltaSeconds)
     FVector ToDestination = CurrentWalkDestination - ControlledPawn->GetActorLocation();
     ToDestination.Z = 0.f;
 
-    if (ToDestination.SizeSquared() <= FMath::Square(WalkAcceptanceRadius))
+    if (ToDestination.SizeSquared() <= FMath::Square(ActiveRandomMovementSettings.WalkAcceptanceRadius))
     {
         WalkDestinationHoldTimeRemaining -= DeltaSeconds;
         if (WalkDestinationHoldTimeRemaining <= 0.f)
@@ -357,7 +619,7 @@ void ABotAIController::UpdateRandomWalking(float DeltaSeconds)
 
     const EPathFollowingRequestResult::Type MoveResult = MoveToLocation(
         CurrentWalkDestination,
-        WalkAcceptanceRadius,
+        ActiveRandomMovementSettings.WalkAcceptanceRadius,
         false,
         true,
         true);
@@ -376,16 +638,18 @@ void ABotAIController::PickRandomFlightDestination()
     }
 
     const float Angle = FMath::FRandRange(0.f, 2.f * PI);
-    const float Distance = FMath::Sqrt(FMath::FRand()) * FlightRadius;
+    const float Distance = FMath::Sqrt(FMath::FRand()) * ActiveRandomMovementSettings.FlightRadius;
     const FVector Offset(
         FMath::Cos(Angle) * Distance,
         FMath::Sin(Angle) * Distance,
-        PreferredFlightHeight + FMath::FRandRange(-FlightHeightVariance, FlightHeightVariance));
+        ActiveRandomMovementSettings.PreferredFlightHeight + FMath::FRandRange(
+            -ActiveRandomMovementSettings.FlightHeightVariance,
+            ActiveRandomMovementSettings.FlightHeightVariance));
 
     CurrentFlightDestination = FlightOrigin + Offset;
     DestinationHoldTimeRemaining = FMath::FRandRange(
-        DestinationHoldMinSeconds,
-        FMath::Max(DestinationHoldMinSeconds, DestinationHoldMaxSeconds));
+        ActiveRandomMovementSettings.DestinationHoldMinSeconds,
+        ActiveRandomMovementSettings.DestinationHoldMaxSeconds);
     bHasFlightDestination = true;
 }
 
@@ -403,7 +667,10 @@ void ABotAIController::PickRandomWalkDestination()
         if (UNavigationSystemV1* NavSystem = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World))
         {
             FNavLocation ProjectedOrigin;
-            if (!NavSystem->ProjectPointToNavigation(WalkOrigin, ProjectedOrigin, WalkingNavProjectionExtent))
+            if (!NavSystem->ProjectPointToNavigation(
+                WalkOrigin,
+                ProjectedOrigin,
+                ActiveRandomMovementSettings.WalkingNavProjectionExtent))
             {
                 return;
             }
@@ -411,12 +678,15 @@ void ABotAIController::PickRandomWalkDestination()
             WalkOrigin = ProjectedOrigin.Location;
 
             FNavLocation NavLocation;
-            if (NavSystem->GetRandomReachablePointInRadius(WalkOrigin, WalkRadius, NavLocation))
+            if (NavSystem->GetRandomReachablePointInRadius(
+                WalkOrigin,
+                ActiveRandomMovementSettings.WalkRadius,
+                NavLocation))
             {
                 CurrentWalkDestination = NavLocation.Location;
                 WalkDestinationHoldTimeRemaining = FMath::FRandRange(
-                    WalkDestinationHoldMinSeconds,
-                    FMath::Max(WalkDestinationHoldMinSeconds, WalkDestinationHoldMaxSeconds));
+                    ActiveRandomMovementSettings.WalkDestinationHoldMinSeconds,
+                    ActiveRandomMovementSettings.WalkDestinationHoldMaxSeconds);
                 bHasWalkDestination = true;
                 return;
             }

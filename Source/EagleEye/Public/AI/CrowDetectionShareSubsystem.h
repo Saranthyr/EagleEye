@@ -5,7 +5,7 @@
 #include "CrowDetectionShareSubsystem.generated.h"
 
 USTRUCT()
-struct FCrowSharedPersonDetection
+struct FCrowSharedTargetDetection
 {
     GENERATED_BODY()
 
@@ -39,15 +39,7 @@ public:
 
     bool ShouldRunDetector(AActor* DetectorOwner, int32 MaxActiveDetectors, float MaxDistanceToPlayer) const;
 
-    void PublishPersonDetection(AActor* Reporter, const FVector& TargetLocation, float Confidence);
     void PublishTargetDetection(AActor* Reporter, const FVector& TargetLocation, float Confidence, int32 ClassId, const FString& ClassLabel);
-
-    bool GetBestRecentPersonDetection(
-        const AActor* Requester,
-        float MaxAgeSeconds,
-        float MaxReporterDistance,
-        FVector& OutTargetLocation,
-        float& OutConfidence) const;
 
     bool GetBestRecentTargetDetection(
         const AActor* Requester,
@@ -65,7 +57,7 @@ private:
     TArray<TWeakObjectPtr<AActor>> RegisteredDetectors;
 
     UPROPERTY()
-    TArray<FCrowSharedPersonDetection> RecentPersonDetections;
+    TArray<FCrowSharedTargetDetection> RecentTargetDetections;
 
     APawn* GetPlayerPawn() const;
 };

@@ -8,8 +8,10 @@
 #include "Components/BrushComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/StaticMesh.h"
+#include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerStart.h"
 #include "Kismet/GameplayStatics.h"
 #include "NavigationSystem.h"
@@ -304,6 +306,11 @@ void AWorldGen::CreateSection(const FIntPoint& Section)
 	SectionData.Bounds = WorldBounds;
 	SectionData.FoliageInstanceIndices.SetNum(FoliageTypes.Num());
 
+	if (bEnableBuildings)
+	{
+		SpawnBuildingsForSection(Section, SectionData);
+	}
+
 	if (bEnableFoliage)
 	{
 		SpawnFoliageForSection(Section, SectionData);
@@ -311,10 +318,9 @@ void AWorldGen::CreateSection(const FIntPoint& Section)
 
 	if (bEnableNavMesh)
 	{
-		UpdateGeneratedNavigationData();
 		if (bAutoNavBounds)
 		{
-			SectionData.NavBoundsVolume = CreateSectionNavBounds(WorldBounds);
+			SectionData.NavBoundsVolume = CreateSectionNavBounds(SectionData.Bounds);
 		}
 	}
 
@@ -323,11 +329,12 @@ void AWorldGen::CreateSection(const FIntPoint& Section)
 		SpawnBotsForSection(Section, SectionData);
 	}
 
-	LoadedSections.Add(Section, MoveTemp(SectionData));
+	FSectionData& LoadedSectionData = LoadedSections.Add(Section, MoveTemp(SectionData));
 
 	if (bEnableNavMesh)
 	{
-		MarkNavDirty(WorldBounds);
+		UpdateGeneratedNavigationData();
+		MarkNavDirty(LoadedSectionData.Bounds);
 	}
 }
 
@@ -344,6 +351,8 @@ void AWorldGen::DestroySection(const FIntPoint& Section)
 	DestroyBotsForSection(*SectionData);
 
 	RemoveFoliageForSection(Section, *SectionData);
+
+	RemoveBuildingsForSection(Section, *SectionData);
 
 	if (TerrainMesh && SectionData->MeshSectionIndex != INDEX_NONE)
 	{
@@ -553,6 +562,307 @@ bool AWorldGen::BuildSurfacePlacementAt(
 	return true;
 }
 
+void AWorldGen::SpawnBuildingsForSection(const FIntPoint& Section, FSectionData& SectionData)
+{
+	if (!bEnableBuildings || BuildingTypes.Num() == 0)
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("WorldGen: Skipping buildings for section (%d, %d) (disabled or no types)"), Section.X, Section.Y);
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	const float SectionSizeX = (xvertcnt - 1) * cellsize;
+	const float SectionSizeY = (yvertcnt - 1) * cellsize;
+	const float AreaSqM = (SectionSizeX * SectionSizeY) / 10000.0f;
+	if (SectionSizeX <= KINDA_SMALL_NUMBER || SectionSizeY <= KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	const float BaseX = Section.X * SectionSizeX;
+	const float BaseY = Section.Y * SectionSizeY;
+	const FTransform TerrainTransform = TerrainMesh ? TerrainMesh->GetComponentTransform() : GetActorTransform();
+	TArray<FVector> PlayerStartLocations;
+	GatherPlayerStartLocations(PlayerStartLocations);
+
+	for (int32 TypeIndex = 0; TypeIndex < BuildingTypes.Num(); ++TypeIndex)
+	{
+		const FBuildingTypeConfig& Config = BuildingTypes[TypeIndex];
+		if (!Config.bEnabled || !Config.BuildingClass)
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("WorldGen: Building type %d skipped (disabled/class missing)"), TypeIndex);
+			continue;
+		}
+
+		const int32 MaxCount = FMath::Max(Config.MaxBuildingsPerSection, 0);
+		const int32 DensityCount = FMath::RoundToInt(FMath::Max(Config.DensityPerSqM, 0.0f) * AreaSqM);
+		const uint32 SectionSeed = GetTypeHash(Section);
+		const uint32 TypeSeed = HashCombine(SectionSeed, GetTypeHash(TypeIndex));
+		const uint32 GlobalSeed = HashCombine(TypeSeed, GetTypeHash(BuildingSeedOffset));
+		const uint32 Seed = HashCombine(GlobalSeed, GetTypeHash(Config.SeedOffset));
+		FRandomStream Rand(static_cast<int32>(Seed));
+		const int32 NumBuildings = Config.bUseDensityPerSqM
+			? FMath::Clamp(DensityCount, 0, MaxCount)
+			: Rand.RandRange(FMath::Clamp(Config.MinBuildingsPerSection, 0, MaxCount), MaxCount);
+		if (NumBuildings <= 0)
+		{
+			continue;
+		}
+
+		TArray<FGeneratedBuilding> PendingBuildings;
+		PendingBuildings.Reserve(NumBuildings);
+
+		const float MinAllowedHeight = FMath::Min(Config.MinHeight, Config.MaxHeight);
+		const float MaxAllowedHeight = FMath::Max(Config.MinHeight, Config.MaxHeight);
+		constexpr int32 MaxPlacementAttemptsPerInstance = 16;
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.Owner = this;
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		SpawnParams.ObjectFlags |= RF_Transient;
+
+		int32 AddedCount = 0;
+		for (int32 BuildingIdx = 0; BuildingIdx < NumBuildings; ++BuildingIdx)
+		{
+			for (int32 Attempt = 0; Attempt < MaxPlacementAttemptsPerInstance; ++Attempt)
+			{
+				const float ScaleValue = Rand.FRandRange(
+					FMath::Min(Config.MinScale, Config.MaxScale),
+					FMath::Max(Config.MinScale, Config.MaxScale));
+				const float PlacementRadius = Config.PlacementFootprintRadius * ScaleValue;
+				const float PaddingX = FMath::Clamp(Config.SectionEdgePadding + PlacementRadius, 0.0f, SectionSizeX * 0.49f);
+				const float PaddingY = FMath::Clamp(Config.SectionEdgePadding + PlacementRadius, 0.0f, SectionSizeY * 0.49f);
+				if (SectionSizeX <= PaddingX * 2.0f || SectionSizeY <= PaddingY * 2.0f)
+				{
+					break;
+				}
+
+				const FVector2D SampleLocation(
+					BaseX + Rand.FRandRange(PaddingX, SectionSizeX - PaddingX),
+					BaseY + Rand.FRandRange(PaddingY, SectionSizeY - PaddingY));
+
+				FSurfacePlacement Placement;
+				if (!BuildSurfacePlacementAt(Section, SampleLocation, TerrainTransform, Config.SurfaceOffset, Placement))
+				{
+					continue;
+				}
+
+				if (Placement.SlopeDeg > Config.MaxSlopeDeg ||
+					Placement.LocalLocation.Z < MinAllowedHeight ||
+					Placement.LocalLocation.Z > MaxAllowedHeight)
+				{
+					continue;
+				}
+
+				if (IsNearAnyPlayerStart(PlayerStartLocations, Placement.WorldLocation, PlayerStartObjectAvoidanceRadius + PlacementRadius))
+				{
+					continue;
+				}
+
+				FRotator Rotation = Config.bAlignToNormal
+					? FRotationMatrix::MakeFromZX(Placement.WorldNormal, FVector::ForwardVector).Rotator()
+					: FRotator::ZeroRotator;
+				Rotation.Yaw += Rand.FRandRange(0.0f, 360.0f);
+
+				const FTransform BuildingTransform(Rotation, Placement.WorldLocation, FVector(ScaleValue));
+				AActor* SpawnedBuilding = World->SpawnActor<AActor>(Config.BuildingClass, BuildingTransform, SpawnParams);
+				if (!SpawnedBuilding)
+				{
+					continue;
+				}
+
+				SpawnedBuilding->Tags.AddUnique(FName(*FString::Printf(TEXT("BuildingSection_%d_%d"), Section.X, Section.Y)));
+				SpawnedBuilding->Tags.AddUnique(FName(*FString::Printf(TEXT("BuildingType_%d"), TypeIndex)));
+				if (Config.bAffectNavigation)
+				{
+					TArray<UPrimitiveComponent*> PrimitiveComponents;
+					SpawnedBuilding->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+					for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+					{
+						if (PrimitiveComponent)
+						{
+							PrimitiveComponent->SetCanEverAffectNavigation(true);
+							PrimitiveComponent->UpdateBounds();
+							FNavigationSystem::OnComponentRegistered(*PrimitiveComponent);
+							FNavigationSystem::UpdateComponentData(*PrimitiveComponent);
+						}
+					}
+				}
+
+				FBox WorldBounds = SpawnedBuilding->GetComponentsBoundingBox(true);
+				if (!WorldBounds.IsValid ||
+					WorldBounds.GetExtent().X <= KINDA_SMALL_NUMBER ||
+					WorldBounds.GetExtent().Y <= KINDA_SMALL_NUMBER)
+				{
+					const float FallbackRadius = FMath::Max(PlacementRadius, 50.0f);
+					const float FallbackHeight = FMath::Max(Config.FallbackBoundsHeight * ScaleValue, 50.0f);
+					WorldBounds = FBox(
+						Placement.WorldLocation - FVector(FallbackRadius, FallbackRadius, 0.0f),
+						Placement.WorldLocation + FVector(FallbackRadius, FallbackRadius, FallbackHeight));
+				}
+
+				const FBox2D Footprint(
+					FVector2D(WorldBounds.Min.X, WorldBounds.Min.Y),
+					FVector2D(WorldBounds.Max.X, WorldBounds.Max.Y));
+				const float ActualPlacementRadius = FVector2D(WorldBounds.GetExtent().X, WorldBounds.GetExtent().Y).Size();
+				if (IsNearAnyPlayerStart(PlayerStartLocations, Placement.WorldLocation, PlayerStartObjectAvoidanceRadius + ActualPlacementRadius) ||
+					IsFootprintNearAnyPlayerStart(PlayerStartLocations, Footprint, PlayerStartObjectAvoidanceRadius) ||
+					IsFootprintBlockedByBuildings(Footprint, SectionData, Config.MinDistanceBetweenBuildings))
+				{
+					SpawnedBuilding->Destroy();
+					continue;
+				}
+
+				FSectionData PendingSectionData;
+				PendingSectionData.Buildings = PendingBuildings;
+				if (IsFootprintBlockedByBuildings(Footprint, PendingSectionData, Config.MinDistanceBetweenBuildings))
+				{
+					SpawnedBuilding->Destroy();
+					continue;
+				}
+
+				FGeneratedBuilding Building;
+				Building.Footprint = Footprint;
+				Building.WorldBounds = WorldBounds;
+				Building.FloorZ = Building.WorldBounds.Min.Z;
+				Building.TopZ = Building.WorldBounds.Max.Z;
+				Building.BotInteriorPadding = FMath::Max(Config.BotInteriorPadding, 0.0f);
+				Building.FoliageAvoidancePadding = FMath::Max(Config.FoliageAvoidancePadding, 0.0f);
+				Building.Actor = SpawnedBuilding;
+
+				PendingBuildings.Add(Building);
+				++AddedCount;
+				break;
+			}
+		}
+
+		if (PendingBuildings.Num() > 0)
+		{
+			for (FGeneratedBuilding& Building : PendingBuildings)
+			{
+				SectionData.Bounds += Building.WorldBounds;
+				SectionData.Buildings.Add(MoveTemp(Building));
+			}
+		}
+
+		UE_LOG(LogTemp, Log, TEXT("WorldGen: Building type %d added %d/%d instances in section (%d, %d)"), TypeIndex, AddedCount, NumBuildings, Section.X, Section.Y);
+	}
+}
+
+void AWorldGen::RemoveBuildingsForSection(const FIntPoint& Section, FSectionData& SectionData)
+{
+	for (FGeneratedBuilding& Building : SectionData.Buildings)
+	{
+		if (AActor* BuildingActor = Building.Actor.Get())
+		{
+			BuildingActor->Destroy();
+		}
+	}
+
+	SectionData.Buildings.Reset();
+}
+
+bool AWorldGen::IsFootprintBlockedByBuildings(const FBox2D& Footprint, const FSectionData& SectionData, float Padding) const
+{
+	if (!Footprint.bIsValid)
+	{
+		return true;
+	}
+
+	const FVector2D Expansion(FMath::Max(Padding, 0.0f));
+	const FBox2D ExpandedFootprint(Footprint.Min - Expansion, Footprint.Max + Expansion);
+	for (const FGeneratedBuilding& Building : SectionData.Buildings)
+	{
+		if (Building.Footprint.bIsValid && ExpandedFootprint.Intersect(Building.Footprint))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool AWorldGen::IsFoliageLocationBlockedByBuildings(const FVector& WorldLocation, float Radius, const FSectionData& SectionData) const
+{
+	const FVector2D Location2D(WorldLocation.X, WorldLocation.Y);
+	for (const FGeneratedBuilding& Building : SectionData.Buildings)
+	{
+		if (!Building.Footprint.bIsValid)
+		{
+			continue;
+		}
+
+		const FVector2D BuildingExpansion(FMath::Max(Radius + Building.FoliageAvoidancePadding, 0.0f));
+		const FBox2D ExpandedFootprint(Building.Footprint.Min - BuildingExpansion, Building.Footprint.Max + BuildingExpansion);
+		if (ExpandedFootprint.IsInside(Location2D))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool AWorldGen::TryBuildBotSpawnInsideBuilding(
+	const FSectionData& SectionData,
+	const FBotSpawnTypeConfig& Config,
+	const ABotCharacter* BotDefaults,
+	FRandomStream& Rand,
+	FVector& OutSpawnLocation) const
+{
+	if (!bAllowBotSpawnsInsideBuildings ||
+		SectionData.Buildings.Num() == 0 ||
+		Rand.FRand() > FMath::Clamp(BuildingInteriorBotSpawnChance, 0.0f, 1.0f))
+	{
+		return false;
+	}
+
+	const bool bSpawnAsWalkingBot = BotDefaults && BotDefaults->IsWalkingBot();
+	if (!bSpawnAsWalkingBot)
+	{
+		return false;
+	}
+
+	const float CapsuleHalfHeight = BotDefaults && BotDefaults->GetCapsuleComponent()
+		? BotDefaults->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()
+		: 88.0f;
+	const float CapsuleRadius = BotDefaults && BotDefaults->GetCapsuleComponent()
+		? BotDefaults->GetCapsuleComponent()->GetScaledCapsuleRadius()
+		: 34.0f;
+	const float Clearance = FMath::Max(Config.GroundSpawnClearance, 0.0f);
+
+	for (int32 Attempt = 0; Attempt < 8; ++Attempt)
+	{
+		const FGeneratedBuilding& Building = SectionData.Buildings[Rand.RandRange(0, SectionData.Buildings.Num() - 1)];
+		if (!Building.Footprint.bIsValid)
+		{
+			continue;
+		}
+
+		const float InteriorPadding = Building.BotInteriorPadding + CapsuleRadius + FMath::Max(Config.SpawnCollisionExtraClearance, 0.0f);
+		const float MinX = Building.Footprint.Min.X + InteriorPadding;
+		const float MaxX = Building.Footprint.Max.X - InteriorPadding;
+		const float MinY = Building.Footprint.Min.Y + InteriorPadding;
+		const float MaxY = Building.Footprint.Max.Y - InteriorPadding;
+		if (MaxX <= MinX || MaxY <= MinY)
+		{
+			continue;
+		}
+
+		OutSpawnLocation = FVector(
+			Rand.FRandRange(MinX, MaxX),
+			Rand.FRandRange(MinY, MaxY),
+			Building.FloorZ + CapsuleHalfHeight + Clearance);
+		return true;
+	}
+
+	return false;
+}
+
 void AWorldGen::InitializeFoliageComponents()
 {
 	for (UHierarchicalInstancedStaticMeshComponent* Component : FoliageComponents)
@@ -723,6 +1033,10 @@ void AWorldGen::SpawnFoliageForSection(const FIntPoint& Section, FSectionData& S
 						PlayerStartLocations,
 						Placement.WorldLocation,
 						PlayerStartObjectAvoidanceRadius + MeshFootprintRadius * ScaleValue))
+				{
+					continue;
+				}
+				if (IsFoliageLocationBlockedByBuildings(Placement.WorldLocation, MeshFootprintRadius * ScaleValue, SectionData))
 				{
 					continue;
 				}
@@ -1010,22 +1324,37 @@ void AWorldGen::SpawnBotTypeForSection(
 	SectionData.SpawnedBots.Reserve(SectionData.SpawnedBots.Num() + NumBots);
 	for (int32 BotIndex = 0; BotIndex < NumBots; ++BotIndex)
 	{
-		const float WorldX = BaseX + Rand.FRandRange(PaddingX, SectionSizeX - PaddingX);
-		const float WorldY = BaseY + Rand.FRandRange(PaddingY, SectionSizeY - PaddingY);
-		const FVector2D SampleLocation(WorldX, WorldY);
-		FSurfacePlacement Placement;
-		if (!BuildSurfacePlacementAt(Section, SampleLocation, TerrainTransform, 0.0f, Placement))
-		{
-			continue;
-		}
 		const float CapsuleHalfHeight = bSpawnAsWalkingBot && BotDefaults && BotDefaults->GetCapsuleComponent()
 			? BotDefaults->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()
 			: 0.f;
-		const float Altitude = bSpawnAsWalkingBot
-			? CapsuleHalfHeight + Config.GroundSpawnClearance
-			: Rand.FRandRange(MinAltitude, MaxAltitude);
 
-		const FVector SpawnLocation = Placement.WorldLocation + FVector(0.0f, 0.0f, Altitude);
+		FVector SpawnLocation = FVector::ZeroVector;
+		FVector GroundLocation = FVector::ZeroVector;
+		float Altitude = 0.0f;
+		const bool bSpawnedInsideBuilding = TryBuildBotSpawnInsideBuilding(SectionData, Config, BotDefaults, Rand, SpawnLocation);
+		if (bSpawnedInsideBuilding)
+		{
+			GroundLocation = FVector(SpawnLocation.X, SpawnLocation.Y, SpawnLocation.Z - CapsuleHalfHeight - Config.GroundSpawnClearance);
+			Altitude = SpawnLocation.Z - GroundLocation.Z;
+		}
+		else
+		{
+			const float WorldX = BaseX + Rand.FRandRange(PaddingX, SectionSizeX - PaddingX);
+			const float WorldY = BaseY + Rand.FRandRange(PaddingY, SectionSizeY - PaddingY);
+			const FVector2D SampleLocation(WorldX, WorldY);
+			FSurfacePlacement Placement;
+			if (!BuildSurfacePlacementAt(Section, SampleLocation, TerrainTransform, 0.0f, Placement))
+			{
+				continue;
+			}
+
+			Altitude = bSpawnAsWalkingBot
+				? CapsuleHalfHeight + Config.GroundSpawnClearance
+				: Rand.FRandRange(MinAltitude, MaxAltitude);
+			GroundLocation = Placement.WorldLocation;
+			SpawnLocation = GroundLocation + FVector(0.0f, 0.0f, Altitude);
+		}
+
 		if (IsNearAnyPlayerStart(PlayerStartLocations, SpawnLocation, PlayerStartObjectAvoidanceRadius + BotCollisionRadius))
 		{
 			continue;
@@ -1094,7 +1423,7 @@ void AWorldGen::SpawnBotTypeForSection(
 				);
 				DrawDebugLine(
 					World,
-					Placement.WorldLocation,
+					GroundLocation,
 					SpawnLocation,
 					FColor::Yellow,
 					false,
@@ -1122,7 +1451,7 @@ void AWorldGen::SpawnBotTypeForSection(
 					Section.X,
 					Section.Y,
 					*SpawnLocation.ToCompactString(),
-					Placement.WorldLocation.Z,
+					GroundLocation.Z,
 					Altitude,
 					*SectionTag.ToString(),
 					*Config.BotClass->GetName()
@@ -1179,19 +1508,27 @@ void AWorldGen::DestroyBotsForSection(FSectionData& SectionData)
 void AWorldGen::GatherPlayerStartLocations(TArray<FVector>& OutLocations) const
 {
 	OutLocations.Reset();
-	if (PlayerStartObjectAvoidanceRadius <= 0.0f)
-	{
-		return;
-	}
 
 	TArray<AActor*> PlayerStarts;
 	UGameplayStatics::GetAllActorsOfClass(this, APlayerStart::StaticClass(), PlayerStarts);
-	OutLocations.Reserve(PlayerStarts.Num());
+	OutLocations.Reserve(PlayerStarts.Num() + 1);
 	for (const AActor* PlayerStart : PlayerStarts)
 	{
 		if (PlayerStart)
 		{
 			OutLocations.Add(PlayerStart->GetActorLocation());
+		}
+	}
+
+	if (const AActor* PlayerPawn = UGameplayStatics::GetPlayerPawn(this, 0))
+	{
+		OutLocations.AddUnique(PlayerPawn->GetActorLocation());
+	}
+	else if (const APlayerController* PlayerController = UGameplayStatics::GetPlayerController(this, 0))
+	{
+		if (const APawn* Pawn = PlayerController->GetPawn())
+		{
+			OutLocations.AddUnique(Pawn->GetActorLocation());
 		}
 	}
 }
@@ -1207,6 +1544,26 @@ bool AWorldGen::IsNearAnyPlayerStart(const TArray<FVector>& PlayerStartLocations
 	for (const FVector& PlayerStartLocation : PlayerStartLocations)
 	{
 		if (FVector::DistSquared2D(PlayerStartLocation, WorldLocation) <= ClearanceRadiusSq)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool AWorldGen::IsFootprintNearAnyPlayerStart(const TArray<FVector>& PlayerStartLocations, const FBox2D& Footprint, float ClearanceRadius) const
+{
+	if (!Footprint.bIsValid || PlayerStartLocations.Num() == 0)
+	{
+		return false;
+	}
+
+	const FVector2D Expansion(FMath::Max(ClearanceRadius, 0.0f));
+	const FBox2D ExpandedFootprint(Footprint.Min - Expansion, Footprint.Max + Expansion);
+	for (const FVector& PlayerStartLocation : PlayerStartLocations)
+	{
+		if (ExpandedFootprint.IsInside(FVector2D(PlayerStartLocation.X, PlayerStartLocation.Y)))
 		{
 			return true;
 		}
@@ -1450,6 +1807,30 @@ void AWorldGen::UpdateGeneratedNavigationData()
 			Component->UpdateBounds();
 			FNavigationSystem::OnComponentRegistered(*Component);
 			FNavigationSystem::UpdateComponentData(*Component);
+		}
+	}
+
+	for (TPair<FIntPoint, FSectionData>& Pair : LoadedSections)
+	{
+		for (FGeneratedBuilding& Building : Pair.Value.Buildings)
+		{
+			AActor* BuildingActor = Building.Actor.Get();
+			if (!BuildingActor)
+			{
+				continue;
+			}
+
+			TArray<UPrimitiveComponent*> PrimitiveComponents;
+			BuildingActor->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+			for (UPrimitiveComponent* PrimitiveComponent : PrimitiveComponents)
+			{
+				if (PrimitiveComponent && PrimitiveComponent->CanEverAffectNavigation())
+				{
+					PrimitiveComponent->UpdateBounds();
+					FNavigationSystem::OnComponentRegistered(*PrimitiveComponent);
+					FNavigationSystem::UpdateComponentData(*PrimitiveComponent);
+				}
+			}
 		}
 	}
 }

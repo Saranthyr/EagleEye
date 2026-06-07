@@ -23,7 +23,7 @@ public:
     void FireInDirection(const FVector& Direction);
 
     UFUNCTION(BlueprintCallable, Category="Gameplay|Damage")
-    void SetDamage(float NewDamage) { Damage = FMath::Max(0.f, NewDamage); }
+    void SetDamage(float NewDamage) { Damage = NewDamage; }
 
     UFUNCTION(BlueprintCallable, Category="Gameplay|Damage")
     void SetProjectileSpeed(float NewSpeed);
@@ -44,7 +44,7 @@ protected:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components")
     TObjectPtr<UProjectileMovementComponent> ProjectileMovementComponent;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage", meta=(ClampMin="0.0"))
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage", meta=(DisplayName="Damage (Negative Heals Bots)"))
     float Damage = 15.f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage", meta=(ClampMin="0.1"))

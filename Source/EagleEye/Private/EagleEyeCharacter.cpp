@@ -12,12 +12,57 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "GameFramework/Controller.h"
+#include "GameFramework/PlayerController.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "InputActionValue.h"
 #include "Kismet/GameplayStatics.h"
+#include "MyHUD.h"
 
 DEFINE_LOG_CATEGORY(LogTemplateCharacter);
+
+namespace
+{
+    AMyHUD* GetExistingDetectionSettingsHud(const AEagleEyeCharacter* Character)
+    {
+        const APlayerController* PlayerController = Character ? Cast<APlayerController>(Character->GetController()) : nullptr;
+        return PlayerController ? Cast<AMyHUD>(PlayerController->GetHUD()) : nullptr;
+    }
+
+    AMyHUD* EnsureDetectionSettingsHud(AEagleEyeCharacter* Character)
+    {
+        APlayerController* PlayerController = Character ? Cast<APlayerController>(Character->GetController()) : nullptr;
+        if (!PlayerController)
+        {
+            UE_LOG(LogTemplateCharacter, Warning, TEXT("Detection settings menu needs a player controller."));
+            return nullptr;
+        }
+
+        if (AMyHUD* ExistingHud = Cast<AMyHUD>(PlayerController->GetHUD()))
+        {
+            UE_LOG(LogTemplateCharacter, Log, TEXT("Detection settings menu using existing AMyHUD: %s"),
+                *GetNameSafe(ExistingHud));
+            return ExistingHud;
+        }
+
+        UE_LOG(LogTemplateCharacter, Log, TEXT("Detection settings menu replacing HUD %s with AMyHUD."),
+            *GetNameSafe(PlayerController->GetHUD()));
+        PlayerController->ClientSetHUD(AMyHUD::StaticClass());
+
+        AMyHUD* NewHud = Cast<AMyHUD>(PlayerController->GetHUD());
+        if (!NewHud)
+        {
+            UE_LOG(LogTemplateCharacter, Warning, TEXT("Detection settings menu could not create AMyHUD. Current HUD: %s"),
+                *GetNameSafe(PlayerController->GetHUD()));
+        }
+        else
+        {
+            UE_LOG(LogTemplateCharacter, Log, TEXT("Detection settings menu created AMyHUD: %s"),
+                *GetNameSafe(NewHud));
+        }
+        return NewHud;
+    }
+}
 
 //////////////////////////////////////////////////////////////////////////
 // AEagleEyeCharacter
@@ -56,6 +101,7 @@ AEagleEyeCharacter::AEagleEyeCharacter()
 	// Create a follow camera
 	FollowCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FollowCamera")); // Attach the camera to the end of the boom and let the boom adjust to match the controller orientation
 	FollowCamera->bUsePawnControlRotation = true; // Camera does not rotate relative to arm
+	FollowCamera->SetFieldOfView(CameraFieldOfView);
 	FollowCamera->SetupAttachment(GetMesh(), "head");
 
 	MeleeHitbox = CreateDefaultSubobject<USphereComponent>(TEXT("MeleeHitbox"));
@@ -84,13 +130,36 @@ void AEagleEyeCharacter::BeginPlay()
 	SetMeleeHitboxEnabled(false);
 
 	ResetHealth();
+
+	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
+	{
+		if (PlayerController->PlayerCameraManager)
+		{
+			PlayerController->PlayerCameraManager->ViewPitchMin = CameraPitchMin;
+			PlayerController->PlayerCameraManager->ViewPitchMax = CameraPitchMax;
+		}
+	}
 }
 
 void AEagleEyeCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
+	ApplyRealisticCamera(DeltaSeconds);
 	TickMeleeHitbox();
+}
+
+void AEagleEyeCharacter::Landed(const FHitResult& Hit)
+{
+	Super::Landed(Hit);
+
+	if (bEnableRealisticCamera && LastFallingSpeed > 300.f)
+	{
+		const float LandingImpulse = FMath::Clamp((LastFallingSpeed - 300.f) * LandingImpulseScale, 0.f, MaxLandingImpulse);
+		AddCameraImpulse(FVector(0.f, 0.f, -LandingImpulse), FRotator(LandingImpulse * 0.55f, 0.f, 0.f));
+	}
+
+	LastFallingSpeed = 0.f;
 }
 
 float AEagleEyeCharacter::TakeDamage(
@@ -121,6 +190,23 @@ float AEagleEyeCharacter::ApplyHealthDamage(float DamageAmount, AController* Eve
 	}
 
 	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+
+	if (bEnableRealisticCamera)
+	{
+		const float DamageImpulse = FMath::Clamp(AppliedDamage * DamageImpulseScale, 0.f, MaxDamageImpulse);
+		if (DamageImpulse > 0.f)
+		{
+			const FVector DamageDirection = DamageCauser
+				? (DamageCauser->GetActorLocation() - GetActorLocation()).GetSafeNormal()
+				: -GetActorForwardVector();
+			const FVector LocalDamageDirection = GetActorTransform().InverseTransformVectorNoScale(DamageDirection);
+			const float SideImpulse = FMath::Clamp(LocalDamageDirection.Y, -1.f, 1.f);
+
+			AddCameraImpulse(
+				FVector(-DamageImpulse * 0.45f, -SideImpulse * DamageImpulse * 0.25f, DamageImpulse * 0.12f),
+				FRotator(-DamageImpulse, SideImpulse * DamageImpulse * 0.35f, -SideImpulse * DamageImpulse));
+		}
+	}
 
 	if (CurrentHealth <= 0.f)
 	{
@@ -388,8 +474,70 @@ void AEagleEyeCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputC
 	}
 }
 
+void AEagleEyeCharacter::ToggleDetectionSettingsMenuInput()
+{
+	UE_LOG(LogTemplateCharacter, Log, TEXT("ToggleDetectionSettingsMenuInput called on %s."), *GetNameSafe(this));
+	if (AMyHUD* Hud = EnsureDetectionSettingsHud(this))
+	{
+		Hud->ToggleDetectionSettingsMenu();
+	}
+}
+
+void AEagleEyeCharacter::DetectionSettingsMenuUpInput()
+{
+	if (AMyHUD* Hud = EnsureDetectionSettingsHud(this))
+	{
+		Hud->HandleDetectionSettingsMenuUp();
+	}
+}
+
+void AEagleEyeCharacter::DetectionSettingsMenuDownInput()
+{
+	if (AMyHUD* Hud = EnsureDetectionSettingsHud(this))
+	{
+		Hud->HandleDetectionSettingsMenuDown();
+	}
+}
+
+void AEagleEyeCharacter::DetectionSettingsMenuLeftInput()
+{
+	if (AMyHUD* Hud = EnsureDetectionSettingsHud(this))
+	{
+		Hud->HandleDetectionSettingsMenuLeft();
+	}
+}
+
+void AEagleEyeCharacter::DetectionSettingsMenuRightInput()
+{
+	if (AMyHUD* Hud = EnsureDetectionSettingsHud(this))
+	{
+		Hud->HandleDetectionSettingsMenuRight();
+	}
+}
+
+void AEagleEyeCharacter::DetectionSettingsMenuConfirmInput()
+{
+	if (AMyHUD* Hud = EnsureDetectionSettingsHud(this))
+	{
+		Hud->HandleDetectionSettingsMenuConfirm();
+	}
+}
+
+void AEagleEyeCharacter::DetectionSettingsMenuCancelInput()
+{
+	if (AMyHUD* Hud = GetExistingDetectionSettingsHud(this))
+	{
+		Hud->HandleDetectionSettingsMenuCancel();
+	}
+}
+
 void AEagleEyeCharacter::Move(const FInputActionValue& Value)
 {
+	if (const AMyHUD* Hud = GetExistingDetectionSettingsHud(this); Hud && Hud->IsDetectionSettingsMenuOpen())
+	{
+		return;
+	}
+
 	// input is a Vector2D
 	FVector2D MovementVector = Value.Get<FVector2D>();
 
@@ -413,15 +561,123 @@ void AEagleEyeCharacter::Move(const FInputActionValue& Value)
 
 void AEagleEyeCharacter::Look(const FInputActionValue& Value)
 {
-	// input is a Vector2D
-	FVector2D LookAxisVector = Value.Get<FVector2D>();
-
-	if (Controller != nullptr)
+	if (const AMyHUD* Hud = GetExistingDetectionSettingsHud(this); Hud && Hud->IsDetectionSettingsMenuOpen())
 	{
-		// add yaw and pitch input to controller
-		AddControllerYawInput(LookAxisVector.X);
-		AddControllerPitchInput(LookAxisVector.Y);
+		return;
 	}
+
+	// input is a Vector2D
+	PendingLookInput += Value.Get<FVector2D>();
+}
+
+void AEagleEyeCharacter::ApplyRealisticCamera(float DeltaSeconds)
+{
+	ApplySmoothedLookInput(DeltaSeconds);
+
+	if (!FollowCamera)
+	{
+		return;
+	}
+
+	FollowCamera->SetFieldOfView(CameraFieldOfView);
+
+	if (!bEnableRealisticCamera)
+	{
+		FollowCamera->ClearAdditiveOffset();
+		return;
+	}
+
+	UpdateCameraMotion(DeltaSeconds);
+}
+
+void AEagleEyeCharacter::ApplySmoothedLookInput(float DeltaSeconds)
+{
+	if (bIsDead || !Controller)
+	{
+		PendingLookInput = FVector2D::ZeroVector;
+		SmoothedLookInput = FVector2D::ZeroVector;
+		return;
+	}
+
+	if (!bEnableRealisticCamera || LookInputSmoothingSpeed <= 0.f || DeltaSeconds <= 0.f)
+	{
+		SmoothedLookInput = PendingLookInput;
+	}
+	else
+	{
+		const float Alpha = FMath::Clamp(1.f - FMath::Exp(-LookInputSmoothingSpeed * DeltaSeconds), 0.f, 1.f);
+		SmoothedLookInput = FMath::Lerp(SmoothedLookInput, PendingLookInput, Alpha);
+	}
+
+	AddControllerYawInput(SmoothedLookInput.X);
+	AddControllerPitchInput(SmoothedLookInput.Y);
+
+	FRotator ControlRotation = Controller->GetControlRotation();
+	ControlRotation.Pitch = FMath::Clamp(FRotator::NormalizeAxis(ControlRotation.Pitch), CameraPitchMin, CameraPitchMax);
+	Controller->SetControlRotation(ControlRotation);
+
+	PendingLookInput = FVector2D::ZeroVector;
+}
+
+void AEagleEyeCharacter::UpdateCameraMotion(float DeltaSeconds)
+{
+	if (!FollowCamera)
+	{
+		return;
+	}
+
+	const UCharacterMovementComponent* MoveComp = GetCharacterMovement();
+	const FVector Velocity = GetVelocity();
+	const FVector HorizontalVelocity(Velocity.X, Velocity.Y, 0.f);
+	const float MaxMoveSpeed = MoveComp ? FMath::Max(1.f, MoveComp->GetMaxSpeed()) : 500.f;
+	const float SpeedAlpha = FMath::Clamp(HorizontalVelocity.Size() / MaxMoveSpeed, 0.f, 1.f);
+	const bool bGrounded = MoveComp && MoveComp->IsMovingOnGround();
+
+	if (MoveComp && MoveComp->IsFalling())
+	{
+		LastFallingSpeed = FMath::Max(LastFallingSpeed, FMath::Abs(Velocity.Z));
+	}
+
+	const float BobFrequency = bGrounded
+		? FMath::Lerp(IdleBobFrequency, WalkBobFrequency, SpeedAlpha)
+		: IdleBobFrequency;
+	CameraBobPhase = FMath::Fmod(CameraBobPhase + DeltaSeconds * BobFrequency * 2.f * PI, 2.f * PI);
+
+	const float MoveBobScale = bGrounded ? SpeedAlpha : 0.f;
+	const float IdleBobScale = bGrounded ? 1.f - SpeedAlpha : 0.f;
+	FVector TargetLocation = FVector::ZeroVector;
+	TargetLocation.Y = FMath::Sin(CameraBobPhase) * BobHorizontalAmplitude * MoveBobScale;
+	TargetLocation.Z =
+		FMath::Sin(CameraBobPhase * 2.f) * BobVerticalAmplitude * MoveBobScale +
+		FMath::Sin(CameraBobPhase) * IdleBobAmplitude * IdleBobScale;
+
+	const FVector LocalVelocity = GetActorTransform().InverseTransformVectorNoScale(Velocity);
+	const float StrafeAlpha = FMath::Clamp(LocalVelocity.Y / MaxMoveSpeed, -1.f, 1.f);
+
+	FRotator TargetRotation = FRotator::ZeroRotator;
+	TargetRotation.Pitch = FMath::Clamp(-SmoothedLookInput.Y * LookSwayPitchAmount, -2.f, 2.f);
+	TargetRotation.Yaw = FMath::Clamp(SmoothedLookInput.X * LookSwayYawAmount, -1.5f, 1.5f);
+	TargetRotation.Roll = FMath::Clamp(
+		-SmoothedLookInput.X * LookSwayRollAmount - StrafeAlpha * MoveSwayRollAmount,
+		-4.f,
+		4.f);
+
+	CameraMotionLocation = FMath::VInterpTo(CameraMotionLocation, TargetLocation, DeltaSeconds, CameraMotionInterpSpeed);
+	CameraMotionRotation = FMath::RInterpTo(CameraMotionRotation, TargetRotation, DeltaSeconds, CameraMotionInterpSpeed);
+	CameraImpulseLocation = FMath::VInterpTo(CameraImpulseLocation, FVector::ZeroVector, DeltaSeconds, CameraImpulseReturnSpeed);
+	CameraImpulseRotation = FMath::RInterpTo(CameraImpulseRotation, FRotator::ZeroRotator, DeltaSeconds, CameraImpulseReturnSpeed);
+
+	const FVector TotalLocation = CameraMotionLocation + CameraImpulseLocation;
+	const FRotator TotalRotation = CameraMotionRotation + CameraImpulseRotation;
+
+	FollowCamera->ClearAdditiveOffset();
+	FollowCamera->AddAdditiveOffset(FTransform(TotalRotation.Quaternion(), TotalLocation), 0.f);
+}
+
+void AEagleEyeCharacter::AddCameraImpulse(const FVector& LocationImpulse, const FRotator& RotationImpulse)
+{
+	CameraImpulseLocation += LocationImpulse;
+	CameraImpulseRotation += RotationImpulse;
 }
 
 void AEagleEyeCharacter::MeleeAttackInput()

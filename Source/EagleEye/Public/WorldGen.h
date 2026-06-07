@@ -62,6 +62,75 @@ struct FFoliageTypeConfig
 };
 
 USTRUCT(BlueprintType)
+struct FBuildingTypeConfig
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings")
+	TSubclassOf<AActor> BuildingClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings")
+	bool bEnabled = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings", meta=(ClampMin="0"))
+	int32 MinBuildingsPerSection = 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings", meta=(ClampMin="0"))
+	int32 MaxBuildingsPerSection = 2;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings")
+	bool bUseDensityPerSqM = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings", meta=(ClampMin="0.0"))
+	float DensityPerSqM = 0.0004f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings", meta=(ClampMin="0.0"))
+	float MinScale = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings", meta=(ClampMin="0.0"))
+	float MaxScale = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings", meta=(ClampMin="0.0"))
+	float PlacementFootprintRadius = 600.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings", meta=(ClampMin="0.0"))
+	float FallbackBoundsHeight = 500.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings", meta=(ClampMin="0.0", ClampMax="90.0"))
+	float MaxSlopeDeg = 18.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings")
+	float MinHeight = -100000.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings")
+	float MaxHeight = 100000.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings")
+	bool bAlignToNormal = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings", meta=(ClampMin="0.0"))
+	float SectionEdgePadding = 250.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings", meta=(ClampMin="0.0"))
+	float MinDistanceBetweenBuildings = 300.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings", meta=(ClampMin="0.0"))
+	float FoliageAvoidancePadding = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings", meta=(ClampMin="0.0"))
+	float BotInteriorPadding = 120.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings", meta=(ClampMin="0.0"))
+	float SurfaceOffset = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings")
+	bool bAffectNavigation = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings")
+	int32 SeedOffset = 4819;
+};
+
+USTRUCT(BlueprintType)
 struct FBotSpawnTypeConfig
 {
 	GENERATED_BODY()
@@ -160,6 +229,24 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Foliage")
 	int32 FoliageSeedOffset = 0;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings")
+	bool bEnableBuildings = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings")
+	TArray<FBuildingTypeConfig> BuildingTypes;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings")
+	int32 BuildingSeedOffset = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings|Bots")
+	bool bAllowBotSpawnsInsideBuildings = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings|Bots", meta=(ClampMin="0.0", ClampMax="1.0"))
+	float BuildingInteriorBotSpawnChance = 0.35f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Buildings|Debug")
+	bool bDebugBuildings = false;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bots")
 	bool bEnableBotSpawning = false;
 
@@ -223,6 +310,17 @@ private:
 		TArray<FProcMeshTangent> Tangents;
 	};
 
+	struct FGeneratedBuilding
+	{
+		FBox2D Footprint = FBox2D(ForceInit);
+		FBox WorldBounds = FBox(ForceInit);
+		float FloorZ = 0.0f;
+		float TopZ = 0.0f;
+		float BotInteriorPadding = 0.0f;
+		float FoliageAvoidancePadding = 0.0f;
+		TWeakObjectPtr<AActor> Actor;
+	};
+
 	struct FSectionData
 	{
 		int32 MeshSectionIndex = INDEX_NONE;
@@ -230,6 +328,7 @@ private:
 		TArray<TArray<int32>> FoliageInstanceIndices;
 		TWeakObjectPtr<ANavMeshBoundsVolume> NavBoundsVolume;
 		TArray<TWeakObjectPtr<ABotCharacter>> SpawnedBots;
+		TArray<FGeneratedBuilding> Buildings;
 	};
 
 	struct FSurfacePlacement
@@ -250,6 +349,16 @@ private:
 	bool SampleGeneratedSurfaceAt(const FIntPoint& Section, const FVector2D& SampleLocation, FVector& OutLocation, FVector& OutNormal);
 	bool BuildSurfacePlacementAt(const FIntPoint& Section, const FVector2D& SampleLocation, const FTransform& TerrainTransform, float SurfaceOffset, FSurfacePlacement& OutPlacement);
 	void InitializeFoliageComponents();
+	void SpawnBuildingsForSection(const FIntPoint& Section, FSectionData& SectionData);
+	void RemoveBuildingsForSection(const FIntPoint& Section, FSectionData& SectionData);
+	bool IsFootprintBlockedByBuildings(const FBox2D& Footprint, const FSectionData& SectionData, float Padding) const;
+	bool IsFoliageLocationBlockedByBuildings(const FVector& WorldLocation, float Radius, const FSectionData& SectionData) const;
+	bool TryBuildBotSpawnInsideBuilding(
+		const FSectionData& SectionData,
+		const FBotSpawnTypeConfig& Config,
+		const ABotCharacter* BotDefaults,
+		FRandomStream& Rand,
+		FVector& OutSpawnLocation) const;
 	void SpawnFoliageForSection(const FIntPoint& Section, FSectionData& SectionData);
 	void RemoveFoliageForSection(const FIntPoint& Section, FSectionData& SectionData);
 	void UpdateFoliageIndexAfterSwapRemoval(int32 TypeIndex, int32 OldIndex, int32 NewIndex, const FIntPoint& RemovedSection);
@@ -265,6 +374,7 @@ private:
 	void DestroyBotsForSection(FSectionData& SectionData);
 	void GatherPlayerStartLocations(TArray<FVector>& OutLocations) const;
 	bool IsNearAnyPlayerStart(const TArray<FVector>& PlayerStartLocations, const FVector& WorldLocation, float ClearanceRadius) const;
+	bool IsFootprintNearAnyPlayerStart(const TArray<FVector>& PlayerStartLocations, const FBox2D& Footprint, float ClearanceRadius) const;
 	bool IsBotSpawnLocationBlocked(const FVector& SpawnLocation, const FRotator& SpawnRotation, const ABotCharacter* BotDefaults, float ExtraClearance) const;
 	ANavMeshBoundsVolume* ResolveNavBoundsTemplate();
 	ANavMeshBoundsVolume* CreateSectionNavBounds(const FBox& WorldBounds);

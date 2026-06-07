@@ -120,6 +120,13 @@ public:
     void SetUseFovOnlyPersonDetection(bool bEnabled) { bUseFovOnlyPersonDetection = bEnabled; }
     void SetLogFovDetectionMetrics(bool bEnabled);
     bool ShouldLogFrameTimings() const;
+    void ApplyRuntimeDetectionSettingsFromConfig(bool bReloadModel = true);
+
+    UFUNCTION(BlueprintCallable, Category="Detection|Model")
+    bool EnsureModelLoaded();
+
+    UFUNCTION(BlueprintPure, Category="Detection|Model")
+    bool IsModelLoaded() const { return bIsModelLoaded; }
 
     TArray<FDetectionResult> ProcessSharedVisionFrame(
         const TArray<FColor>& Bitmap,
@@ -138,6 +145,7 @@ private:
     void StartWorker();
     void StopWorker();
     void ApplyProjectDetectionSettings();
+    void ResolveConfiguredRuntimePaths();
     void CaptureAndEnqueue(bool bSubmitDetection = true);
     void CopyResultsFromWorker(); // game-thread copy from shared buffer
     bool CaptureViewportToPixels(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight);
@@ -350,6 +358,7 @@ private:
     std::string WeightsPath;
     std::string CfgPath;
     std::string NamesPath;
+    FCriticalSection InferenceMutex;
 
     UPROPERTY(EditAnywhere, Config, Category="Detection|Model")
     FString ModelPathOverride;
@@ -421,6 +430,9 @@ private:
     void InitFrameTimingLog();
     void AppendFrameTimingLogLine(int32 Sequence, int32 Width, int32 Height, int32 DetectionCount, double TotalMs, double InferMs);
     void FlushFrameTimingLog(bool bForce);
+    FString GetFrameTimingRuntimeFileSuffix() const;
+    FString GetFrameTimingRuntimeLabel() const;
+    FString ResolveFrameTimeCsvPathForCurrentRuntime() const;
     void ResetInferenceOutputState();
 
     EDetectionInferenceBackend EffectiveInferenceBackend = EDetectionInferenceBackend::OpenCVDNN;

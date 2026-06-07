@@ -1450,8 +1450,8 @@ UBTTask_FlyToBlackboardLocation::UBTTask_FlyToBlackboardLocation()
     NodeName = TEXT("Fly To Blackboard Location");
     bNotifyTick = true;
 
-    TargetLocationKey.SelectedKeyName = TEXT("DetectedPersonLocation");
-    HasTargetKey.SelectedKeyName = TEXT("HasDetectedPerson");
+    TargetLocationKey.SelectedKeyName = TEXT("DetectedTargetLocation");
+    HasTargetKey.SelectedKeyName = TEXT("HasDetectedTarget");
     HasTargetKey.AddBoolFilter(this, GET_MEMBER_NAME_CHECKED(UBTTask_FlyToBlackboardLocation, HasTargetKey));
     UseFlyingMovementKey.SelectedKeyName = TEXT("UseFlyingMovement");
     UseFlyingMovementKey.AddBoolFilter(this, GET_MEMBER_NAME_CHECKED(UBTTask_FlyToBlackboardLocation, UseFlyingMovementKey));
@@ -1478,7 +1478,7 @@ EBTNodeResult::Type UBTTask_FlyToBlackboardLocation::ExecuteTask(
         *Memory = FBTTaskFlyToBlackboardLocationMemory();
     }
 
-    if (bDrawDebug && GEngine)
+    if (bDrawDebug && IsPathfindingDecisionLoggingEnabled() && GEngine)
     {
         GEngine->AddOnScreenDebugMessage(
             reinterpret_cast<uint64>(this),
@@ -1832,7 +1832,10 @@ void UBTTask_FlyToBlackboardLocation::TickTask(
 
         LogMovementDecision(TEXT("Hold"));
 
-        if (bDrawDebug && GEngine)
+        const bool bShouldDrawDecisionDebug = bDrawDebug && IsPathfindingDecisionLoggingEnabled();
+        const bool bShouldDrawPathDebug = bDrawPathDebug && IsPathfindingObjectLoggingEnabled();
+
+        if (bShouldDrawDecisionDebug && GEngine)
         {
             GEngine->AddOnScreenDebugMessage(
                 reinterpret_cast<uint64>(this),
@@ -1843,7 +1846,7 @@ void UBTTask_FlyToBlackboardLocation::TickTask(
                     Distance,
                     bMaintainDistance ? ActiveDesiredTargetDistance : 0.f));
         }
-        if ((bDrawDebug || bDrawPathDebug) && !bUseFlyingMovement)
+        if (bShouldDrawPathDebug && !bUseFlyingMovement)
         {
             if (UWorld* DebugWorld = ControlledPawn->GetWorld())
             {
@@ -2015,9 +2018,12 @@ void UBTTask_FlyToBlackboardLocation::TickTask(
         AIController->ClearFocus(EAIFocusPriority::Gameplay);
     }
 
-    if (bDrawDebug || bDrawPathDebug)
+    const bool bShouldDrawDecisionDebug = bDrawDebug && IsPathfindingDecisionLoggingEnabled();
+    const bool bShouldDrawPathDebug = bDrawPathDebug && IsPathfindingObjectLoggingEnabled();
+
+    if (bShouldDrawDecisionDebug || bShouldDrawPathDebug)
     {
-        if (bDrawDebug && GEngine)
+        if (bShouldDrawDecisionDebug && GEngine)
         {
             GEngine->AddOnScreenDebugMessage(
                 reinterpret_cast<uint64>(this),
@@ -2030,27 +2036,30 @@ void UBTTask_FlyToBlackboardLocation::TickTask(
                     Distance));
         }
 
-        if (UWorld* World = ControlledPawn->GetWorld())
+        if (bShouldDrawPathDebug)
         {
-            if (!bUseFlyingMovement)
+            if (UWorld* World = ControlledPawn->GetWorld())
             {
-                DrawSimpleWalkingPathDebug(
-                    *World,
-                    ControlledPawn->GetActorLocation(),
-                    TargetLocation,
-                    MoveGoal,
-                    WalkingNavGoal,
-                    HoldRadius,
-                    WalkingPathDebug);
-            }
-            else
-            {
-                DrawDebugSphere(World, TargetLocation, HoldRadius, 12, FColor::Cyan, false, 0.2f);
-                DrawDebugLine(World, ControlledPawn->GetActorLocation(), MoveGoal, FColor::Cyan, false, 0.2f, 0, 2.f);
-            }
-            if (bMaintainDistance)
-            {
-                DrawDebugSphere(World, TargetLocation, ActiveDesiredTargetDistance, 24, FColor::Emerald, false, 0.2f);
+                if (!bUseFlyingMovement)
+                {
+                    DrawSimpleWalkingPathDebug(
+                        *World,
+                        ControlledPawn->GetActorLocation(),
+                        TargetLocation,
+                        MoveGoal,
+                        WalkingNavGoal,
+                        HoldRadius,
+                        WalkingPathDebug);
+                }
+                else
+                {
+                    DrawDebugSphere(World, TargetLocation, HoldRadius, 12, FColor::Cyan, false, 0.2f);
+                    DrawDebugLine(World, ControlledPawn->GetActorLocation(), MoveGoal, FColor::Cyan, false, 0.2f, 0, 2.f);
+                }
+                if (bMaintainDistance)
+                {
+                    DrawDebugSphere(World, TargetLocation, ActiveDesiredTargetDistance, 24, FColor::Emerald, false, 0.2f);
+                }
             }
         }
     }

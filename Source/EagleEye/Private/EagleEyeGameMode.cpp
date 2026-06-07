@@ -4,6 +4,7 @@
 #include "AI/DetectionModelHostActor.h"
 #include "EagleEyeCharacter.h"
 #include "MyHUD.h"
+#include "EngineUtils.h"
 #include "Engine/World.h"
 #include "UObject/ConstructorHelpers.h"
 
@@ -33,6 +34,16 @@ void AEagleEyeGameMode::BeginPlay()
 	if (!World)
 	{
 		return;
+	}
+
+	for (TActorIterator<ADetectionModelHostActor> It(World); It; ++It)
+	{
+		ADetectionModelHostActor* ExistingHost = *It;
+		if (IsValid(ExistingHost) && ExistingHost->IsA(DetectionModelHostClass))
+		{
+			DetectionModelHost = ExistingHost;
+			return;
+		}
 	}
 
 	FActorSpawnParameters SpawnParams;

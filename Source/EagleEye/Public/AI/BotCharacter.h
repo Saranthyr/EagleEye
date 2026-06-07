@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AI/BotRandomMovementSettings.h"
 #include "GameFramework/Character.h"
 #include "BotCharacter.generated.h"
 
@@ -38,6 +39,7 @@ public:
 
     UBehaviorTree* GetBehaviorTreeAsset() const { return BehaviorTreeAsset; }
     EBotLocomotionMode GetBotLocomotionMode() const { return LocomotionMode; }
+    const FBotRandomMovementSettings& GetRandomMovementSettings() const { return RandomMovementSettings; }
     bool IsFlyingBot() const;
     bool IsWalkingBot() const;
 
@@ -68,6 +70,15 @@ public:
     UFUNCTION(BlueprintPure, Category="Gameplay|Damage")
     bool IsCloseDamageHitboxEnabled() const { return bCloseDamageHitboxEnabled; }
 
+    UFUNCTION(BlueprintPure, Category="Gameplay|Damage")
+    float GetCloseDamage() const { return CloseDamage; }
+
+    UFUNCTION(BlueprintPure, Category="Gameplay|Damage")
+    bool IsCloseDamageHealing() const { return CloseDamage < 0.f; }
+
+    UFUNCTION(BlueprintPure, Category="Gameplay|Damage")
+    float GetProjectileDamage() const { return ProjectileDamage; }
+
     UFUNCTION(BlueprintCallable, Category="Gameplay|Health")
     float ApplyHealthDamage(float DamageAmount, AController* EventInstigator = nullptr, AActor* DamageCauser = nullptr);
 
@@ -82,6 +93,12 @@ public:
 
     UFUNCTION(BlueprintPure, Category="Gameplay|Health")
     float GetMaxHealth() const { return MaxHealth; }
+
+    UFUNCTION(BlueprintPure, Category="Gameplay|Health")
+    float GetHealthPercent() const;
+
+    UFUNCTION(BlueprintPure, Category="Gameplay|Health")
+    bool NeedsHealing(float HealthPercentThreshold) const;
 
     UFUNCTION(BlueprintPure, Category="Gameplay|Health")
     bool IsDead() const { return bIsDead; }
@@ -139,6 +156,9 @@ protected:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="AI|Movement|Flying", meta=(ClampMin="0.0"))
     float FlyingBrakingDeceleration = 1200.f;
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="AI|Random Movement")
+    FBotRandomMovementSettings RandomMovementSettings;
+
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Detection", meta=(AllowPrivateAccess="true"))
     TObjectPtr<UMyActorComponent> DetectionComponent;
 
@@ -172,7 +192,7 @@ protected:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage|Close")
     bool bEnableCloseHitboxDamage = true;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage|Close", meta=(ClampMin="0.0"))
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage|Close", meta=(DisplayName="Close Damage (Negative Heals Bots)"))
     float CloseDamage = 20.f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage|Close", meta=(ClampMin="0.0"))
@@ -184,7 +204,7 @@ protected:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage|Projectile")
     TSubclassOf<ABotDamageProjectile> ProjectileClass;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage|Projectile", meta=(ClampMin="0.0"))
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage|Projectile", meta=(ClampMin="0.0", DisplayName="Projectile Damage / Heal Amount"))
     float ProjectileDamage = 15.f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage|Projectile", meta=(ClampMin="0.0"))
