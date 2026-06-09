@@ -28,10 +28,6 @@
 #if WITH_ONNXRUNTIME_DML
 #include <onnxruntime/core/providers/dml/dml_provider_factory.h>
 #endif
-#if WITH_ONNXRUNTIME_MIGRAPHX
-#include <onnxruntime/core/providers/migraphx/migraphx_provider_factory.h>
-#endif
-
 namespace
 {
 #if WITH_TENSORRT
@@ -216,7 +212,7 @@ namespace
         return !Path.IsEmpty() && FPlatformFileManager::Get().GetPlatformFile().FileExists(*Path);
     }
 
-    bool IsDetectionMetricLoggingEnabled()
+    bool IsActorComponentDetectionMetricLoggingEnabled()
     {
         const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
         return !Settings || Settings->bEnableDetectionMetricLogs;
@@ -420,7 +416,7 @@ namespace
     TSet<FString> ResetFrameTimingLogsThisRun;
     TSet<FString> ResetFovDetectionMetricsTablesThisRun;
 
-    FString EscapeCsvField(const FString& Value)
+    FString EscapeActorComponentCsvField(const FString& Value)
     {
         if (!Value.Contains(TEXT(",")) && !Value.Contains(TEXT("\"")) && !Value.Contains(TEXT("\n")) && !Value.Contains(TEXT("\r")))
         {
@@ -669,7 +665,7 @@ void UMyActorComponent::InitFovDetectionMetricsTable()
     }
 
     bFovDetectionMetricsTableInitialized = true;
-    if (IsDetectionMetricLoggingEnabled())
+    if (IsActorComponentDetectionMetricLoggingEnabled())
     {
         UE_LOG(LogTemp, Log, TEXT("FOV detection metrics table enabled: %s"), *ResolvedFovDetectionMetricsCsvPath);
     }
@@ -704,10 +700,10 @@ void UMyActorComponent::AppendFovDetectionMetricsTableRow(
         TEXT("%s,%.4f,%s,%s,%s,%s,%s,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%d,%d,%d,%d,%d\n"),
         *FDateTime::Now().ToIso8601(),
         GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f,
-        *EscapeCsvField(GetNameSafe(GetOwner())),
-        *EscapeCsvField(FString(SourceLabel)),
-        *EscapeCsvField(Status),
-        *EscapeCsvField(Outcome),
+        *EscapeActorComponentCsvField(GetNameSafe(GetOwner())),
+        *EscapeActorComponentCsvField(FString(SourceLabel)),
+        *EscapeActorComponentCsvField(Status),
+        *EscapeActorComponentCsvField(Outcome),
         bExpectedInFov ? TEXT("true") : TEXT("false"),
         bActualPersonDetected ? TEXT("true") : TEXT("false"),
         Distance,
@@ -1792,7 +1788,7 @@ void UMyActorComponent::LogFovDetectionMetricSample(
             SourceWidth,
             SourceHeight,
             Detections.Num());
-        if (IsDetectionMetricLoggingEnabled())
+        if (IsActorComponentDetectionMetricLoggingEnabled())
         {
             UE_LOG(LogTemp, Warning, TEXT("FovDetectionMetric[%s]: unavailable owner=%s source=%dx%d detections=%d unavailable=%d"),
                 SourceLabel,
@@ -1845,7 +1841,7 @@ void UMyActorComponent::LogFovDetectionMetricSample(
         SourceHeight,
         Detections.Num());
 
-    if (IsDetectionMetricLoggingEnabled())
+    if (IsActorComponentDetectionMetricLoggingEnabled())
     {
         UE_LOG(LogTemp, Log, TEXT("FovDetectionMetric[%s]: %s outcome=%s owner=%s expected_in_fov=%s actual_person=%s distance=%.1f h_angle=%.1f v_angle=%.1f expected_pixel=%s source=%dx%d detections=%d tp=%d tn=%d fp=%d fn=%d"),
             SourceLabel,
@@ -3179,7 +3175,8 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
             UE_LOG(LogTemp, Log, TEXT("ONNX Runtime provider configured: CPU"));
         }
 
-        OnnxRuntimeSession = MakeUnique<Ort::Session>(*OnnxRuntimeEnv, *ModelPathUE, *OnnxRuntimeSessionOptions);
+        const std::string ModelPathUtf8 = ToUtf8Path(ModelPathUE);
+        OnnxRuntimeSession = MakeUnique<Ort::Session>(*OnnxRuntimeEnv, ModelPathUtf8.c_str(), *OnnxRuntimeSessionOptions);
 
         Ort::AllocatorWithDefaultOptions Allocator;
         if (OnnxRuntimeSession->GetInputCount() <= 0 || OnnxRuntimeSession->GetOutputCount() <= 0)
@@ -3201,7 +3198,7 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
         }
 
         const Ort::TypeInfo InputTypeInfo = OnnxRuntimeSession->GetInputTypeInfo(0);
-        const Ort::TensorTypeAndShapeInfo InputTensorInfo = InputTypeInfo.GetTensorTypeAndShapeInfo();
+        const auto InputTensorInfo = InputTypeInfo.GetTensorTypeAndShapeInfo();
         std::vector<int64_t> InputShape = InputTensorInfo.GetShape();
         if (InputShape.size() == 4)
         {

@@ -134,6 +134,12 @@ public class EagleEye : ModuleRules
                 AddNativeSharedLibrary(TensorRTPluginLib);
                 AddNativeSharedLibrary(CudaRuntimeLib);
             }
+            else
+            {
+                LogInferenceDependencyHintIfVerbose(
+                    "TensorRT",
+                    "set TENSORRT_ROOT/CUDA_HOME or run Scripts/setup-inference-deps.sh --install-system --force-tensorrt");
+            }
             PublicDefinitions.Add(bWithTensorRT ? "WITH_TENSORRT=1" : "WITH_TENSORRT=0");
         }
         else
@@ -220,6 +226,7 @@ public class EagleEye : ModuleRules
 
                     foreach (string LibDir in OnnxLibDirs)
                     {
+                        StageMatchingRuntimeFiles(LibDir, "libonnxruntime.so*");
                         StageMatchingRuntimeFiles(LibDir, "libonnxruntime_providers*.so");
                     }
                 }
@@ -228,6 +235,19 @@ public class EagleEye : ModuleRules
         PublicDefinitions.Add(bWithOnnxRuntime ? "WITH_ONNXRUNTIME=1" : "WITH_ONNXRUNTIME=0");
         PublicDefinitions.Add(bWithOnnxRuntimeDirectML ? "WITH_ONNXRUNTIME_DML=1" : "WITH_ONNXRUNTIME_DML=0");
         PublicDefinitions.Add(bWithOnnxRuntimeMIGraphX ? "WITH_ONNXRUNTIME_MIGRAPHX=1" : "WITH_ONNXRUNTIME_MIGRAPHX=0");
+
+        if (!bWithOnnxRuntime)
+        {
+            LogInferenceDependencyHint(
+                "ONNX Runtime",
+                "source Saved/InferenceDeps.env or run Scripts/setup-inference-deps.sh --build-onnxruntime");
+        }
+        else if (Target.Platform == UnrealTargetPlatform.Linux && !bWithOnnxRuntimeMIGraphX)
+        {
+            LogInferenceDependencyHint(
+                "ONNX Runtime MIGraphX EP",
+                "run Scripts/setup-inference-deps.sh --install-system --build-onnxruntime, then source Saved/InferenceDeps.env");
+        }
 
         string[] RuntimeModelExtensions =
         {
@@ -294,6 +314,19 @@ public class EagleEye : ModuleRules
                 Path.Combine("$(TargetOutputDir)", Path.GetFileName(RuntimeFile)),
                 RuntimeFile,
                 StagedFileType.NonUFS);
+        }
+    }
+
+    private void LogInferenceDependencyHint(string DependencyName, string Hint)
+    {
+        Console.WriteLine("EagleEye: {0} not found; {1}.", DependencyName, Hint);
+    }
+
+    private void LogInferenceDependencyHintIfVerbose(string DependencyName, string Hint)
+    {
+        if (Environment.GetEnvironmentVariable("EAGLEEYE_VERBOSE_DEPS") == "1")
+        {
+            LogInferenceDependencyHint(DependencyName, Hint);
         }
     }
 

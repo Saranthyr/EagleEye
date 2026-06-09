@@ -1,9 +1,14 @@
-/Intermediate
-/ThirdParty
 /DerivedDataCache
+/research
 /.git
-/Content
+/ThirdParty
+/Intermediate
 /Saved
+/.agents
 /.vscode
+/.venv
+/.codex
+/python
+/Content
 /Plugins/OpenCV412/Intermediate
 /Plugins/OpenCV412/Content

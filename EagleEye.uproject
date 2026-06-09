@@ -33,6 +33,14 @@
 		{
 			"Name": "OpenCV",
 			"Enabled": false
+		},
+		{
+			"Name": "NNEDenoiser",
+			"Enabled": false
+		},
+		{
+			"Name": "NNERuntimeORT",
+			"Enabled": false
 		}
 	]
 }
