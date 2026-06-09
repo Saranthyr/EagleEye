@@ -2038,12 +2038,12 @@ void UBTTask_FlyToBlackboardLocation::TickTask(
 
         if (bShouldDrawPathDebug)
         {
-            if (UWorld* World = ControlledPawn->GetWorld())
+            if (UWorld* DebugWorld = ControlledPawn->GetWorld())
             {
                 if (!bUseFlyingMovement)
                 {
                     DrawSimpleWalkingPathDebug(
-                        *World,
+                        *DebugWorld,
                         ControlledPawn->GetActorLocation(),
                         TargetLocation,
                         MoveGoal,
@@ -2053,8 +2053,8 @@ void UBTTask_FlyToBlackboardLocation::TickTask(
                 }
                 else
                 {
-                    DrawDebugSphere(World, TargetLocation, HoldRadius, 12, FColor::Cyan, false, 0.2f);
-                    DrawDebugLine(World, ControlledPawn->GetActorLocation(), MoveGoal, FColor::Cyan, false, 0.2f, 0, 2.f);
+                    DrawDebugSphere(DebugWorld, TargetLocation, HoldRadius, 12, FColor::Cyan, false, 0.2f);
+                    DrawDebugLine(DebugWorld, ControlledPawn->GetActorLocation(), MoveGoal, FColor::Cyan, false, 0.2f, 0, 2.f);
                 }
                 if (bMaintainDistance)
                 {

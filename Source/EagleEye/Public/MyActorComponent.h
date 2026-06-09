@@ -134,7 +134,8 @@ public:
         int32 Height,
         double* OutInferenceMs = nullptr);
 
-    void ConsumeSharedVisionResult(TArray<FDetectionResult>&& Detections, int32 SourceWidth, int32 SourceHeight);
+    int32 BeginSharedVisionRequest();
+    void ConsumeSharedVisionResult(TArray<FDetectionResult>&& Detections, int32 SourceWidth, int32 SourceHeight, int32 RequestSerial);
 
 protected:
     virtual void BeginPlay() override;
@@ -304,7 +305,7 @@ private:
     UPROPERTY()
     UTextureRenderTarget2D* OwnerDepthRenderTarget = nullptr;
 
-    TUniquePtr<FRHIGPUTextureReadback> PendingOwnerCameraReadback;
+    TSharedPtr<FRHIGPUTextureReadback, ESPMode::ThreadSafe> PendingOwnerCameraReadback;
     int32 PendingOwnerCameraReadbackWidth = 0;
     int32 PendingOwnerCameraReadbackHeight = 0;
     double PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
@@ -325,6 +326,7 @@ private:
     TFuture<void> OwnerCameraVideoFuture;
     std::atomic<bool> bOwnerCameraVideoWorkerRunning{false};
     std::atomic<bool> bOwnerCameraVideoFastShutdown{false};
+    std::atomic<bool> bOwnerCameraVideoFinalizing{false};
     std::atomic<int32> PendingOwnerCameraVideoFrames{0};
     int32 DroppedOwnerCameraVideoFrames = 0;
 
@@ -353,6 +355,8 @@ private:
     FTimerHandle TimerHandle_Capture;
     TFuture<void> WorkerFuture;
     std::atomic<bool> bWorkerRunning{false};
+    std::atomic<bool> bIsEndingPlay{false};
+    std::atomic<int32> SharedVisionRequestSerial{0};
 
     // YOLO state (paths only; net will be created inside worker)
     std::string WeightsPath;
@@ -383,7 +387,7 @@ private:
 
     std::vector<std::string> ClassNames;
 
-    bool bIsModelLoaded = false;
+    std::atomic<bool> bIsModelLoaded{false};
     bool bIsOnnxModel = false;
     int32 ModelInputWidth = 640;
     int32 ModelInputHeight = 640;

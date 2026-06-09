@@ -21,15 +21,83 @@
 #include "ScreenCaptureComponent.h"
 #include <algorithm>
 #include <array>
+#if PLATFORM_WINDOWS && WITH_ONNXRUNTIME_DML
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include <dxgi1_6.h>
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
 #if WITH_TENSORRT
 #include <NvInfer.h>
 #include <NvInferVersion.h>
 #endif
 #if WITH_ONNXRUNTIME_DML
+#if __has_include(<onnxruntime/core/providers/dml/dml_provider_factory.h>)
 #include <onnxruntime/core/providers/dml/dml_provider_factory.h>
+#else
+#include <dml_provider_factory.h>
+#endif
 #endif
 namespace
 {
+    constexpr double MaxAsyncOwnerCameraReadbackLatencySeconds = 1.0;
+
+#if PLATFORM_WINDOWS && WITH_ONNXRUNTIME_DML
+    FString DxgiAdapterDescToString(const DXGI_ADAPTER_DESC1& Desc)
+    {
+        return FString::Printf(TEXT("%s vendor=0x%04x device=0x%04x dedicated_vram=%.1fMB flags=0x%08x"),
+            Desc.Description,
+            Desc.VendorId,
+            Desc.DeviceId,
+            static_cast<double>(Desc.DedicatedVideoMemory) / (1024.0 * 1024.0),
+            Desc.Flags);
+    }
+
+    void LogDirectMLAdapterCandidates(int32 RequestedDeviceId, const FString& RhiAdapterName)
+    {
+        UE_LOG(LogTemp, Log, TEXT("ONNX Runtime DirectML requested device_id=%d; UE RHI adapter=%s"),
+            RequestedDeviceId,
+            *RhiAdapterName);
+
+        IDXGIFactory1* Factory = nullptr;
+        const HRESULT FactoryResult = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&Factory));
+        if (FAILED(FactoryResult) || !Factory)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Failed to enumerate DXGI adapters for DirectML logging: HRESULT=0x%08x"),
+                static_cast<uint32>(FactoryResult));
+            return;
+        }
+
+        for (uint32 AdapterIndex = 0;; ++AdapterIndex)
+        {
+            IDXGIAdapter1* Adapter = nullptr;
+            const HRESULT AdapterResult = Factory->EnumAdapters1(AdapterIndex, &Adapter);
+            if (AdapterResult == DXGI_ERROR_NOT_FOUND)
+            {
+                break;
+            }
+            if (FAILED(AdapterResult) || !Adapter)
+            {
+                UE_LOG(LogTemp, Warning, TEXT("Failed to enumerate DXGI adapter %u: HRESULT=0x%08x"),
+                    AdapterIndex,
+                    static_cast<uint32>(AdapterResult));
+                continue;
+            }
+
+            DXGI_ADAPTER_DESC1 Desc = {};
+            if (SUCCEEDED(Adapter->GetDesc1(&Desc)))
+            {
+                UE_LOG(LogTemp, Log, TEXT("DXGI adapter[%u]%s: %s"),
+                    AdapterIndex,
+                    AdapterIndex == static_cast<uint32>(RequestedDeviceId) ? TEXT(" <- DirectML device_id") : TEXT(""),
+                    *DxgiAdapterDescToString(Desc));
+            }
+            Adapter->Release();
+        }
+
+        Factory->Release();
+    }
+#endif
+
 #if WITH_TENSORRT
     class FTrtLogger : public nvinfer1::ILogger
     {
@@ -98,12 +166,12 @@ namespace
 
     float CalcIoU(const cv::Rect& A, const cv::Rect& B)
     {
-        const int x1 = std::max(A.x, B.x);
-        const int y1 = std::max(A.y, B.y);
-        const int x2 = std::min(A.x + A.width, B.x + B.width);
-        const int y2 = std::min(A.y + A.height, B.y + B.height);
-        const int w = std::max(0, x2 - x1);
-        const int h = std::max(0, y2 - y1);
+        const int x1 = (std::max)(A.x, B.x);
+        const int y1 = (std::max)(A.y, B.y);
+        const int x2 = (std::min)(A.x + A.width, B.x + B.width);
+        const int y2 = (std::min)(A.y + A.height, B.y + B.height);
+        const int w = (std::max)(0, x2 - x1);
+        const int h = (std::max)(0, y2 - y1);
         const float inter = static_cast<float>(w * h);
         const float unionArea = static_cast<float>(A.area() + B.area()) - inter;
         return unionArea > 0.0f ? (inter / unionArea) : 0.0f;
@@ -820,6 +888,7 @@ void UMyActorComponent::get_class_names() {
 
 void UMyActorComponent::BeginPlay() {
     Super::BeginPlay();
+    bIsEndingPlay.store(false);
 
     ApplyProjectDetectionSettings();
 
@@ -886,9 +955,25 @@ void UMyActorComponent::BeginPlay() {
 }
 
 void UMyActorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
+    bIsEndingPlay.store(true);
+    ++SharedVisionRequestSerial;
+
     if (UWorld* World = GetWorld())
     {
         World->GetTimerManager().ClearTimer(TimerHandle_Capture);
+    }
+
+    // Drain the render command before releasing this component's readback reference.
+    if (PendingOwnerCameraReadback.IsValid())
+    {
+        FlushRenderingCommands();
+        PendingOwnerCameraReadback.Reset();
+        PendingOwnerCameraReadbackWidth = 0;
+        PendingOwnerCameraReadbackHeight = 0;
+        PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
+        PendingOwnerCameraReadbackDepth.Reset();
+        PendingOwnerCameraReadbackDepthWidth = 0;
+        PendingOwnerCameraReadbackDepthHeight = 0;
     }
 
     CloseOwnerCameraVideoWriter(false);
@@ -943,6 +1028,11 @@ void UMyActorComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAct
 }
 
 void UMyActorComponent::TickCapture() {
+    if (bIsEndingPlay.load())
+    {
+        return;
+    }
+
     if (bUseFovOnlyPersonDetection)
     {
         PublishFovOnlyDetectionFrame();
@@ -1186,16 +1276,19 @@ void UMyActorComponent::ApplyRuntimeDetectionSettingsFromConfig(bool bReloadMode
 
     ApplyProjectDetectionSettings();
     ResolveConfiguredRuntimePaths();
-    get_class_names();
 
-    if (bReloadModel)
     {
         FScopeLock Lock(&InferenceMutex);
-        ReleaseTensorRT();
-        ReleaseOnnxRuntime();
-        OpenCVDnnNet = cv::dnn::Net();
-        bIsModelLoaded = false;
-        ResetInferenceOutputState();
+        get_class_names();
+
+        if (bReloadModel)
+        {
+            ReleaseTensorRT();
+            ReleaseOnnxRuntime();
+            OpenCVDnnNet = cv::dnn::Net();
+            bIsModelLoaded = false;
+            ResetInferenceOutputState();
+        }
     }
 
     if (bRestartLocalWorker)
@@ -1206,23 +1299,26 @@ void UMyActorComponent::ApplyRuntimeDetectionSettingsFromConfig(bool bReloadMode
 
 bool UMyActorComponent::EnsureModelLoaded()
 {
-    if (bUseFovOnlyPersonDetection)
+    if (bUseFovOnlyPersonDetection || (bUseSharedVisionModel && !bSharedVisionModelHost))
     {
         return false;
     }
 
-    if (bIsModelLoaded)
-    {
-        return true;
-    }
-
     ApplyProjectDetectionSettings();
     ResolveConfiguredRuntimePaths();
-    get_class_names();
-    InitFrameTimingLog();
 
     FScopeLock InferenceLock(&InferenceMutex);
-    return bIsModelLoaded || LoadYOLO();
+    if (!bIsModelLoaded)
+    {
+        get_class_names();
+        if (!LoadYOLO())
+        {
+            return false;
+        }
+    }
+
+    InitFrameTimingLog();
+    return true;
 }
 
 FString UMyActorComponent::ResolveOwnerCameraVideoPath() const
@@ -1506,10 +1602,16 @@ void UMyActorComponent::CloseOwnerCameraVideoWriter(bool bWaitForEncoder)
 
 void UMyActorComponent::FinalizeOwnerCameraVideoWriter(bool bWaitForEncoder)
 {
+    if (bOwnerCameraVideoFinalizing.exchange(true))
+    {
+        return;
+    }
+
     if (OwnerCameraVideoPipeWrite)
     {
-        FPlatformProcess::ClosePipe(nullptr, OwnerCameraVideoPipeWrite);
+        void* PipeToClose = OwnerCameraVideoPipeWrite;
         OwnerCameraVideoPipeWrite = nullptr;
+        FPlatformProcess::ClosePipe(nullptr, PipeToClose);
     }
 
     if (OwnerCameraVideoProcess.IsValid())
@@ -1564,6 +1666,7 @@ void UMyActorComponent::FinalizeOwnerCameraVideoWriter(bool bWaitForEncoder)
     OwnerCameraVideoFrameCount = 0;
     bOwnerCameraVideoFastShutdown.store(false);
     bOwnerCameraVideoWriterFailed = false;
+    bOwnerCameraVideoFinalizing.store(false);
 }
 
 bool UMyActorComponent::ShouldSkipOwnerCameraCapture() const
@@ -2069,6 +2172,23 @@ bool UMyActorComponent::PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, 
 
     if (!PendingOwnerCameraReadback.IsValid() || !PendingOwnerCameraReadback->IsReady())
     {
+        if (PendingOwnerCameraReadback.IsValid() &&
+            PendingOwnerCameraReadbackSubmitTimeSeconds > 0.0 &&
+            (FPlatformTime::Seconds() - PendingOwnerCameraReadbackSubmitTimeSeconds) > MaxAsyncOwnerCameraReadbackLatencySeconds)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Dropping stale async owner-camera readback for %s after %.2fms"),
+                *GetNameSafe(GetOwner()),
+                (FPlatformTime::Seconds() - PendingOwnerCameraReadbackSubmitTimeSeconds) * 1000.0);
+
+            FlushRenderingCommands();
+            PendingOwnerCameraReadback.Reset();
+            PendingOwnerCameraReadbackWidth = 0;
+            PendingOwnerCameraReadbackHeight = 0;
+            PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
+            PendingOwnerCameraReadbackDepth.Reset();
+            PendingOwnerCameraReadbackDepthWidth = 0;
+            PendingOwnerCameraReadbackDepthHeight = 0;
+        }
         return false;
     }
 
@@ -2159,20 +2279,23 @@ bool UMyActorComponent::EnqueueAsyncOwnerCameraReadback()
         return false;
     }
 
-    PendingOwnerCameraReadback = MakeUnique<FRHIGPUTextureReadback>(TEXT("CrowOwnerCameraReadback"));
+    PendingOwnerCameraReadback = MakeShared<FRHIGPUTextureReadback, ESPMode::ThreadSafe>(TEXT("CrowOwnerCameraReadback"));
     PendingOwnerCameraReadbackWidth = OwnerCaptureRenderTarget->SizeX;
     PendingOwnerCameraReadbackHeight = OwnerCaptureRenderTarget->SizeY;
     PendingOwnerCameraReadbackSubmitTimeSeconds = FPlatformTime::Seconds();
     PendingOwnerCameraReadbackDepth = MoveTemp(CapturedDepth);
     PendingOwnerCameraReadbackDepthWidth = CapturedDepthWidth;
     PendingOwnerCameraReadbackDepthHeight = CapturedDepthHeight;
-    FRHIGPUTextureReadback* Readback = PendingOwnerCameraReadback.Get();
+    TSharedPtr<FRHIGPUTextureReadback, ESPMode::ThreadSafe> Readback = PendingOwnerCameraReadback;
     const FIntVector ReadbackSize(PendingOwnerCameraReadbackWidth, PendingOwnerCameraReadbackHeight, 1);
 
     ENQUEUE_RENDER_COMMAND(EnqueueCrowOwnerCameraReadback)(
         [Readback, TextureRHI, ReadbackSize](FRHICommandListImmediate& RHICmdList)
         {
-            Readback->EnqueueCopy(RHICmdList, TextureRHI, FIntVector::ZeroValue, 0, ReadbackSize);
+            if (Readback.IsValid())
+            {
+                Readback->EnqueueCopy(RHICmdList, TextureRHI, FIntVector::ZeroValue, 0, ReadbackSize);
+            }
         });
 
     if (ShouldLogFrameTimings())
@@ -2190,6 +2313,11 @@ bool UMyActorComponent::EnqueueAsyncOwnerCameraReadback()
 
 void UMyActorComponent::CaptureAndEnqueue(bool bSubmitDetection)
 {
+    if (bIsEndingPlay.load())
+    {
+        return;
+    }
+
     const double CaptureAndEnqueueStartSeconds = FPlatformTime::Seconds();
     TArray<FColor> Pixels;
     int32 SourceWidth = 0;
@@ -2242,6 +2370,11 @@ void UMyActorComponent::CaptureAndEnqueue(bool bSubmitDetection)
 
     if (bUseSharedVisionModel)
     {
+        if (bIsEndingPlay.load())
+        {
+            return;
+        }
+
         if (UWorld* World = GetWorld())
         {
             if (UCrowVisionSubsystem* VisionSubsystem = World->GetSubsystem<UCrowVisionSubsystem>())
@@ -2447,7 +2580,17 @@ TArray<FDetectionResult> UMyActorComponent::ProcessSharedVisionFrame(
     int32 Height,
     double* OutInferenceMs)
 {
+    if (bIsEndingPlay.load())
+    {
+        return {};
+    }
+
     FScopeLock InferenceLock(&InferenceMutex);
+    if (bIsEndingPlay.load())
+    {
+        return {};
+    }
+
     if (!bIsModelLoaded && !LoadYOLO())
     {
         return {};
@@ -2458,8 +2601,7 @@ TArray<FDetectionResult> UMyActorComponent::ProcessSharedVisionFrame(
 
     if (ShouldLogFrameTimings())
     {
-        UE_LOG(LogTemp, Log, TEXT("SharedInferenceHost[%s]: total=%.2fms infer=%.2fms detections=%d size=%dx%d"),
-            *GetNameSafe(GetOwner()),
+        UE_LOG(LogTemp, Log, TEXT("SharedInferenceHost: total=%.2fms infer=%.2fms detections=%d size=%dx%d"),
             (FPlatformTime::Seconds() - StartSeconds) * 1000.0,
             OutInferenceMs ? *OutInferenceMs : -1.0,
             Detections.Num(),
@@ -2470,18 +2612,42 @@ TArray<FDetectionResult> UMyActorComponent::ProcessSharedVisionFrame(
     return Detections;
 }
 
+int32 UMyActorComponent::BeginSharedVisionRequest()
+{
+    if (bIsEndingPlay.load())
+    {
+        return 0;
+    }
+
+    return ++SharedVisionRequestSerial;
+}
+
 void UMyActorComponent::ConsumeSharedVisionResult(
     TArray<FDetectionResult>&& Detections,
     int32 SourceWidth,
-    int32 SourceHeight)
+    int32 SourceHeight,
+    int32 RequestSerial)
 {
+    UWorld* World = GetWorld();
+    AActor* OwnerActor = GetOwner();
+    if (bIsEndingPlay.load() ||
+        RequestSerial <= 0 ||
+        RequestSerial != SharedVisionRequestSerial.load() ||
+        !World ||
+        World->bIsTearingDown ||
+        !IsValid(OwnerActor) ||
+        !IsRegistered())
+    {
+        return;
+    }
+
     if (SourceWidth <= 0 || SourceHeight <= 0)
     {
         LastFrameDetections.Reset();
         LastFrameSourceWidth = 0;
         LastFrameSourceHeight = 0;
         ++LastFrameSequence;
-        LastFrameTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+        LastFrameTimeSeconds = World->GetTimeSeconds();
         return;
     }
 
@@ -2489,14 +2655,12 @@ void UMyActorComponent::ConsumeSharedVisionResult(
     LastFrameSourceWidth = SourceWidth;
     LastFrameSourceHeight = SourceHeight;
     ++LastFrameSequence;
-    LastFrameTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
-
-    LogFovDetectionMetricSample(TEXT("model_shared"), LastFrameDetections, SourceWidth, SourceHeight);
+    LastFrameTimeSeconds = World->GetTimeSeconds();
 
     if (ShouldLogFrameTimings())
     {
         UE_LOG(LogTemp, Log, TEXT("SharedResult[%s]: detections=%d size=%dx%d seq=%d"),
-            *GetNameSafe(GetOwner()),
+            *GetNameSafe(OwnerActor),
             LastFrameDetections.Num(),
             SourceWidth,
             SourceHeight,
@@ -2609,12 +2773,15 @@ EOnnxRuntimeExecutionProvider UMyActorComponent::ResolveEffectiveOnnxRuntimeProv
     const EDetectedGpuVendor DetectedGpu = DetectGpuVendor(GRHIAdapterName);
 
 #if PLATFORM_WINDOWS
-    if (DetectedOS == EDetectedOperatingSystem::Windows && DetectedGpu == EDetectedGpuVendor::AMD)
+    if (DetectedOS == EDetectedOperatingSystem::Windows)
     {
 #if WITH_ONNXRUNTIME_DML
         return EOnnxRuntimeExecutionProvider::DirectML;
 #else
-        UE_LOG(LogTemp, Warning, TEXT("AMD adapter detected, but ONNX Runtime DirectML provider is not compiled into this build. Using CPU provider."));
+        if (DetectedGpu == EDetectedGpuVendor::AMD)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("AMD adapter detected, but ONNX Runtime DirectML provider is not compiled into this build. Using CPU provider."));
+        }
 #endif
     }
 #endif
@@ -3104,9 +3271,13 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
     {
         OnnxRuntimeEnv = MakeUnique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "EagleEye");
         OnnxRuntimeSessionOptions = MakeUnique<Ort::SessionOptions>();
-        OnnxRuntimeSessionOptions->SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-        OnnxRuntimeSessionOptions->SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
-        OnnxRuntimeSessionOptions->DisableMemPattern();
+        auto ConfigureBaseSessionOptions = [this]()
+        {
+            OnnxRuntimeSessionOptions->SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+            OnnxRuntimeSessionOptions->SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
+            OnnxRuntimeSessionOptions->DisableMemPattern();
+        };
+        ConfigureBaseSessionOptions();
 
         EffectiveOnnxRuntimeExecutionProvider = ResolveEffectiveOnnxRuntimeProvider();
         if (!IsOnnxRuntimeProviderCompiled(EffectiveOnnxRuntimeExecutionProvider))
@@ -3123,6 +3294,7 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
 #if WITH_ONNXRUNTIME_DML
         if (EffectiveOnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::DirectML)
         {
+            LogDirectMLAdapterCandidates(0, GRHIAdapterName);
             if (OrtStatus* Status = OrtSessionOptionsAppendExecutionProvider_DML(*OnnxRuntimeSessionOptions, 0))
             {
                 const FString ErrorMessage = UTF8_TO_TCHAR(Ort::GetApi().GetErrorMessage(Status));
@@ -3134,6 +3306,8 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
                 }
                 UE_LOG(LogTemp, Warning, TEXT("ONNX Runtime DirectML provider unavailable, falling back to CPU: %s"), *ErrorMessage);
                 EffectiveOnnxRuntimeExecutionProvider = EOnnxRuntimeExecutionProvider::CPU;
+                OnnxRuntimeSessionOptions = MakeUnique<Ort::SessionOptions>();
+                ConfigureBaseSessionOptions();
             }
             else
             {
@@ -3158,6 +3332,8 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
                 }
                 UE_LOG(LogTemp, Warning, TEXT("ONNX Runtime MIGraphX provider unavailable, falling back to CPU: %s"), *ErrorMessage);
                 EffectiveOnnxRuntimeExecutionProvider = EOnnxRuntimeExecutionProvider::CPU;
+                OnnxRuntimeSessionOptions = MakeUnique<Ort::SessionOptions>();
+                ConfigureBaseSessionOptions();
             }
             else
             {
@@ -3175,8 +3351,12 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
             UE_LOG(LogTemp, Log, TEXT("ONNX Runtime provider configured: CPU"));
         }
 
+#if PLATFORM_WINDOWS
+        OnnxRuntimeSession = MakeUnique<Ort::Session>(*OnnxRuntimeEnv, *ModelPathUE, *OnnxRuntimeSessionOptions);
+#else
         const std::string ModelPathUtf8 = ToUtf8Path(ModelPathUE);
         OnnxRuntimeSession = MakeUnique<Ort::Session>(*OnnxRuntimeEnv, ModelPathUtf8.c_str(), *OnnxRuntimeSessionOptions);
+#endif
 
         Ort::AllocatorWithDefaultOptions Allocator;
         if (OnnxRuntimeSession->GetInputCount() <= 0 || OnnxRuntimeSession->GetOutputCount() <= 0)
@@ -3348,12 +3528,27 @@ bool UMyActorComponent::RunOnnxRuntimeInference_BG(const cv::Mat& ModelInputBGR)
 
         Ort::TensorTypeAndShapeInfo OutputInfo = ChosenOutput->GetTensorTypeAndShapeInfo();
         const std::vector<int64_t> OutputShape = OutputInfo.GetShape();
-        TrtOutputHost.SetNumUninitialized(static_cast<int32>(BestElementCount));
+        constexpr int64 MaxSupportedOutputElements = 32ll * 1024ll * 1024ll;
+        if (BestElementCount > TNumericLimits<int32>::Max() || BestElementCount > MaxSupportedOutputElements)
+        {
+            UE_LOG(LogTemp, Error, TEXT("ONNX Runtime output too large: %lld elements"), static_cast<long long>(BestElementCount));
+            return false;
+        }
+
+        const int32 OutputElementCount = static_cast<int32>(BestElementCount);
+        TrtOutputHost.SetNumUninitialized(OutputElementCount);
+        if (TrtOutputHost.Num() != OutputElementCount)
+        {
+            UE_LOG(LogTemp, Error, TEXT("ONNX Runtime output buffer allocation failed: requested=%d actual=%d"),
+                OutputElementCount,
+                TrtOutputHost.Num());
+            return false;
+        }
         FMemory::Memcpy(
             TrtOutputHost.GetData(),
             ChosenOutput->GetTensorMutableData<float>(),
             static_cast<size_t>(BestElementCount) * sizeof(float));
-        TrtOutputElements = static_cast<int32>(BestElementCount);
+        TrtOutputElements = OutputElementCount;
 
         TArray<int32> NonSingletonDims;
         for (int64_t Dim : OutputShape)
@@ -3587,6 +3782,15 @@ TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FC
 
     if (!bIsModelLoaded)
     {
+        return {};
+    }
+
+    if (Width <= 0 || Height <= 0 || Bitmap.Num() != Width * Height || !Bitmap.GetData())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Skipping inference for invalid bitmap: size=%dx%d pixels=%d"),
+            Width,
+            Height,
+            Bitmap.Num());
         return {};
     }
 

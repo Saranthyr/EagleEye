@@ -10,12 +10,23 @@
 void UCrowVisionSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
     Super::OnWorldBeginPlay(InWorld);
+    bIsShuttingDown.store(false);
+    ++DeliveryGeneration;
+    if (!WorldCleanupHandle.IsValid())
+    {
+        WorldCleanupHandle = FWorldDelegates::OnWorldCleanup.AddUObject(this, &UCrowVisionSubsystem::HandleWorldCleanup);
+    }
     EnsureModelHostActor();
 }
 
 void UCrowVisionSubsystem::Deinitialize()
 {
-    StopWorker();
+    StopWorker(true);
+    if (WorldCleanupHandle.IsValid())
+    {
+        FWorldDelegates::OnWorldCleanup.Remove(WorldCleanupHandle);
+        WorldCleanupHandle.Reset();
+    }
     Super::Deinitialize();
 }
 
@@ -44,20 +55,46 @@ void UCrowVisionSubsystem::RegisterModelHost(UMyActorComponent* Component)
 
 void UCrowVisionSubsystem::UnregisterModelHost(UMyActorComponent* Component)
 {
+    bool bRemovedModelHost = false;
     {
         FScopeLock Lock(&HostsMutex);
-        ModelHosts.RemoveAll([Component](const TWeakObjectPtr<UMyActorComponent>& Entry)
+        const int32 RemovedCount = ModelHosts.RemoveAll([Component](const TWeakObjectPtr<UMyActorComponent>& Entry)
         {
             return !Entry.IsValid() || Entry.Get() == Component;
         });
+        bRemovedModelHost = RemovedCount > 0;
     }
 
     {
         FScopeLock Lock(&QueueMutex);
-        if (LatestFrame.IsValid() && LatestFrame->Requester.Get() == Component)
+        PendingFrames.RemoveAll([Component, bRemovedModelHost](const TSharedPtr<FQueuedFrame>& Frame)
         {
-            LatestFrame.Reset();
+            return !Frame.IsValid() ||
+                Frame->Requester.Get() == Component ||
+                Frame->ModelHost.Get() == Component ||
+                bRemovedModelHost;
+        });
+        if (InFlightFrame.IsValid() &&
+            (InFlightFrame->Requester.Get() == Component || InFlightFrame->ModelHost.Get() == Component || bRemovedModelHost))
+        {
+            InFlightFrame.Reset();
         }
+    }
+
+    if (bRemovedModelHost)
+    {
+        StopWorker(false);
+    }
+}
+
+void UCrowVisionSubsystem::ConfigureModelHostLimits(int32 MaxActiveUsers, int32 MaxQueuedFrames)
+{
+    FScopeLock Lock(&QueueMutex);
+    MaxActiveModelUsers = FMath::Max(1, MaxActiveUsers);
+    MaxQueuedModelFrames = FMath::Max(1, MaxQueuedFrames);
+    while (PendingFrames.Num() > MaxQueuedModelFrames)
+    {
+        PendingFrames.RemoveAt(0);
     }
 }
 
@@ -67,25 +104,56 @@ void UCrowVisionSubsystem::SubmitFrame(
     int32 Width,
     int32 Height)
 {
-    if (!IsValid(Requester) || Width <= 0 || Height <= 0 || Pixels.Num() != Width * Height)
+    if (bIsShuttingDown.load() || !IsValid(Requester) || Width <= 0 || Height <= 0 || Pixels.Num() != Width * Height)
     {
         return;
     }
 
     EnsureModelHostActor();
-    StartWorker();
+
+    UMyActorComponent* Host = ResolveModelHost();
+    if (!IsValid(Host) || Host == Requester)
+    {
+        return;
+    }
 
     TSharedPtr<FQueuedFrame> Frame = MakeShared<FQueuedFrame>();
     Frame->Requester = Requester;
+    Frame->SubsystemForDelivery = this;
+    Frame->ModelHost = Host;
     Frame->Pixels = MoveTemp(Pixels);
     Frame->Width = Width;
     Frame->Height = Height;
     Frame->SubmitTimeSeconds = FPlatformTime::Seconds();
+    Frame->RequesterName = GetNameSafe(Requester->GetOwner());
+    Frame->bRequesterLogFrameTimings = Requester->ShouldLogFrameTimings();
 
     {
         FScopeLock Lock(&QueueMutex);
-        LatestFrame = Frame;
+        PendingFrames.RemoveAll([](const TSharedPtr<FQueuedFrame>& PendingFrame)
+        {
+            return !PendingFrame.IsValid() ||
+                !PendingFrame->Requester.IsValid() ||
+                !PendingFrame->ModelHost.IsValid();
+        });
+
+        if (HasActiveRequestForRequesterLocked(Requester) ||
+            CountActiveModelUsersLocked() >= MaxActiveModelUsers ||
+            PendingFrames.Num() >= MaxQueuedModelFrames)
+        {
+            return;
+        }
+
+        Frame->RequestSerial = Requester->BeginSharedVisionRequest();
+        if (Frame->RequestSerial <= 0)
+        {
+            return;
+        }
+
+        PendingFrames.Add(Frame);
     }
+
+    StartWorker();
 }
 
 void UCrowVisionSubsystem::StartWorker()
@@ -94,19 +162,27 @@ void UCrowVisionSubsystem::StartWorker()
     {
         return;
     }
+    if (bIsShuttingDown.load())
+    {
+        return;
+    }
 
     bWorkerRunning.store(true);
-    TWeakObjectPtr<UCrowVisionSubsystem> WeakThis(this);
+    UCrowVisionSubsystem* Subsystem = this;
 
-    WorkerFuture = Async(EAsyncExecution::Thread, [WeakThis]()
+    WorkerFuture = Async(EAsyncExecution::Thread, [Subsystem]()
     {
-        while (WeakThis.IsValid() && WeakThis->bWorkerRunning.load())
+        while (Subsystem->bWorkerRunning.load() && !Subsystem->bIsShuttingDown.load())
         {
             TSharedPtr<FQueuedFrame> Frame;
             {
-                FScopeLock Lock(&WeakThis->QueueMutex);
-                Frame = WeakThis->LatestFrame;
-                WeakThis->LatestFrame.Reset();
+                FScopeLock Lock(&Subsystem->QueueMutex);
+                if (Subsystem->PendingFrames.Num() > 0)
+                {
+                    Frame = Subsystem->PendingFrames[0];
+                    Subsystem->PendingFrames.RemoveAt(0);
+                    Subsystem->InFlightFrame = Frame;
+                }
             }
 
             if (!Frame.IsValid())
@@ -115,10 +191,14 @@ void UCrowVisionSubsystem::StartWorker()
                 continue;
             }
 
-            UMyActorComponent* Requester = Frame->Requester.Get();
-            UMyActorComponent* Host = WeakThis->ResolveModelHost();
-            if (!IsValid(Requester) || !IsValid(Host))
+            UMyActorComponent* Host = Frame->ModelHost.Get();
+            if (Subsystem->bIsShuttingDown.load() || !IsValid(Host))
             {
+                FScopeLock Lock(&Subsystem->QueueMutex);
+                if (Subsystem->InFlightFrame == Frame)
+                {
+                    Subsystem->InFlightFrame.Reset();
+                }
                 continue;
             }
 
@@ -132,11 +212,10 @@ void UCrowVisionSubsystem::StartWorker()
                 &InferenceMs);
             const double WorkerTotalMs = (FPlatformTime::Seconds() - WorkerStartSeconds) * 1000.0;
 
-            if (Host->ShouldLogFrameTimings() || Requester->ShouldLogFrameTimings())
+            if (Frame->bRequesterLogFrameTimings)
             {
-                UE_LOG(LogTemp, Log, TEXT("SharedVisionFrame: requester=%s host=%s queue=%.2fms worker=%.2fms infer=%.2fms detections=%d size=%dx%d"),
-                    *GetNameSafe(Requester->GetOwner()),
-                    *GetNameSafe(Host->GetOwner()),
+                UE_LOG(LogTemp, Log, TEXT("SharedVisionFrame: requester=%s queue=%.2fms worker=%.2fms infer=%.2fms detections=%d size=%dx%d"),
+                    *Frame->RequesterName,
                     QueueWaitMs,
                     WorkerTotalMs,
                     InferenceMs,
@@ -145,24 +224,47 @@ void UCrowVisionSubsystem::StartWorker()
                     Frame->Height);
             }
 
-            TWeakObjectPtr<UMyActorComponent> WeakRequester(Requester);
+            TWeakObjectPtr<UMyActorComponent> WeakRequester = Frame->Requester;
+            TWeakObjectPtr<UCrowVisionSubsystem> WeakSubsystem = Frame->SubsystemForDelivery;
             const int32 Width = Frame->Width;
             const int32 Height = Frame->Height;
             const double SubmitTimeSeconds = Frame->SubmitTimeSeconds;
+            const FString RequesterName = Frame->RequesterName;
+            const bool bRequesterLogFrameTimings = Frame->bRequesterLogFrameTimings;
+            const int32 RequestSerial = Frame->RequestSerial;
+            const int32 Generation = Subsystem->DeliveryGeneration.load();
 
-            AsyncTask(ENamedThreads::GameThread, [WeakRequester, Detections = MoveTemp(Detections), Width, Height, SubmitTimeSeconds]() mutable
+            AsyncTask(ENamedThreads::GameThread, [WeakSubsystem, WeakRequester, Detections = MoveTemp(Detections), Width, Height, SubmitTimeSeconds, RequesterName, bRequesterLogFrameTimings, RequestSerial, Generation]() mutable
             {
-                if (WeakRequester.IsValid())
+                UCrowVisionSubsystem* DeliverySubsystem = WeakSubsystem.Get();
+                if (!DeliverySubsystem || DeliverySubsystem->IsShuttingDown() || Generation != DeliverySubsystem->DeliveryGeneration.load())
                 {
-                    if (WeakRequester->ShouldLogFrameTimings())
-                    {
-                        UE_LOG(LogTemp, Log, TEXT("SharedVisionDelivery[%s]: end_to_end=%.2fms"),
-                            *GetNameSafe(WeakRequester->GetOwner()),
-                            (FPlatformTime::Seconds() - SubmitTimeSeconds) * 1000.0);
-                    }
-                    WeakRequester->ConsumeSharedVisionResult(MoveTemp(Detections), Width, Height);
+                    return;
                 }
+
+                UMyActorComponent* Requester = WeakRequester.Get();
+                UWorld* World = Requester ? Requester->GetWorld() : nullptr;
+                if (!IsValid(Requester) || !World || World->bIsTearingDown)
+                {
+                    return;
+                }
+
+                if (bRequesterLogFrameTimings)
+                {
+                    UE_LOG(LogTemp, Log, TEXT("SharedVisionDelivery[%s]: end_to_end=%.2fms"),
+                        *RequesterName,
+                        (FPlatformTime::Seconds() - SubmitTimeSeconds) * 1000.0);
+                }
+                Requester->ConsumeSharedVisionResult(MoveTemp(Detections), Width, Height, RequestSerial);
             });
+
+            {
+                FScopeLock Lock(&Subsystem->QueueMutex);
+                if (Subsystem->InFlightFrame == Frame)
+                {
+                    Subsystem->InFlightFrame.Reset();
+                }
+            }
         }
     });
 }
@@ -191,17 +293,31 @@ void UCrowVisionSubsystem::EnsureModelHostActor()
     UE_LOG(LogTemp, Log, TEXT("Shared vision model host spawned by CrowVisionSubsystem: %s"), *GetNameSafe(ModelHostActor));
 }
 
-void UCrowVisionSubsystem::StopWorker()
+void UCrowVisionSubsystem::StopWorker(bool bShutdownSubsystem)
 {
     bWorkerRunning.store(false);
+    ++DeliveryGeneration;
+    if (bShutdownSubsystem)
+    {
+        bIsShuttingDown.store(true);
+    }
     {
         FScopeLock Lock(&QueueMutex);
-        LatestFrame.Reset();
+        PendingFrames.Reset();
+        InFlightFrame.Reset();
     }
 
     if (WorkerFuture.IsValid())
     {
         WorkerFuture.Wait();
+    }
+}
+
+void UCrowVisionSubsystem::HandleWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
+{
+    if (World == GetWorld())
+    {
+        StopWorker(true);
     }
 }
 
@@ -214,4 +330,48 @@ UMyActorComponent* UCrowVisionSubsystem::ResolveModelHost()
     });
 
     return ModelHosts.Num() > 0 ? ModelHosts[0].Get() : nullptr;
+}
+
+bool UCrowVisionSubsystem::HasActiveRequestForRequesterLocked(const UMyActorComponent* Requester) const
+{
+    if (!Requester)
+    {
+        return false;
+    }
+
+    if (InFlightFrame.IsValid() && InFlightFrame->Requester.Get() == Requester)
+    {
+        return true;
+    }
+
+    for (const TSharedPtr<FQueuedFrame>& Frame : PendingFrames)
+    {
+        if (Frame.IsValid() && Frame->Requester.Get() == Requester)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+int32 UCrowVisionSubsystem::CountActiveModelUsersLocked() const
+{
+    TArray<const UMyActorComponent*> ActiveRequesters;
+    auto AddRequester = [&ActiveRequesters](const TSharedPtr<FQueuedFrame>& Frame)
+    {
+        const UMyActorComponent* Requester = Frame.IsValid() ? Frame->Requester.Get() : nullptr;
+        if (Requester)
+        {
+            ActiveRequesters.AddUnique(Requester);
+        }
+    };
+
+    AddRequester(InFlightFrame);
+    for (const TSharedPtr<FQueuedFrame>& Frame : PendingFrames)
+    {
+        AddRequester(Frame);
+    }
+
+    return ActiveRequesters.Num();
 }

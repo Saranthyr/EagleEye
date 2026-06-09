@@ -152,12 +152,30 @@ public class EagleEye : ModuleRules
         {
             OnnxRuntimeRoot = Environment.GetEnvironmentVariable("ORT_ROOT");
         }
+        if (String.IsNullOrEmpty(OnnxRuntimeRoot))
+        {
+            string ProjectOnnxRuntimeRoot = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "ThirdParty", "OnnxRuntimeDirectML"));
+            if (Directory.Exists(ProjectOnnxRuntimeRoot))
+            {
+                OnnxRuntimeRoot = ProjectOnnxRuntimeRoot;
+            }
+        }
 
         bool bWithOnnxRuntime = false;
         bool bWithOnnxRuntimeDirectML = false;
         bool bWithOnnxRuntimeMIGraphX = false;
         if (!String.IsNullOrEmpty(OnnxRuntimeRoot))
         {
+            string DirectMLRedistRoot = Environment.GetEnvironmentVariable("DIRECTML_ROOT");
+            if (String.IsNullOrEmpty(DirectMLRedistRoot))
+            {
+                string ProjectDirectMLRoot = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "ThirdParty", "DirectML"));
+                if (Directory.Exists(ProjectDirectMLRoot))
+                {
+                    DirectMLRedistRoot = ProjectDirectMLRoot;
+                }
+            }
+
             string OnnxIncludePath = FindFirstExistingDirectory(new List<string>
             {
                 Path.Combine(OnnxRuntimeRoot, "include"),
@@ -187,11 +205,16 @@ public class EagleEye : ModuleRules
             {
                 AddSystemIncludePath(OnnxIncludePath);
                 AddSystemIncludePath(Path.Combine(OnnxIncludePath, "onnxruntime", "core", "session"));
-                string DirectMLProviderHeader = Path.Combine(OnnxIncludePath, "onnxruntime", "core", "providers", "dml", "dml_provider_factory.h");
+                string DirectMLProviderHeader = FindFirstExistingFile(new List<string>
+                {
+                    OnnxIncludePath,
+                    Path.Combine(OnnxIncludePath, "onnxruntime", "core", "providers", "dml")
+                }, "dml_provider_factory.h");
                 string MIGraphXProviderHeader = Path.Combine(OnnxIncludePath, "onnxruntime", "core", "providers", "migraphx", "migraphx_provider_factory.h");
 
                 if (Target.Platform == UnrealTargetPlatform.Win64)
                 {
+                    PublicSystemLibraries.Add("dxgi.lib");
                     List<string> OnnxRuntimeDllDirs = new List<string>
                     {
                         Path.Combine(OnnxRuntimeRoot, "bin"),
@@ -202,18 +225,37 @@ public class EagleEye : ModuleRules
                         Path.Combine(OnnxRuntimeRoot, "build", "native", "bin"),
                         Path.Combine(OnnxRuntimeRoot, "build", "native", "bin", "x64")
                     };
+                    if (!String.IsNullOrEmpty(DirectMLRedistRoot))
+                    {
+                        OnnxRuntimeDllDirs.AddRange(new List<string>
+                        {
+                            Path.Combine(DirectMLRedistRoot, "bin", "x64-win"),
+                            Path.Combine(DirectMLRedistRoot, "runtimes", "win-x64", "native"),
+                            Path.Combine(DirectMLRedistRoot, "native"),
+                            DirectMLRedistRoot
+                        });
+                    }
                     PublicAdditionalLibraries.Add(OnnxImportOrSharedLib);
+                    PublicDelayLoadDLLs.Add("onnxruntime.dll");
                     string DirectMLDll = FindFirstExistingFile(OnnxRuntimeDllDirs, "DirectML.dll");
-                    bWithOnnxRuntimeDirectML = File.Exists(DirectMLProviderHeader) && File.Exists(DirectMLDll);
+                    bWithOnnxRuntimeDirectML = File.Exists(DirectMLProviderHeader);
 
                     foreach (string DllDir in OnnxRuntimeDllDirs)
                     {
                         StageMatchingRuntimeFiles(DllDir, "onnxruntime*.dll");
+                        CopyMatchingRuntimeFilesToBinaryOutput(DllDir, "onnxruntime*.dll");
                     }
-                    if (bWithOnnxRuntimeDirectML)
+                    if (File.Exists(DirectMLDll))
                     {
+                        PublicDelayLoadDLLs.Add("DirectML.dll");
+                        StageRuntimeFile(DirectMLDll);
+                        CopyRuntimeFileToBinaryOutput(DirectMLDll);
                         RuntimeDependencies.Add(
                             Path.Combine("$(TargetOutputDir)", Path.GetFileName(DirectMLDll)),
+                            DirectMLDll,
+                            StagedFileType.NonUFS);
+                        RuntimeDependencies.Add(
+                            Path.Combine("$(BinaryOutputDir)", Path.GetFileName(DirectMLDll)),
                             DirectMLDll,
                             StagedFileType.NonUFS);
                     }
@@ -240,7 +282,15 @@ public class EagleEye : ModuleRules
         {
             LogInferenceDependencyHint(
                 "ONNX Runtime",
-                "source Saved/InferenceDeps.env or run Scripts/setup-inference-deps.sh --build-onnxruntime");
+                Target.Platform == UnrealTargetPlatform.Win64
+                    ? "run Scripts/setup-inference-deps.ps1 -InstallDirectML, or set ONNXRUNTIME_ROOT/ORT_ROOT"
+                    : "source Saved/InferenceDeps.env or run Scripts/setup-inference-deps.sh --build-onnxruntime");
+        }
+        else if (Target.Platform == UnrealTargetPlatform.Win64 && !bWithOnnxRuntimeDirectML)
+        {
+            LogInferenceDependencyHint(
+                "ONNX Runtime DirectML EP",
+                "run Scripts/setup-inference-deps.ps1 -InstallDirectML, or point ONNXRUNTIME_ROOT at Microsoft.ML.OnnxRuntime.DirectML");
         }
         else if (Target.Platform == UnrealTargetPlatform.Linux && !bWithOnnxRuntimeMIGraphX)
         {
@@ -312,6 +362,44 @@ public class EagleEye : ModuleRules
         {
             RuntimeDependencies.Add(
                 Path.Combine("$(TargetOutputDir)", Path.GetFileName(RuntimeFile)),
+            RuntimeFile,
+            StagedFileType.NonUFS);
+        }
+    }
+
+    private void StageRuntimeFile(string RuntimeFile)
+    {
+        if (File.Exists(RuntimeFile))
+        {
+            RuntimeDependencies.Add(
+                Path.Combine("$(TargetOutputDir)", Path.GetFileName(RuntimeFile)),
+                RuntimeFile,
+                StagedFileType.NonUFS);
+        }
+    }
+
+    private void CopyRuntimeFileToBinaryOutput(string RuntimeFile)
+    {
+        if (File.Exists(RuntimeFile))
+        {
+            RuntimeDependencies.Add(
+                Path.Combine("$(BinaryOutputDir)", Path.GetFileName(RuntimeFile)),
+                RuntimeFile,
+                StagedFileType.NonUFS);
+        }
+    }
+
+    private void CopyMatchingRuntimeFilesToBinaryOutput(string DirectoryPath, string Pattern)
+    {
+        if (!Directory.Exists(DirectoryPath))
+        {
+            return;
+        }
+
+        foreach (string RuntimeFile in Directory.GetFiles(DirectoryPath, Pattern, SearchOption.TopDirectoryOnly))
+        {
+            RuntimeDependencies.Add(
+                Path.Combine("$(BinaryOutputDir)", Path.GetFileName(RuntimeFile)),
                 RuntimeFile,
                 StagedFileType.NonUFS);
         }

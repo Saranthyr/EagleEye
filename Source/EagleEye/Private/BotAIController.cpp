@@ -258,8 +258,8 @@ void ABotAIController::HandleTargetPerceptionUpdated(AActor* Actor, FAIStimulus 
 
 bool ABotAIController::IsPlayerTarget(const AActor* Actor) const
 {
-    const APawn* Pawn = Cast<APawn>(Actor);
-    return Pawn && Pawn->IsPlayerControlled();
+    const APawn* TargetPawn = Cast<APawn>(Actor);
+    return TargetPawn && TargetPawn->IsPlayerControlled();
 }
 
 bool ABotAIController::ShouldUseRandomFlight(const APawn* ControlledPawn) const

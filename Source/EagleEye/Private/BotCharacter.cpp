@@ -51,6 +51,12 @@ void ABotCharacter::BeginPlay()
 
     ApplyBotMovementSettings();
 
+    if (DetectionComponent)
+    {
+        DetectionComponent->SetSharedVisionModelHost(false);
+        DetectionComponent->SetUseSharedVisionModel(true);
+    }
+
     if (CloseDamageHitbox && !CloseDamageHitbox->OnComponentBeginOverlap.IsAlreadyBound(this, &ABotCharacter::HandleCloseDamageOverlap))
     {
         CloseDamageHitbox->OnComponentBeginOverlap.AddDynamic(this, &ABotCharacter::HandleCloseDamageOverlap);
