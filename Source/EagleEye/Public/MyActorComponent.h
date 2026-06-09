@@ -134,6 +134,7 @@ public:
         int32 Height,
         double* OutInferenceMs = nullptr);
 
+    void RequestInferenceShutdown();
     int32 BeginSharedVisionRequest();
     void ConsumeSharedVisionResult(TArray<FDetectionResult>&& Detections, int32 SourceWidth, int32 SourceHeight, int32 RequestSerial);
 
@@ -145,6 +146,7 @@ protected:
 private:
     void StartWorker();
     void StopWorker();
+    void RequestOnnxRuntimeInferenceTerminate();
     void ApplyProjectDetectionSettings();
     void ResolveConfiguredRuntimePaths();
     void CaptureAndEnqueue(bool bSubmitDetection = true);
@@ -356,6 +358,7 @@ private:
     TFuture<void> WorkerFuture;
     std::atomic<bool> bWorkerRunning{false};
     std::atomic<bool> bIsEndingPlay{false};
+    std::atomic<bool> bInferenceShutdownRequested{false};
     std::atomic<int32> SharedVisionRequestSerial{0};
 
     // YOLO state (paths only; net will be created inside worker)
@@ -459,6 +462,8 @@ private:
     TUniquePtr<Ort::Env> OnnxRuntimeEnv;
     TUniquePtr<Ort::SessionOptions> OnnxRuntimeSessionOptions;
     TUniquePtr<Ort::Session> OnnxRuntimeSession;
+    TUniquePtr<Ort::RunOptions> OnnxRuntimeRunOptions;
+    FCriticalSection OnnxRuntimeRunOptionsMutex;
     TArray<float> OnnxRuntimeInputHost;
     TArray<int64_t> OnnxRuntimeInputShape;
     std::string OnnxRuntimeInputName;

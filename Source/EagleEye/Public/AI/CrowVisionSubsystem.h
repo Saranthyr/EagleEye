@@ -49,6 +49,8 @@ private:
     void StopWorker(bool bShutdownSubsystem);
     void EnsureModelHostActor();
     UMyActorComponent* ResolveModelHost();
+    void RequestHostInferenceShutdown();
+    void HandleWorldBeginTearDown(UWorld* World);
     void HandleWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources);
     bool HasActiveRequestForRequesterLocked(const UMyActorComponent* Requester) const;
     int32 CountActiveModelUsersLocked() const;
@@ -65,6 +67,7 @@ private:
     UPROPERTY()
     TObjectPtr<ADetectionModelHostActor> ModelHostActor;
 
+    FDelegateHandle WorldBeginTearDownHandle;
     FDelegateHandle WorldCleanupHandle;
     TFuture<void> WorkerFuture;
     std::atomic<bool> bWorkerRunning{false};

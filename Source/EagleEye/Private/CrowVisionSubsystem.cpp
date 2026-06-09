@@ -12,6 +12,10 @@ void UCrowVisionSubsystem::OnWorldBeginPlay(UWorld& InWorld)
     Super::OnWorldBeginPlay(InWorld);
     bIsShuttingDown.store(false);
     ++DeliveryGeneration;
+    if (!WorldBeginTearDownHandle.IsValid())
+    {
+        WorldBeginTearDownHandle = FWorldDelegates::OnWorldBeginTearDown.AddUObject(this, &UCrowVisionSubsystem::HandleWorldBeginTearDown);
+    }
     if (!WorldCleanupHandle.IsValid())
     {
         WorldCleanupHandle = FWorldDelegates::OnWorldCleanup.AddUObject(this, &UCrowVisionSubsystem::HandleWorldCleanup);
@@ -22,6 +26,11 @@ void UCrowVisionSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 void UCrowVisionSubsystem::Deinitialize()
 {
     StopWorker(true);
+    if (WorldBeginTearDownHandle.IsValid())
+    {
+        FWorldDelegates::OnWorldBeginTearDown.Remove(WorldBeginTearDownHandle);
+        WorldBeginTearDownHandle.Reset();
+    }
     if (WorldCleanupHandle.IsValid())
     {
         FWorldDelegates::OnWorldCleanup.Remove(WorldCleanupHandle);
@@ -300,6 +309,7 @@ void UCrowVisionSubsystem::StopWorker(bool bShutdownSubsystem)
     if (bShutdownSubsystem)
     {
         bIsShuttingDown.store(true);
+        RequestHostInferenceShutdown();
     }
     {
         FScopeLock Lock(&QueueMutex);
@@ -310,6 +320,45 @@ void UCrowVisionSubsystem::StopWorker(bool bShutdownSubsystem)
     if (WorkerFuture.IsValid())
     {
         WorkerFuture.Wait();
+    }
+}
+
+void UCrowVisionSubsystem::RequestHostInferenceShutdown()
+{
+    TArray<TWeakObjectPtr<UMyActorComponent>> HostsSnapshot;
+    {
+        FScopeLock Lock(&HostsMutex);
+        HostsSnapshot = ModelHosts;
+    }
+    {
+        FScopeLock Lock(&QueueMutex);
+        if (InFlightFrame.IsValid())
+        {
+            HostsSnapshot.Add(InFlightFrame->ModelHost);
+        }
+        for (const TSharedPtr<FQueuedFrame>& PendingFrame : PendingFrames)
+        {
+            if (PendingFrame.IsValid())
+            {
+                HostsSnapshot.Add(PendingFrame->ModelHost);
+            }
+        }
+    }
+
+    for (const TWeakObjectPtr<UMyActorComponent>& HostPtr : HostsSnapshot)
+    {
+        if (UMyActorComponent* Host = HostPtr.Get())
+        {
+            Host->RequestInferenceShutdown();
+        }
+    }
+}
+
+void UCrowVisionSubsystem::HandleWorldBeginTearDown(UWorld* World)
+{
+    if (World == GetWorld())
+    {
+        StopWorker(true);
     }
 }
 

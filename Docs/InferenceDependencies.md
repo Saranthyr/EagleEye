@@ -23,6 +23,15 @@ Detect only:
 ```
 
 The script writes `Saved/InferenceDeps.env`, which exports `ONNXRUNTIME_ROOT`, `ORT_ROOT`, `ROCM_HOME`, and `LD_LIBRARY_PATH` for the editor/build shell.
+It also enables persistent MIGraphX caches under `Saved/MIGraphXCache/`:
+
+```bash
+ORT_MIGRAPHX_CACHE_PATH=Saved/MIGraphXCache/data
+ORT_MIGRAPHX_MODEL_CACHE_PATH=Saved/MIGraphXCache/models
+ORT_MIGRAPHX_EXHAUSTIVE_TUNE=0
+```
+
+The first launch still compiles. Later launches with the same model, input shape, ORT/MIGraphX/ROCm versions, and provider options should reuse cached compiled artifacts.
 
 Build or package from a shell that has sourced the env file:
 

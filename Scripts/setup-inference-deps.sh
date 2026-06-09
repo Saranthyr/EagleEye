@@ -352,8 +352,12 @@ write_env_file() {
 export ONNXRUNTIME_ROOT="$ONNXRUNTIME_PREFIX"
 export ORT_ROOT="$ONNXRUNTIME_PREFIX"
 export ROCM_HOME="$ROCM_HOME"
+export ORT_MIGRAPHX_CACHE_PATH="$PROJECT_ROOT/Saved/MIGraphXCache/data"
+export ORT_MIGRAPHX_MODEL_CACHE_PATH="$PROJECT_ROOT/Saved/MIGraphXCache/models"
+export ORT_MIGRAPHX_EXHAUSTIVE_TUNE="\${ORT_MIGRAPHX_EXHAUSTIVE_TUNE:-0}"
 export LD_LIBRARY_PATH="$ONNXRUNTIME_PREFIX/lib:$ROCM_HOME/lib:$ROCM_HOME/lib/migraphx/lib:\${LD_LIBRARY_PATH:-}"
 EOF
+    mkdir -p "$PROJECT_ROOT/Saved/MIGraphXCache/data" "$PROJECT_ROOT/Saved/MIGraphXCache/models"
 
     if [[ "$SKIP_TENSORRT" -eq 0 ]]; then
         if [[ -n "${TENSORRT_ROOT:-}" ]]; then

@@ -889,6 +889,7 @@ void UMyActorComponent::get_class_names() {
 void UMyActorComponent::BeginPlay() {
     Super::BeginPlay();
     bIsEndingPlay.store(false);
+    bInferenceShutdownRequested.store(false);
 
     ApplyProjectDetectionSettings();
 
@@ -956,6 +957,8 @@ void UMyActorComponent::BeginPlay() {
 
 void UMyActorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
     bIsEndingPlay.store(true);
+    bInferenceShutdownRequested.store(true);
+    RequestOnnxRuntimeInferenceTerminate();
     ++SharedVisionRequestSerial;
 
     if (UWorld* World = GetWorld())
@@ -2506,6 +2509,7 @@ void UMyActorComponent::StartWorker()
 
 void UMyActorComponent::StopWorker()
 {
+    RequestOnnxRuntimeInferenceTerminate();
     bWorkerRunning.store(false);
     {
         FScopeLock Lock(&FrameMutex);
@@ -2515,6 +2519,8 @@ void UMyActorComponent::StopWorker()
     {
         WorkerFuture.Wait();
     }
+
+    FScopeLock InferenceLock(&InferenceMutex);
     FlushFrameTimingLog(true);
     {
         FScopeLock Lock(&ResultsMutex);
@@ -2532,6 +2538,32 @@ void UMyActorComponent::StopWorker()
     ReleaseTensorRT();
     ReleaseOnnxRuntime();
     OpenCVDnnNet = cv::dnn::Net();
+}
+
+void UMyActorComponent::RequestInferenceShutdown()
+{
+    bInferenceShutdownRequested.store(true);
+    RequestOnnxRuntimeInferenceTerminate();
+}
+
+void UMyActorComponent::RequestOnnxRuntimeInferenceTerminate()
+{
+#if WITH_ONNXRUNTIME
+    FScopeLock Lock(&OnnxRuntimeRunOptionsMutex);
+    if (!OnnxRuntimeRunOptions)
+    {
+        return;
+    }
+
+    try
+    {
+        OnnxRuntimeRunOptions->SetTerminate();
+    }
+    catch (const Ort::Exception& e)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("ONNX Runtime run termination request failed: %s"), *FString(e.what()));
+    }
+#endif
 }
 
 void UMyActorComponent::CopyResultsFromWorker()
@@ -2580,13 +2612,13 @@ TArray<FDetectionResult> UMyActorComponent::ProcessSharedVisionFrame(
     int32 Height,
     double* OutInferenceMs)
 {
-    if (bIsEndingPlay.load())
+    if (bIsEndingPlay.load() || bInferenceShutdownRequested.load())
     {
         return {};
     }
 
     FScopeLock InferenceLock(&InferenceMutex);
-    if (bIsEndingPlay.load())
+    if (bIsEndingPlay.load() || bInferenceShutdownRequested.load())
     {
         return {};
     }
@@ -2597,6 +2629,11 @@ TArray<FDetectionResult> UMyActorComponent::ProcessSharedVisionFrame(
     }
 
     const double StartSeconds = FPlatformTime::Seconds();
+    if (bIsEndingPlay.load() || bInferenceShutdownRequested.load())
+    {
+        return {};
+    }
+
     TArray<FDetectionResult> Detections = ProcessWithOpenCV_BG(Bitmap, Width, Height, OutInferenceMs);
 
     if (ShouldLogFrameTimings())
@@ -3138,6 +3175,10 @@ void UMyActorComponent::ReleaseTensorRT()
 void UMyActorComponent::ReleaseOnnxRuntime()
 {
 #if WITH_ONNXRUNTIME
+    {
+        FScopeLock Lock(&OnnxRuntimeRunOptionsMutex);
+        OnnxRuntimeRunOptions.Reset();
+    }
     OnnxRuntimeSession.Reset();
     OnnxRuntimeSessionOptions.Reset();
     OnnxRuntimeEnv.Reset();
@@ -3357,6 +3398,10 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
         const std::string ModelPathUtf8 = ToUtf8Path(ModelPathUE);
         OnnxRuntimeSession = MakeUnique<Ort::Session>(*OnnxRuntimeEnv, ModelPathUtf8.c_str(), *OnnxRuntimeSessionOptions);
 #endif
+        {
+            FScopeLock Lock(&OnnxRuntimeRunOptionsMutex);
+            OnnxRuntimeRunOptions = MakeUnique<Ort::RunOptions>();
+        }
 
         Ort::AllocatorWithDefaultOptions Allocator;
         if (OnnxRuntimeSession->GetInputCount() <= 0 || OnnxRuntimeSession->GetOutputCount() <= 0)
@@ -3489,8 +3534,23 @@ bool UMyActorComponent::RunOnnxRuntimeInference_BG(const cv::Mat& ModelInputBGR)
             OutputNamePtrs.Add(OutputName.c_str());
         }
 
+        Ort::RunOptions* RunOptions = nullptr;
+        {
+            FScopeLock Lock(&OnnxRuntimeRunOptionsMutex);
+            if (bInferenceShutdownRequested.load() || bIsEndingPlay.load())
+            {
+                return false;
+            }
+            if (!OnnxRuntimeRunOptions)
+            {
+                OnnxRuntimeRunOptions = MakeUnique<Ort::RunOptions>();
+            }
+            OnnxRuntimeRunOptions->UnsetTerminate();
+            RunOptions = OnnxRuntimeRunOptions.Get();
+        }
+
         std::vector<Ort::Value> Outputs = OnnxRuntimeSession->Run(
-            Ort::RunOptions{ nullptr },
+            *RunOptions,
             InputNames,
             &InputTensor,
             1,
@@ -3574,6 +3634,11 @@ bool UMyActorComponent::RunOnnxRuntimeInference_BG(const cv::Mat& ModelInputBGR)
     }
     catch (const Ort::Exception& e)
     {
+        if (bInferenceShutdownRequested.load() || bIsEndingPlay.load())
+        {
+            UE_LOG(LogTemp, Verbose, TEXT("ONNX Runtime inference stopped during shutdown: %s"), *FString(e.what()));
+            return false;
+        }
         UE_LOG(LogTemp, Error, TEXT("ONNX Runtime inference failed: %s"), *FString(e.what()));
         return false;
     }
