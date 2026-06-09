@@ -9,6 +9,7 @@ public class EagleEye : ModuleRules
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_5;
+        bUseUnity = false;
 
         PublicDependencyModuleNames.AddRange(new string[]
         {

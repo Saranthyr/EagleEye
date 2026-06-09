@@ -4,6 +4,7 @@
 #include "DetectionResult.h"
 #include "Subsystems/WorldSubsystem.h"
 #include <atomic>
+#include <thread>
 #include "CrowVisionSubsystem.generated.h"
 
 class UMyActorComponent;
@@ -69,7 +70,7 @@ private:
 
     FDelegateHandle WorldBeginTearDownHandle;
     FDelegateHandle WorldCleanupHandle;
-    TFuture<void> WorkerFuture;
+    std::thread* WorkerThread = nullptr;
     std::atomic<bool> bWorkerRunning{false};
     std::atomic<bool> bIsShuttingDown{false};
     std::atomic<int32> DeliveryGeneration{0};

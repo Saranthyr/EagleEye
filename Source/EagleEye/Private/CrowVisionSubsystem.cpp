@@ -176,10 +176,20 @@ void UCrowVisionSubsystem::StartWorker()
         return;
     }
 
+    if (WorkerThread)
+    {
+        if (WorkerThread->joinable())
+        {
+            WorkerThread->join();
+        }
+        delete WorkerThread;
+        WorkerThread = nullptr;
+    }
+
     bWorkerRunning.store(true);
     UCrowVisionSubsystem* Subsystem = this;
 
-    WorkerFuture = Async(EAsyncExecution::Thread, [Subsystem]()
+    WorkerThread = new std::thread([Subsystem]()
     {
         while (Subsystem->bWorkerRunning.load() && !Subsystem->bIsShuttingDown.load())
         {
@@ -317,9 +327,21 @@ void UCrowVisionSubsystem::StopWorker(bool bShutdownSubsystem)
         InFlightFrame.Reset();
     }
 
-    if (WorkerFuture.IsValid())
+    if (WorkerThread)
     {
-        WorkerFuture.Wait();
+        if (WorkerThread->joinable())
+        {
+            if (WorkerThread->get_id() == std::this_thread::get_id())
+            {
+                WorkerThread->detach();
+            }
+            else
+            {
+                WorkerThread->join();
+            }
+        }
+        delete WorkerThread;
+        WorkerThread = nullptr;
     }
 }
 

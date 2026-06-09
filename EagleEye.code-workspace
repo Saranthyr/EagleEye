@@ -6,16 +6,16 @@
 		},
 		{
 			"name": "UE5",
-			"path": "/home/saranthyr/Unreal_Engine_5.6.1"
+			"path": "E:\\UE_5.6"
 		}
 	],
 	"settings": {
 		"typescript.tsc.autoDetect": "off",
 		"npm.autoDetect": "off",
-		"terminal.integrated.env.linux": {
-			"PATH": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Binaries/ThirdParty/DotNet/8.0.300/linux-x64:${env:PATH}",
-			"DOTNET_ROOT": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Binaries/ThirdParty/DotNet/8.0.300/linux-x64",
-			"DOTNET_HOST_PATH": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Binaries/ThirdParty/DotNet/8.0.300/linux-x64/dotnet",
+		"terminal.integrated.env.windows": {
+			"PATH": "E:\\UE_5.6\\Engine\\Binaries\\ThirdParty\\DotNet\\8.0.300\\win-x64;${env:PATH}",
+			"DOTNET_ROOT": "E:\\UE_5.6\\Engine\\Binaries\\ThirdParty\\DotNet\\8.0.300\\win-x64",
+			"DOTNET_HOST_PATH": "E:\\UE_5.6\\Engine\\Binaries\\ThirdParty\\DotNet\\8.0.300\\win-x64\\dotnet.exe",
 			"DOTNET_MULTILEVEL_LOOKUP": "0",
 			"DOTNET_ROLL_FORWARD": "LatestMajor"
 		}
@@ -30,743 +30,435 @@
 		"version": "2.0.0",
 		"tasks": [
 			{
-				"label": "EagleEye Linux Debug Build",
+				"label": "EagleEye Win64 Debug Build",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
 				"args": [
 					"EagleEye",
-					"Linux",
+					"Win64",
 					"Debug",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye Linux Debug Rebuild",
+				"label": "EagleEye Win64 Debug Rebuild",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
 				"args": [
 					"EagleEye",
-					"Linux",
+					"Win64",
 					"Debug",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"dependsOn": [
-					"EagleEye Linux Debug Clean"
+					"EagleEye Win64 Debug Clean"
 				],
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye Linux Debug Clean",
+				"label": "EagleEye Win64 Debug Clean",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
 				"args": [
 					"EagleEye",
-					"Linux",
+					"Win64",
 					"Debug",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex",
-					"-clean"
-				],
-				"problemMatcher": "$msCompile",
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEye Linux DebugGame Build",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEye",
-					"Linux",
-					"DebugGame",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye Linux DebugGame Rebuild",
+				"label": "EagleEye Win64 DebugGame Build",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
 				"args": [
 					"EagleEye",
-					"Linux",
+					"Win64",
 					"DebugGame",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "E:\\UE_5.6"
+				}
+			},
+			{
+				"label": "EagleEye Win64 DebugGame Rebuild",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"DebugGame",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"dependsOn": [
-					"EagleEye Linux DebugGame Clean"
+					"EagleEye Win64 DebugGame Clean"
 				],
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye Linux DebugGame Clean",
+				"label": "EagleEye Win64 DebugGame Clean",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
 				"args": [
 					"EagleEye",
-					"Linux",
+					"Win64",
 					"DebugGame",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex",
-					"-clean"
-				],
-				"problemMatcher": "$msCompile",
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEye Linux Development Build",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEye",
-					"Linux",
-					"Development",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye Linux Development Rebuild",
+				"label": "EagleEye Win64 Development Build",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
 				"args": [
 					"EagleEye",
-					"Linux",
+					"Win64",
 					"Development",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "E:\\UE_5.6"
+				}
+			},
+			{
+				"label": "EagleEye Win64 Development Rebuild",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEye",
+					"Win64",
+					"Development",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"dependsOn": [
-					"EagleEye Linux Development Clean"
+					"EagleEye Win64 Development Clean"
 				],
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye Linux Development Clean",
+				"label": "EagleEye Win64 Development Clean",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
 				"args": [
 					"EagleEye",
-					"Linux",
+					"Win64",
 					"Development",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex",
-					"-clean"
+					"E:\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye Linux Test Build",
+				"label": "EagleEye Win64 Test Build",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
 				"args": [
 					"EagleEye",
-					"Linux",
+					"Win64",
 					"Test",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye Linux Test Rebuild",
+				"label": "EagleEye Win64 Test Rebuild",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
 				"args": [
 					"EagleEye",
-					"Linux",
+					"Win64",
 					"Test",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"dependsOn": [
-					"EagleEye Linux Test Clean"
+					"EagleEye Win64 Test Clean"
 				],
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye Linux Test Clean",
+				"label": "EagleEye Win64 Test Clean",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
 				"args": [
 					"EagleEye",
-					"Linux",
+					"Win64",
 					"Test",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex",
-					"-clean"
+					"E:\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye Linux Shipping Build",
+				"label": "EagleEye Win64 Shipping Build",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
 				"args": [
 					"EagleEye",
-					"Linux",
+					"Win64",
 					"Shipping",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye Linux Shipping Rebuild",
+				"label": "EagleEye Win64 Shipping Rebuild",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
 				"args": [
 					"EagleEye",
-					"Linux",
+					"Win64",
 					"Shipping",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"dependsOn": [
-					"EagleEye Linux Shipping Clean"
+					"EagleEye Win64 Shipping Clean"
 				],
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye Linux Shipping Clean",
+				"label": "EagleEye Win64 Shipping Clean",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
 				"args": [
 					"EagleEye",
-					"Linux",
+					"Win64",
 					"Shipping",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex",
-					"-clean"
+					"E:\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye LinuxArm64 Debug Build",
+				"label": "EagleEyeEditor Win64 Debug Build",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
 				"args": [
-					"EagleEye",
-					"LinuxArm64",
+					"EagleEyeEditor",
+					"Win64",
 					"Debug",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye LinuxArm64 Debug Rebuild",
+				"label": "EagleEyeEditor Win64 Debug Rebuild",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
 				"args": [
-					"EagleEye",
-					"LinuxArm64",
+					"EagleEyeEditor",
+					"Win64",
 					"Debug",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"dependsOn": [
-					"EagleEye LinuxArm64 Debug Clean"
+					"EagleEyeEditor Win64 Debug Clean"
 				],
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye LinuxArm64 Debug Clean",
+				"label": "EagleEyeEditor Win64 Debug Clean",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
 				"args": [
-					"EagleEye",
-					"LinuxArm64",
+					"EagleEyeEditor",
+					"Win64",
 					"Debug",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex",
-					"-clean"
+					"E:\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye LinuxArm64 DebugGame Build",
+				"label": "EagleEyeEditor Win64 DebugGame Build",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
 				"args": [
-					"EagleEye",
-					"LinuxArm64",
+					"EagleEyeEditor",
+					"Win64",
 					"DebugGame",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye LinuxArm64 DebugGame Rebuild",
+				"label": "EagleEyeEditor Win64 DebugGame Rebuild",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
 				"args": [
-					"EagleEye",
-					"LinuxArm64",
+					"EagleEyeEditor",
+					"Win64",
 					"DebugGame",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"dependsOn": [
-					"EagleEye LinuxArm64 DebugGame Clean"
+					"EagleEyeEditor Win64 DebugGame Clean"
 				],
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye LinuxArm64 DebugGame Clean",
+				"label": "EagleEyeEditor Win64 DebugGame Clean",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
 				"args": [
-					"EagleEye",
-					"LinuxArm64",
+					"EagleEyeEditor",
+					"Win64",
 					"DebugGame",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex",
-					"-clean"
-				],
-				"problemMatcher": "$msCompile",
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEye LinuxArm64 Development Build",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEye",
-					"LinuxArm64",
-					"Development",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye LinuxArm64 Development Rebuild",
+				"label": "EagleEyeEditor Win64 Development Build",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
 				"args": [
-					"EagleEye",
-					"LinuxArm64",
+					"EagleEyeEditor",
+					"Win64",
 					"Development",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "E:\\UE_5.6"
+				}
+			},
+			{
+				"label": "EagleEyeEditor Win64 Development Rebuild",
+				"group": "build",
+				"command": "Engine\\Build\\BatchFiles\\Build.bat",
+				"args": [
+					"EagleEyeEditor",
+					"Win64",
+					"Development",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"dependsOn": [
-					"EagleEye LinuxArm64 Development Clean"
+					"EagleEyeEditor Win64 Development Clean"
 				],
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"cwd": "E:\\UE_5.6"
 				}
 			},
 			{
-				"label": "EagleEye LinuxArm64 Development Clean",
+				"label": "EagleEyeEditor Win64 Development Clean",
 				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
+				"command": "Engine\\Build\\BatchFiles\\Clean.bat",
 				"args": [
-					"EagleEye",
-					"LinuxArm64",
+					"EagleEyeEditor",
+					"Win64",
 					"Development",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex",
-					"-clean"
-				],
-				"problemMatcher": "$msCompile",
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEye LinuxArm64 Test Build",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEye",
-					"LinuxArm64",
-					"Test",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"E:\\EagleEye\\EagleEye.uproject",
 					"-waitmutex"
 				],
 				"problemMatcher": "$msCompile",
 				"type": "shell",
 				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEye LinuxArm64 Test Rebuild",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEye",
-					"LinuxArm64",
-					"Test",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex"
-				],
-				"problemMatcher": "$msCompile",
-				"dependsOn": [
-					"EagleEye LinuxArm64 Test Clean"
-				],
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEye LinuxArm64 Test Clean",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEye",
-					"LinuxArm64",
-					"Test",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex",
-					"-clean"
-				],
-				"problemMatcher": "$msCompile",
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEye LinuxArm64 Shipping Build",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEye",
-					"LinuxArm64",
-					"Shipping",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex"
-				],
-				"problemMatcher": "$msCompile",
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEye LinuxArm64 Shipping Rebuild",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEye",
-					"LinuxArm64",
-					"Shipping",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex"
-				],
-				"problemMatcher": "$msCompile",
-				"dependsOn": [
-					"EagleEye LinuxArm64 Shipping Clean"
-				],
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEye LinuxArm64 Shipping Clean",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEye",
-					"LinuxArm64",
-					"Shipping",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex",
-					"-clean"
-				],
-				"problemMatcher": "$msCompile",
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEyeEditor Linux Debug Build",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEyeEditor",
-					"Linux",
-					"Debug",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex"
-				],
-				"problemMatcher": "$msCompile",
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEyeEditor Linux Debug Rebuild",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEyeEditor",
-					"Linux",
-					"Debug",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex"
-				],
-				"problemMatcher": "$msCompile",
-				"dependsOn": [
-					"EagleEyeEditor Linux Debug Clean"
-				],
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEyeEditor Linux Debug Clean",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEyeEditor",
-					"Linux",
-					"Debug",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex",
-					"-clean"
-				],
-				"problemMatcher": "$msCompile",
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEyeEditor Linux DebugGame Build",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEyeEditor",
-					"Linux",
-					"DebugGame",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex"
-				],
-				"problemMatcher": "$msCompile",
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEyeEditor Linux DebugGame Rebuild",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEyeEditor",
-					"Linux",
-					"DebugGame",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex"
-				],
-				"problemMatcher": "$msCompile",
-				"dependsOn": [
-					"EagleEyeEditor Linux DebugGame Clean"
-				],
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEyeEditor Linux DebugGame Clean",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEyeEditor",
-					"Linux",
-					"DebugGame",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex",
-					"-clean"
-				],
-				"problemMatcher": "$msCompile",
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEyeEditor Linux Development Build",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEyeEditor",
-					"Linux",
-					"Development",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex"
-				],
-				"problemMatcher": "$msCompile",
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEyeEditor Linux Development Rebuild",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEyeEditor",
-					"Linux",
-					"Development",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex"
-				],
-				"problemMatcher": "$msCompile",
-				"dependsOn": [
-					"EagleEyeEditor Linux Development Clean"
-				],
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "EagleEyeEditor Linux Development Clean",
-				"group": "build",
-				"command": "Engine/Build/BatchFiles/Linux/Build.sh",
-				"args": [
-					"EagleEyeEditor",
-					"Linux",
-					"Development",
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
-					"-waitmutex",
-					"-clean"
-				],
-				"problemMatcher": "$msCompile",
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"label": "Launch EagleEyeEditor Linux Development (MIGraphX)",
-				"group": "build",
-				"command": "/home/saranthyr/Documents/Unreal Projects/EagleEye/Scripts/launch-editor-migraphx.sh",
-				"args": [],
-				"problemMatcher": "$msCompile",
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Documents/Unreal Projects/EagleEye"
-				}
-			},
-			{
-				"label": "EagleEyeEditor Linux Development Build (MIGraphX)",
-				"group": "build",
-				"command": "/bin/bash",
-				"args": [
-					"-lc",
-					"source \"/home/saranthyr/Documents/Unreal Projects/EagleEye/Saved/InferenceDeps.env\" && exec \"/home/saranthyr/Unreal_Engine_5.6.1/Engine/Build/BatchFiles/Linux/Build.sh\" EagleEyeEditor Linux Development \"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject\" -WaitMutex"
-				],
-				"problemMatcher": "$msCompile",
-				"type": "shell",
-				"options": {
-					"cwd": "/home/saranthyr/Documents/Unreal Projects/EagleEye"
+					"cwd": "E:\\UE_5.6"
 				}
 			}
 		]
@@ -777,254 +469,176 @@
 			{
 				"name": "Launch EagleEye (Debug)",
 				"request": "launch",
-				"program": "/home/saranthyr/Documents/Unreal Projects/EagleEye/Binaries/Linux/UnrealGame-Linux-Debug",
-				"preLaunchTask": "EagleEye Linux Debug Build",
+				"program": "E:\\EagleEye\\Binaries\\Win64\\UnrealGame-Win64-Debug.exe",
+				"preLaunchTask": "EagleEye Win64 Debug Build",
 				"args": [
 				],
-				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1",
-				"type": "cppdbg",
-				"visualizerFile": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
-				"showDisplayString": true,
+				"cwd": "E:\\UE_5.6",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "E:\\UE_5.6\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
 				"sourceFileMap": {
-					"/UEVFS/EagleEye": "/home/saranthyr/Documents/Unreal Projects/EagleEye",
-					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"D:\\build\\++UE5\\Sync": "E:\\UE_5.6",
+					"Z:\\UEVFS\\EagleEye": "E:\\EagleEye",
+					"Z:\\UEVFS\\Root": "E:\\UE_5.6"
 				}
 			},
 			{
 				"name": "Launch EagleEye (DebugGame)",
 				"request": "launch",
-				"program": "/home/saranthyr/Documents/Unreal Projects/EagleEye/Binaries/Linux/UnrealGame-Linux-DebugGame",
-				"preLaunchTask": "EagleEye Linux DebugGame Build",
+				"program": "E:\\EagleEye\\Binaries\\Win64\\UnrealGame-Win64-DebugGame.exe",
+				"preLaunchTask": "EagleEye Win64 DebugGame Build",
 				"args": [
 				],
-				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1",
-				"type": "cppdbg",
-				"visualizerFile": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
-				"showDisplayString": true,
+				"cwd": "E:\\UE_5.6",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "E:\\UE_5.6\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
 				"sourceFileMap": {
-					"/UEVFS/EagleEye": "/home/saranthyr/Documents/Unreal Projects/EagleEye",
-					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"D:\\build\\++UE5\\Sync": "E:\\UE_5.6",
+					"Z:\\UEVFS\\EagleEye": "E:\\EagleEye",
+					"Z:\\UEVFS\\Root": "E:\\UE_5.6"
 				}
 			},
 			{
 				"name": "Launch EagleEye (Development)",
 				"request": "launch",
-				"program": "/home/saranthyr/Documents/Unreal Projects/EagleEye/Binaries/Linux/UnrealGame",
-				"preLaunchTask": "EagleEye Linux Development Build",
+				"program": "E:\\EagleEye\\Binaries\\Win64\\UnrealGame.exe",
+				"preLaunchTask": "EagleEye Win64 Development Build",
 				"args": [
 				],
-				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1",
-				"type": "cppdbg",
-				"visualizerFile": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
-				"showDisplayString": true,
+				"cwd": "E:\\UE_5.6",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "E:\\UE_5.6\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
 				"sourceFileMap": {
-					"/UEVFS/EagleEye": "/home/saranthyr/Documents/Unreal Projects/EagleEye",
-					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"D:\\build\\++UE5\\Sync": "E:\\UE_5.6",
+					"Z:\\UEVFS\\EagleEye": "E:\\EagleEye",
+					"Z:\\UEVFS\\Root": "E:\\UE_5.6"
 				}
 			},
 			{
 				"name": "Launch EagleEye (Test)",
 				"request": "launch",
-				"program": "/home/saranthyr/Documents/Unreal Projects/EagleEye/Binaries/Linux/UnrealGame-Linux-Test",
-				"preLaunchTask": "EagleEye Linux Test Build",
+				"program": "E:\\EagleEye\\Binaries\\Win64\\UnrealGame-Win64-Test.exe",
+				"preLaunchTask": "EagleEye Win64 Test Build",
 				"args": [
 				],
-				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1",
-				"type": "cppdbg",
-				"visualizerFile": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
-				"showDisplayString": true,
+				"cwd": "E:\\UE_5.6",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "E:\\UE_5.6\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
 				"sourceFileMap": {
-					"/UEVFS/EagleEye": "/home/saranthyr/Documents/Unreal Projects/EagleEye",
-					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"D:\\build\\++UE5\\Sync": "E:\\UE_5.6",
+					"Z:\\UEVFS\\EagleEye": "E:\\EagleEye",
+					"Z:\\UEVFS\\Root": "E:\\UE_5.6"
 				}
 			},
 			{
 				"name": "Launch EagleEye (Shipping)",
 				"request": "launch",
-				"program": "/home/saranthyr/Documents/Unreal Projects/EagleEye/Binaries/Linux/UnrealGame-Linux-Shipping",
-				"preLaunchTask": "EagleEye Linux Shipping Build",
+				"program": "E:\\EagleEye\\Binaries\\Win64\\UnrealGame-Win64-Shipping.exe",
+				"preLaunchTask": "EagleEye Win64 Shipping Build",
 				"args": [
 				],
-				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1",
-				"type": "cppdbg",
-				"visualizerFile": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
-				"showDisplayString": true,
+				"cwd": "E:\\UE_5.6",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "E:\\UE_5.6\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
 				"sourceFileMap": {
-					"/UEVFS/EagleEye": "/home/saranthyr/Documents/Unreal Projects/EagleEye",
-					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"D:\\build\\++UE5\\Sync": "E:\\UE_5.6",
+					"Z:\\UEVFS\\EagleEye": "E:\\EagleEye",
+					"Z:\\UEVFS\\Root": "E:\\UE_5.6"
 				}
 			},
 			{
 				"name": "Launch EagleEyeEditor (Debug)",
 				"request": "launch",
-				"program": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Binaries/Linux/UnrealEditor-Linux-Debug",
-				"preLaunchTask": "EagleEyeEditor Linux Debug Build",
+				"program": "E:\\UE_5.6\\Engine\\Binaries\\Win64\\UnrealEditor-Win64-Debug.exe",
+				"preLaunchTask": "EagleEyeEditor Win64 Debug Build",
 				"args": [
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject"
+					"E:\\EagleEye\\EagleEye.uproject"
 				],
-				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1",
-				"type": "cppdbg",
-				"visualizerFile": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
-				"showDisplayString": true,
+				"cwd": "E:\\UE_5.6",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "E:\\UE_5.6\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
 				"sourceFileMap": {
-					"/UEVFS/EagleEye": "/home/saranthyr/Documents/Unreal Projects/EagleEye",
-					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"D:\\build\\++UE5\\Sync": "E:\\UE_5.6",
+					"Z:\\UEVFS\\EagleEye": "E:\\EagleEye",
+					"Z:\\UEVFS\\Root": "E:\\UE_5.6"
 				}
 			},
 			{
 				"name": "Launch EagleEyeEditor (DebugGame)",
 				"request": "launch",
-				"program": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Binaries/Linux/UnrealEditor-Linux-DebugGame",
-				"preLaunchTask": "EagleEyeEditor Linux DebugGame Build",
+				"program": "E:\\UE_5.6\\Engine\\Binaries\\Win64\\UnrealEditor-Win64-DebugGame.exe",
+				"preLaunchTask": "EagleEyeEditor Win64 DebugGame Build",
 				"args": [
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject"
+					"E:\\EagleEye\\EagleEye.uproject"
 				],
-				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1",
-				"type": "cppdbg",
-				"visualizerFile": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
-				"showDisplayString": true,
+				"cwd": "E:\\UE_5.6",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "E:\\UE_5.6\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
 				"sourceFileMap": {
-					"/UEVFS/EagleEye": "/home/saranthyr/Documents/Unreal Projects/EagleEye",
-					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"D:\\build\\++UE5\\Sync": "E:\\UE_5.6",
+					"Z:\\UEVFS\\EagleEye": "E:\\EagleEye",
+					"Z:\\UEVFS\\Root": "E:\\UE_5.6"
 				}
 			},
 			{
 				"name": "Launch EagleEyeEditor (Development)",
 				"request": "launch",
-				"program": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Binaries/Linux/UnrealEditor",
-				"preLaunchTask": "EagleEyeEditor Linux Development Build",
+				"program": "E:\\UE_5.6\\Engine\\Binaries\\Win64\\UnrealEditor.exe",
+				"preLaunchTask": "EagleEyeEditor Win64 Development Build",
 				"args": [
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject"
+					"E:\\EagleEye\\EagleEye.uproject",
+					"-vulkan",
+					// "-NoLiveCoding"
 				],
-				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1",
-				"type": "cppdbg",
-				"visualizerFile": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
-				"showDisplayString": true,
+				"cwd": "E:\\UE_5.6",
+				"stopAtEntry": false,
+				"console": "integratedTerminal",
+				"type": "cppvsdbg",
+				"visualizerFile": "E:\\UE_5.6\\Engine\\Extras\\VisualStudioDebugging\\Unreal.natvis",
 				"sourceFileMap": {
-					"/UEVFS/EagleEye": "/home/saranthyr/Documents/Unreal Projects/EagleEye",
-					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"name": "Run EagleEyeEditor (Development MIGraphX)",
-				"request": "launch",
-				"noDebug": true,
-				"program": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Binaries/Linux/UnrealEditor",
-				"preLaunchTask": "EagleEyeEditor Linux Development Build (MIGraphX)",
-				"args": [
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject"
-				],
-				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1",
-				"type": "cppdbg",
-				"environment": [
-					{
-						"name": "ONNXRUNTIME_ROOT",
-						"value": "/home/saranthyr/dev/onnxruntime-install"
-					},
-					{
-						"name": "ORT_ROOT",
-						"value": "/home/saranthyr/dev/onnxruntime-install"
-					},
-					{
-						"name": "ROCM_HOME",
-						"value": "/opt/rocm"
-					},
-					{
-						"name": "ORT_MIGRAPHX_CACHE_PATH",
-						"value": "/home/saranthyr/Documents/Unreal Projects/EagleEye/Saved/MIGraphXCache/data"
-					},
-					{
-						"name": "ORT_MIGRAPHX_MODEL_CACHE_PATH",
-						"value": "/home/saranthyr/Documents/Unreal Projects/EagleEye/Saved/MIGraphXCache/models"
-					},
-					{
-						"name": "ORT_MIGRAPHX_EXHAUSTIVE_TUNE",
-						"value": "0"
-					},
-					{
-						"name": "LD_LIBRARY_PATH",
-						"value": "/home/saranthyr/dev/onnxruntime-install/lib:/opt/rocm/lib:/opt/rocm/lib/migraphx/lib:${env:LD_LIBRARY_PATH}"
-					}
-				],
-				"visualizerFile": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
-				"showDisplayString": true,
-				"sourceFileMap": {
-					"/UEVFS/EagleEye": "/home/saranthyr/Documents/Unreal Projects/EagleEye",
-					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1"
-				}
-			},
-			{
-				"name": "Debug EagleEyeEditor (Development MIGraphX)",
-				"request": "launch",
-				"program": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Binaries/Linux/UnrealEditor",
-				"preLaunchTask": "EagleEyeEditor Linux Development Build (MIGraphX)",
-				"args": [
-					"/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject"
-				],
-				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1",
-				"type": "cppdbg",
-				"environment": [
-					{
-						"name": "ONNXRUNTIME_ROOT",
-						"value": "/home/saranthyr/dev/onnxruntime-install"
-					},
-					{
-						"name": "ORT_ROOT",
-						"value": "/home/saranthyr/dev/onnxruntime-install"
-					},
-					{
-						"name": "ROCM_HOME",
-						"value": "/opt/rocm"
-					},
-					{
-						"name": "ORT_MIGRAPHX_CACHE_PATH",
-						"value": "/home/saranthyr/Documents/Unreal Projects/EagleEye/Saved/MIGraphXCache/data"
-					},
-					{
-						"name": "ORT_MIGRAPHX_MODEL_CACHE_PATH",
-						"value": "/home/saranthyr/Documents/Unreal Projects/EagleEye/Saved/MIGraphXCache/models"
-					},
-					{
-						"name": "ORT_MIGRAPHX_EXHAUSTIVE_TUNE",
-						"value": "0"
-					},
-					{
-						"name": "LD_LIBRARY_PATH",
-						"value": "/home/saranthyr/dev/onnxruntime-install/lib:/opt/rocm/lib:/opt/rocm/lib/migraphx/lib:${env:LD_LIBRARY_PATH}"
-					}
-				],
-				"visualizerFile": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Extras/VisualStudioDebugging/Unreal.natvis",
-				"showDisplayString": true,
-				"sourceFileMap": {
-					"/UEVFS/EagleEye": "/home/saranthyr/Documents/Unreal Projects/EagleEye",
-					"/UEVFS/Root": "/home/saranthyr/Unreal_Engine_5.6.1"
+					"D:\\build\\++UE5\\Sync": "E:\\UE_5.6",
+					"Z:\\UEVFS\\EagleEye": "E:\\EagleEye",
+					"Z:\\UEVFS\\Root": "E:\\UE_5.6"
 				}
 			},
 			{
 				"name": "Generate Project Files",
 				"type": "coreclr",
 				"request": "launch",
-				"preLaunchTask": "UnrealBuildTool Linux Development Build",
-				"program": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Build/BatchFiles/RunUBT.bat",
+				"preLaunchTask": "UnrealBuildTool Win64 Development Build",
+				"program": "E:\\UE_5.6\\Engine\\Build\\BatchFiles\\RunUBT.bat",
 				"args": [
 					"-projectfiles",
 					"-vscode",
-					"-project=/home/saranthyr/Documents/Unreal Projects/EagleEye/EagleEye.uproject",
+					"-project=E:\\EagleEye\\EagleEye.uproject",
 					"-game",
 					"-engine",
 					"-dotnet"
 				],
 				"env": {
-					"PATH": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Binaries/ThirdParty/DotNet/8.0.300/linux-x64:${env:PATH}",
-					"DOTNET_ROOT": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Binaries/ThirdParty/DotNet/8.0.300/linux-x64",
-					"DOTNET_HOST_PATH": "/home/saranthyr/Unreal_Engine_5.6.1/Engine/Binaries/ThirdParty/DotNet/8.0.300/linux-x64/dotnet",
+					"PATH": "E:\\UE_5.6\\Engine\\Binaries\\ThirdParty\\DotNet\\8.0.300\\win-x64;${env:PATH}",
+					"DOTNET_ROOT": "E:\\UE_5.6\\Engine\\Binaries\\ThirdParty\\DotNet\\8.0.300\\win-x64",
+					"DOTNET_HOST_PATH": "E:\\UE_5.6\\Engine\\Binaries\\ThirdParty\\DotNet\\8.0.300\\win-x64\\dotnet.exe",
 					"DOTNET_MULTILEVEL_LOOKUP": "0",
 					"DOTNET_ROLL_FORWARD": "LatestMajor"
 				},
-				"console": "internalConsole",
-				"internalConsoleOptions": "openOnSessionStart",
+				"console": "integratedTerminal",
 				"stopAtEntry": false,
-				"cwd": "/home/saranthyr/Unreal_Engine_5.6.1"
+				"cwd": "E:\\UE_5.6"
 			}
 		]
 	}

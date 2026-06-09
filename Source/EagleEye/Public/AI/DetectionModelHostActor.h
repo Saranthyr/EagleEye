@@ -25,6 +25,7 @@ public:
     int32 GetMaxQueuedModelFrames() const { return MaxQueuedModelFrames; }
 
 protected:
+    virtual void PostInitializeComponents() override;
     virtual void BeginPlay() override;
 
 private:

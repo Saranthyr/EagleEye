@@ -11,10 +11,23 @@ ADetectionModelHostActor::ADetectionModelHostActor()
 
     SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
     RootComponent = SceneRoot;
+}
 
-    ModelHostComponent = CreateDefaultSubobject<UMyActorComponent>(TEXT("SharedVisionModelHost"));
-    ModelHostComponent->SetupAttachment(SceneRoot);
-    ModelHostComponent->SetSharedVisionModelHost(true);
+void ADetectionModelHostActor::PostInitializeComponents()
+{
+    Super::PostInitializeComponents();
+
+    if (!ModelHostComponent)
+    {
+        ModelHostComponent = NewObject<UMyActorComponent>(this, TEXT("SharedVisionModelHost"));
+        if (ModelHostComponent)
+        {
+            ModelHostComponent->SetupAttachment(SceneRoot);
+            ModelHostComponent->SetSharedVisionModelHost(true);
+            AddInstanceComponent(ModelHostComponent);
+            ModelHostComponent->RegisterComponent();
+        }
+    }
 }
 
 void ADetectionModelHostActor::BeginPlay()
@@ -26,6 +39,10 @@ void ADetectionModelHostActor::BeginPlay()
         if (UCrowVisionSubsystem* VisionSubsystem = World->GetSubsystem<UCrowVisionSubsystem>())
         {
             VisionSubsystem->ConfigureModelHostLimits(MaxActiveModelUsers, MaxQueuedModelFrames);
+            if (ModelHostComponent)
+            {
+                VisionSubsystem->RegisterModelHost(ModelHostComponent);
+            }
         }
     }
 

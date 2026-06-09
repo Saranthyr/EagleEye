@@ -40,6 +40,14 @@
 namespace
 {
     constexpr double MaxAsyncOwnerCameraReadbackLatencySeconds = 1.0;
+    constexpr TCHAR OnnxRuntimeGpuCrashGuardFileName[] = TEXT("OnnxRuntimeGpuCrashGuard.txt");
+    uint64 GOwnerCameraReadbackLastEnqueueFrame = MAX_uint64;
+    uint64 GOwnerCameraReadbackLastLockFrame = MAX_uint64;
+
+    FString GetOnnxRuntimeGpuCrashGuardPath()
+    {
+        return FPaths::Combine(FPaths::ProjectSavedDir(), OnnxRuntimeGpuCrashGuardFileName);
+    }
 
 #if PLATFORM_WINDOWS && WITH_ONNXRUNTIME_DML
     FString DxgiAdapterDescToString(const DXGI_ADAPTER_DESC1& Desc)
@@ -890,6 +898,9 @@ void UMyActorComponent::BeginPlay() {
     Super::BeginPlay();
     bIsEndingPlay.store(false);
     bInferenceShutdownRequested.store(false);
+    AdvanceOwnerCameraReadbackGeneration();
+    ResetOwnerCameraReadback();
+    OwnerCameraReadbackWarmupEndSeconds = FPlatformTime::Seconds() + 0.5;
 
     ApplyProjectDetectionSettings();
 
@@ -960,24 +971,14 @@ void UMyActorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
     bInferenceShutdownRequested.store(true);
     RequestOnnxRuntimeInferenceTerminate();
     ++SharedVisionRequestSerial;
+    AdvanceOwnerCameraReadbackGeneration();
 
     if (UWorld* World = GetWorld())
     {
         World->GetTimerManager().ClearTimer(TimerHandle_Capture);
     }
 
-    // Drain the render command before releasing this component's readback reference.
-    if (PendingOwnerCameraReadback.IsValid())
-    {
-        FlushRenderingCommands();
-        PendingOwnerCameraReadback.Reset();
-        PendingOwnerCameraReadbackWidth = 0;
-        PendingOwnerCameraReadbackHeight = 0;
-        PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
-        PendingOwnerCameraReadbackDepth.Reset();
-        PendingOwnerCameraReadbackDepthWidth = 0;
-        PendingOwnerCameraReadbackDepthHeight = 0;
-    }
+    ResetOwnerCameraReadback();
 
     CloseOwnerCameraVideoWriter(false);
 
@@ -1474,8 +1475,18 @@ void UMyActorComponent::StartOwnerCameraVideoWorker()
         return;
     }
 
+    if (OwnerCameraVideoThread)
+    {
+        if (OwnerCameraVideoThread->joinable())
+        {
+            OwnerCameraVideoThread->join();
+        }
+        delete OwnerCameraVideoThread;
+        OwnerCameraVideoThread = nullptr;
+    }
+
     bOwnerCameraVideoWorkerRunning.store(true);
-    OwnerCameraVideoFuture = Async(EAsyncExecution::Thread, [this]()
+    OwnerCameraVideoThread = new std::thread([this]()
     {
         OwnerCameraVideoWorkerLoop();
     });
@@ -1586,9 +1597,21 @@ void UMyActorComponent::CloseOwnerCameraVideoWriter(bool bWaitForEncoder)
     }
     PendingOwnerCameraVideoFrames.store(0);
 
-    if (OwnerCameraVideoFuture.IsValid())
+    if (OwnerCameraVideoThread)
     {
-        OwnerCameraVideoFuture.Wait();
+        if (OwnerCameraVideoThread->joinable())
+        {
+            if (OwnerCameraVideoThread->get_id() == std::this_thread::get_id())
+            {
+                OwnerCameraVideoThread->detach();
+            }
+            else
+            {
+                OwnerCameraVideoThread->join();
+            }
+        }
+        delete OwnerCameraVideoThread;
+        OwnerCameraVideoThread = nullptr;
     }
     else
     {
@@ -2168,32 +2191,84 @@ void UMyActorComponent::ClearLastFrameSceneDepth()
     LastFrameSceneDepthTimeSeconds = -FLT_MAX;
 }
 
+void UMyActorComponent::ResetOwnerCameraReadback()
+{
+    PendingOwnerCameraReadback.Reset();
+    PendingOwnerCameraReadbackWorld.Reset();
+    PendingOwnerCameraReadbackGeneration = 0;
+    PendingOwnerCameraReadbackFrameNumber = 0;
+    PendingOwnerCameraReadbackWidth = 0;
+    PendingOwnerCameraReadbackHeight = 0;
+    PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
+    PendingOwnerCameraReadbackDepth.Reset();
+    PendingOwnerCameraReadbackDepthWidth = 0;
+    PendingOwnerCameraReadbackDepthHeight = 0;
+}
+
+void UMyActorComponent::AdvanceOwnerCameraReadbackGeneration()
+{
+    ++OwnerCameraReadbackGeneration;
+    if (OwnerCameraReadbackGeneration == 0)
+    {
+        OwnerCameraReadbackGeneration = 1;
+    }
+}
+
 bool UMyActorComponent::PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight)
 {
     OutWidth = 0;
     OutHeight = 0;
 
-    if (!PendingOwnerCameraReadback.IsValid() || !PendingOwnerCameraReadback->IsReady())
+    UWorld* World = GetWorld();
+    if (bIsEndingPlay.load() || !World || World->bIsTearingDown)
     {
-        if (PendingOwnerCameraReadback.IsValid() &&
-            PendingOwnerCameraReadbackSubmitTimeSeconds > 0.0 &&
-            (FPlatformTime::Seconds() - PendingOwnerCameraReadbackSubmitTimeSeconds) > MaxAsyncOwnerCameraReadbackLatencySeconds)
-        {
-            UE_LOG(LogTemp, Warning, TEXT("Dropping stale async owner-camera readback for %s after %.2fms"),
-                *GetNameSafe(GetOwner()),
-                (FPlatformTime::Seconds() - PendingOwnerCameraReadbackSubmitTimeSeconds) * 1000.0);
-
-            FlushRenderingCommands();
-            PendingOwnerCameraReadback.Reset();
-            PendingOwnerCameraReadbackWidth = 0;
-            PendingOwnerCameraReadbackHeight = 0;
-            PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
-            PendingOwnerCameraReadbackDepth.Reset();
-            PendingOwnerCameraReadbackDepthWidth = 0;
-            PendingOwnerCameraReadbackDepthHeight = 0;
-        }
+        ResetOwnerCameraReadback();
         return false;
     }
+
+    const double NowSeconds = FPlatformTime::Seconds();
+    if (NowSeconds < OwnerCameraReadbackWarmupEndSeconds)
+    {
+        return false;
+    }
+
+    if (PendingOwnerCameraReadback.IsValid() &&
+        (PendingOwnerCameraReadbackGeneration != OwnerCameraReadbackGeneration ||
+            PendingOwnerCameraReadbackWorld.Get() != World))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Dropping async owner-camera readback for %s from stale PIE/world generation"),
+            *GetNameSafe(GetOwner()));
+        ResetOwnerCameraReadback();
+        return false;
+    }
+
+    if (PendingOwnerCameraReadback.IsValid() &&
+        PendingOwnerCameraReadbackSubmitTimeSeconds > 0.0 &&
+        (NowSeconds - PendingOwnerCameraReadbackSubmitTimeSeconds) > MaxAsyncOwnerCameraReadbackLatencySeconds)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Dropping stale async owner-camera readback for %s before lock after %.2fms"),
+            *GetNameSafe(GetOwner()),
+            (NowSeconds - PendingOwnerCameraReadbackSubmitTimeSeconds) * 1000.0);
+        ResetOwnerCameraReadback();
+        return false;
+    }
+
+    if (!PendingOwnerCameraReadback.IsValid() || !PendingOwnerCameraReadback->IsReady())
+    {
+        return false;
+    }
+
+    if (PendingOwnerCameraReadbackWidth <= 0 || PendingOwnerCameraReadbackHeight <= 0)
+    {
+        ResetOwnerCameraReadback();
+        return false;
+    }
+
+    if (GOwnerCameraReadbackLastLockFrame == GFrameCounter)
+    {
+        return false;
+    }
+    GOwnerCameraReadbackLastLockFrame = GFrameCounter;
 
     const double PollStartSeconds = FPlatformTime::Seconds();
     int32 RowPitchInPixels = 0;
@@ -2203,12 +2278,25 @@ bool UMyActorComponent::PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, 
     if (!SourcePixels)
     {
         PendingOwnerCameraReadback->Unlock();
-        PendingOwnerCameraReadback.Reset();
+        ResetOwnerCameraReadback();
         return false;
     }
 
     OutWidth = PendingOwnerCameraReadbackWidth;
     OutHeight = PendingOwnerCameraReadbackHeight;
+    if (RowPitchInPixels < OutWidth || BufferHeight < OutHeight)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Dropping async owner-camera readback for %s with invalid pitch/height row_pitch=%d buffer_h=%d size=%dx%d"),
+            *GetNameSafe(GetOwner()),
+            RowPitchInPixels,
+            BufferHeight,
+            OutWidth,
+            OutHeight);
+        PendingOwnerCameraReadback->Unlock();
+        ResetOwnerCameraReadback();
+        return false;
+    }
+
     OutPixels.SetNumUninitialized(OutWidth * OutHeight);
 
     for (int32 Y = 0; Y < OutHeight; ++Y)
@@ -2228,23 +2316,18 @@ bool UMyActorComponent::PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, 
 
     if (ShouldLogFrameTimings())
     {
-        const double NowSeconds = FPlatformTime::Seconds();
+        const double LogNowSeconds = FPlatformTime::Seconds();
         UE_LOG(LogTemp, Log, TEXT("AsyncReadbackPoll[%s]: lock+copy=%.2fms latency=%.2fms row_pitch=%d buffer_h=%d size=%dx%d"),
             *GetNameSafe(GetOwner()),
-            (NowSeconds - PollStartSeconds) * 1000.0,
-            (NowSeconds - PendingOwnerCameraReadbackSubmitTimeSeconds) * 1000.0,
+            (LogNowSeconds - PollStartSeconds) * 1000.0,
+            (LogNowSeconds - PendingOwnerCameraReadbackSubmitTimeSeconds) * 1000.0,
             RowPitchInPixels,
             BufferHeight,
             OutWidth,
             OutHeight);
     }
 
-    PendingOwnerCameraReadbackWidth = 0;
-    PendingOwnerCameraReadbackHeight = 0;
-    PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
-    PendingOwnerCameraReadbackDepth.Reset();
-    PendingOwnerCameraReadbackDepthWidth = 0;
-    PendingOwnerCameraReadbackDepthHeight = 0;
+    ResetOwnerCameraReadback();
     return true;
 }
 
@@ -2252,6 +2335,22 @@ bool UMyActorComponent::EnqueueAsyncOwnerCameraReadback()
 {
     const double EnqueueStartSeconds = FPlatformTime::Seconds();
     if (PendingOwnerCameraReadback.IsValid())
+    {
+        return false;
+    }
+
+    UWorld* World = GetWorld();
+    if (bIsEndingPlay.load() || !World || World->bIsTearingDown)
+    {
+        return false;
+    }
+
+    if (FPlatformTime::Seconds() < OwnerCameraReadbackWarmupEndSeconds)
+    {
+        return false;
+    }
+
+    if (GOwnerCameraReadbackLastEnqueueFrame == GFrameCounter)
     {
         return false;
     }
@@ -2283,6 +2382,9 @@ bool UMyActorComponent::EnqueueAsyncOwnerCameraReadback()
     }
 
     PendingOwnerCameraReadback = MakeShared<FRHIGPUTextureReadback, ESPMode::ThreadSafe>(TEXT("CrowOwnerCameraReadback"));
+    PendingOwnerCameraReadbackWorld = World;
+    PendingOwnerCameraReadbackGeneration = OwnerCameraReadbackGeneration;
+    PendingOwnerCameraReadbackFrameNumber = GFrameCounter;
     PendingOwnerCameraReadbackWidth = OwnerCaptureRenderTarget->SizeX;
     PendingOwnerCameraReadbackHeight = OwnerCaptureRenderTarget->SizeY;
     PendingOwnerCameraReadbackSubmitTimeSeconds = FPlatformTime::Seconds();
@@ -2300,6 +2402,7 @@ bool UMyActorComponent::EnqueueAsyncOwnerCameraReadback()
                 Readback->EnqueueCopy(RHICmdList, TextureRHI, FIntVector::ZeroValue, 0, ReadbackSize);
             }
         });
+    GOwnerCameraReadbackLastEnqueueFrame = GFrameCounter;
 
     if (ShouldLogFrameTimings())
     {
@@ -2421,9 +2524,19 @@ void UMyActorComponent::CaptureAndEnqueue(bool bSubmitDetection)
 void UMyActorComponent::StartWorker()
 {
     if (bWorkerRunning.load()) return;
-    bWorkerRunning.store(true);
 
-    WorkerFuture = Async(EAsyncExecution::Thread, [this]()
+    if (WorkerThread)
+    {
+        if (WorkerThread->joinable())
+        {
+            WorkerThread->join();
+        }
+        delete WorkerThread;
+        WorkerThread = nullptr;
+    }
+
+    bWorkerRunning.store(true);
+    WorkerThread = new std::thread([this]()
     {
         try
         {
@@ -2515,9 +2628,21 @@ void UMyActorComponent::StopWorker()
         FScopeLock Lock(&FrameMutex);
         LatestFrame.Reset();
     }
-    if (WorkerFuture.IsValid())
+    if (WorkerThread)
     {
-        WorkerFuture.Wait();
+        if (WorkerThread->joinable())
+        {
+            if (WorkerThread->get_id() == std::this_thread::get_id())
+            {
+                WorkerThread->detach();
+            }
+            else
+            {
+                WorkerThread->join();
+            }
+        }
+        delete WorkerThread;
+        WorkerThread = nullptr;
     }
 
     FScopeLock InferenceLock(&InferenceMutex);
@@ -2801,6 +2926,11 @@ EDetectionInferenceBackend UMyActorComponent::ResolveEffectiveInferenceBackend(c
 
 EOnnxRuntimeExecutionProvider UMyActorComponent::ResolveEffectiveOnnxRuntimeProvider() const
 {
+    if (ShouldForceOnnxRuntimeCpuAfterGpuCrash())
+    {
+        return EOnnxRuntimeExecutionProvider::CPU;
+    }
+
     if (OnnxRuntimeExecutionProvider != EOnnxRuntimeExecutionProvider::Auto)
     {
         return OnnxRuntimeExecutionProvider;
@@ -2835,6 +2965,56 @@ EOnnxRuntimeExecutionProvider UMyActorComponent::ResolveEffectiveOnnxRuntimeProv
 #endif
 
     return EOnnxRuntimeExecutionProvider::CPU;
+}
+
+bool UMyActorComponent::ShouldForceOnnxRuntimeCpuAfterGpuCrash() const
+{
+#if WITH_ONNXRUNTIME
+    const bool bGpuProviderRequested =
+        OnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::Auto ||
+        OnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::DirectML ||
+        OnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::MIGraphX;
+    if (!bGpuProviderRequested)
+    {
+        return false;
+    }
+
+    const FString GuardPath = GetOnnxRuntimeGpuCrashGuardPath();
+    if (FPaths::FileExists(GuardPath))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("ONNX Runtime GPU crash guard found at %s. Forcing CPU provider for this run. Delete the file to retry GPU inference."),
+            *GuardPath);
+        return true;
+    }
+#endif
+
+    return false;
+}
+
+void UMyActorComponent::MarkOnnxRuntimeGpuSessionActive() const
+{
+#if WITH_ONNXRUNTIME
+    const FString GuardPath = GetOnnxRuntimeGpuCrashGuardPath();
+    const FString GuardText = FString::Printf(
+        TEXT("ONNX Runtime GPU inference session was active.\nProvider=%s\nAdapter=%s\n"),
+        OnnxProviderToString(EffectiveOnnxRuntimeExecutionProvider),
+        *GRHIAdapterName);
+    if (!FFileHelper::SaveStringToFile(GuardText, *GuardPath))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Failed to write ONNX Runtime GPU crash guard: %s"), *GuardPath);
+    }
+#endif
+}
+
+void UMyActorComponent::ClearOnnxRuntimeGpuSessionActive() const
+{
+#if WITH_ONNXRUNTIME
+    const FString GuardPath = GetOnnxRuntimeGpuCrashGuardPath();
+    if (FPaths::FileExists(GuardPath) && !IFileManager::Get().Delete(*GuardPath, false, true))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Failed to clear ONNX Runtime GPU crash guard: %s"), *GuardPath);
+    }
+#endif
 }
 
 FString UMyActorComponent::ResolveModelPathForBackend(const FString& ModelPathUE, EDetectionInferenceBackend Backend) const
@@ -3175,6 +3355,7 @@ void UMyActorComponent::ReleaseTensorRT()
 void UMyActorComponent::ReleaseOnnxRuntime()
 {
 #if WITH_ONNXRUNTIME
+    const bool bWasUsingGpuProvider = bOnnxRuntimeUsingGpuProvider;
     {
         FScopeLock Lock(&OnnxRuntimeRunOptionsMutex);
         OnnxRuntimeRunOptions.Reset();
@@ -3188,6 +3369,10 @@ void UMyActorComponent::ReleaseOnnxRuntime()
     OnnxRuntimeOutputNames.Reset();
     EffectiveOnnxRuntimeExecutionProvider = EOnnxRuntimeExecutionProvider::CPU;
     bOnnxRuntimeUsingGpuProvider = false;
+    if (bWasUsingGpuProvider)
+    {
+        ClearOnnxRuntimeGpuSessionActive();
+    }
 #endif
     ResetInferenceOutputState();
     bIsModelLoaded = false;
@@ -3390,6 +3575,10 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
             EffectiveOnnxRuntimeExecutionProvider = EOnnxRuntimeExecutionProvider::CPU;
             bOnnxRuntimeUsingGpuProvider = false;
             UE_LOG(LogTemp, Log, TEXT("ONNX Runtime provider configured: CPU"));
+        }
+        else if (bOnnxRuntimeUsingGpuProvider)
+        {
+            MarkOnnxRuntimeGpuSessionActive();
         }
 
 #if PLATFORM_WINDOWS

@@ -27,6 +27,7 @@
 #include "DetectionInferenceTypes.h"
 #include "RHIGPUReadback.h"
 #include <atomic>
+#include <thread>
 #if WITH_TENSORRT
 #include <cuda_runtime_api.h>
 #endif
@@ -156,6 +157,8 @@ private:
     bool CaptureOwnerSceneDepthToBuffer(TArray<float>& OutDepth, int32& OutWidth, int32& OutHeight);
     void PublishOwnerSceneDepth(TArray<float>&& Depth, int32 Width, int32 Height);
     void ClearLastFrameSceneDepth();
+    void ResetOwnerCameraReadback();
+    void AdvanceOwnerCameraReadbackGeneration();
     bool PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight);
     bool EnqueueAsyncOwnerCameraReadback();
     bool EnsureOwnerCameraCapture();
@@ -308,9 +311,14 @@ private:
     UTextureRenderTarget2D* OwnerDepthRenderTarget = nullptr;
 
     TSharedPtr<FRHIGPUTextureReadback, ESPMode::ThreadSafe> PendingOwnerCameraReadback;
+    TWeakObjectPtr<UWorld> PendingOwnerCameraReadbackWorld;
+    uint64 OwnerCameraReadbackGeneration = 0;
+    uint64 PendingOwnerCameraReadbackGeneration = 0;
+    uint64 PendingOwnerCameraReadbackFrameNumber = 0;
     int32 PendingOwnerCameraReadbackWidth = 0;
     int32 PendingOwnerCameraReadbackHeight = 0;
     double PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
+    double OwnerCameraReadbackWarmupEndSeconds = 0.0;
     TArray<float> PendingOwnerCameraReadbackDepth;
     int32 PendingOwnerCameraReadbackDepthWidth = 0;
     int32 PendingOwnerCameraReadbackDepthHeight = 0;
@@ -325,7 +333,7 @@ private:
     };
 
     TQueue<TSharedPtr<FOwnerCameraVideoFrame>, EQueueMode::Mpsc> OwnerCameraVideoQueue;
-    TFuture<void> OwnerCameraVideoFuture;
+    std::thread* OwnerCameraVideoThread = nullptr;
     std::atomic<bool> bOwnerCameraVideoWorkerRunning{false};
     std::atomic<bool> bOwnerCameraVideoFastShutdown{false};
     std::atomic<bool> bOwnerCameraVideoFinalizing{false};
@@ -355,7 +363,7 @@ private:
 
     // Worker control
     FTimerHandle TimerHandle_Capture;
-    TFuture<void> WorkerFuture;
+    std::thread* WorkerThread = nullptr;
     std::atomic<bool> bWorkerRunning{false};
     std::atomic<bool> bIsEndingPlay{false};
     std::atomic<bool> bInferenceShutdownRequested{false};
@@ -430,6 +438,9 @@ private:
     EOnnxRuntimeExecutionProvider ResolveEffectiveOnnxRuntimeProvider() const;
     FString ResolveModelPathForBackend(const FString& ModelPathUE, EDetectionInferenceBackend Backend) const;
     bool LoadOnnxRuntime(const FString& ModelPathUE);
+    bool ShouldForceOnnxRuntimeCpuAfterGpuCrash() const;
+    void MarkOnnxRuntimeGpuSessionActive() const;
+    void ClearOnnxRuntimeGpuSessionActive() const;
     bool RunTensorRT();
     bool RunTensorRTInference_BG(const cv::Mat& ModelInputBGR);
     bool RunOnnxRuntimeInference_BG(const cv::Mat& ModelInputBGR);
