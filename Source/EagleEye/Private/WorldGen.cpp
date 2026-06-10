@@ -2,6 +2,7 @@
 
 #include "WorldGen.h"
 
+#include "AI/BotAIController.h"
 #include "AI/BotCharacter.h"
 #include "Algo/Unique.h"
 #include "Components/BoxComponent.h"
@@ -1390,6 +1391,8 @@ void AWorldGen::SpawnBotTypeForSection(
 		ABotCharacter* SpawnedBot = World->SpawnActor<ABotCharacter>(Config.BotClass, SpawnLocation, SpawnRotation, SpawnParams);
 		if (SpawnedBot)
 		{
+			ConfigureSpawnedBotRandomMovement(*SpawnedBot);
+
 			const FName SectionTag(*FString::Printf(TEXT("BotSection_%d_%d"), Section.X, Section.Y));
 			const FName TypeTag(*FString::Printf(TEXT("BotType_%d"), TypeIndex));
 			SpawnedBot->Tags.AddUnique(SectionTag);
@@ -1485,6 +1488,31 @@ void AWorldGen::SpawnBotTypeForSection(
 		Section.X,
 		Section.Y
 	);
+}
+
+void AWorldGen::ConfigureSpawnedBotRandomMovement(ABotCharacter& SpawnedBot) const
+{
+	if (!SpawnedBot.GetController())
+	{
+		SpawnedBot.SpawnDefaultController();
+	}
+
+	ABotAIController* BotController = Cast<ABotAIController>(SpawnedBot.GetController());
+	if (!BotController)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("WorldGen: Cannot configure random movement for spawned bot %s because it has no BotAIController."),
+			*SpawnedBot.GetName()
+		);
+		return;
+	}
+
+	FBotRandomMovementSettings RandomMovementSettings = SpawnedBot.GetRandomMovementSettings();
+	RandomMovementSettings.bEnableRandomFlight = bEnableSpawnedBotRandomMovement;
+	RandomMovementSettings.bEnableRandomWalking = bEnableSpawnedBotRandomMovement;
+	BotController->ApplyRandomMovementSettings(RandomMovementSettings);
 }
 
 void AWorldGen::DestroyBotsForSection(FSectionData& SectionData)
@@ -1761,7 +1789,7 @@ void AWorldGen::DestroySectionNavBounds(FSectionData& SectionData)
 
 void AWorldGen::RequestNavRebuild()
 {
-	if (!bEnableNavMesh)
+	if (!bEnableNavMesh || !bRebuildNavMeshOnSectionChanges)
 	{
 		return;
 	}
@@ -1778,12 +1806,27 @@ void AWorldGen::RequestNavRebuild()
 
 void AWorldGen::PerformNavRebuild()
 {
-	if (!bEnableNavMesh)
+	if (!bEnableNavMesh || !bRebuildNavMeshOnSectionChanges)
 	{
 		return;
 	}
 
 	UpdateGeneratedNavigationData();
+	BuildNavigationForCurrentWorld(TEXT("section change"));
+}
+
+void AWorldGen::BuildNavigationForCurrentWorld(const TCHAR* Reason) const
+{
+	UWorld* World = GetWorld();
+	UNavigationSystemV1* NavSystem = World ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
+	if (!NavSystem)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("WorldGen: Cannot rebuild navmesh after %s because navigation system is unavailable."), Reason);
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("WorldGen: Rebuilding navmesh after %s."), Reason);
+	NavSystem->Build();
 }
 
 void AWorldGen::UpdateGeneratedNavigationData()

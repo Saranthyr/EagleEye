@@ -6,16 +6,11 @@
 #include "MyHUD.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
-#include "UObject/ConstructorHelpers.h"
+#include "NavigationSystem.h"
 
 AEagleEyeGameMode::AEagleEyeGameMode()
 {
-	// set default pawn class to our Blueprinted character
-	static ConstructorHelpers::FClassFinder<APawn> PlayerPawnBPClass(TEXT("/Game/ThirdPerson/Blueprints/BP_ThirdPersonCharacter"));
-	if (PlayerPawnBPClass.Class != NULL)
-	{
-		DefaultPawnClass = PlayerPawnBPClass.Class;
-	}
+	DefaultPawnClass = AEagleEyeCharacter::StaticClass();
 
 	HUDClass = AMyHUD::StaticClass();
 	DetectionModelHostClass = ADetectionModelHostActor::StaticClass();
@@ -25,13 +20,15 @@ void AEagleEyeGameMode::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (!DetectionModelHostClass || DetectionModelHost)
+	UWorld* World = GetWorld();
+	if (!World)
 	{
 		return;
 	}
 
-	UWorld* World = GetWorld();
-	if (!World)
+	BuildNavigationOnBeginPlay();
+
+	if (!DetectionModelHostClass || DetectionModelHost)
 	{
 		return;
 	}
@@ -55,4 +52,23 @@ void AEagleEyeGameMode::BeginPlay()
 		FVector::ZeroVector,
 		FRotator::ZeroRotator,
 		SpawnParams);
+}
+
+void AEagleEyeGameMode::BuildNavigationOnBeginPlay() const
+{
+	if (!bBuildNavigationOnBeginPlay)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	UNavigationSystemV1* NavSystem = World ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
+	if (!NavSystem)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("EagleEyeGameMode: Cannot build navmesh on BeginPlay because navigation system is unavailable."));
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("EagleEyeGameMode: Building navmesh on BeginPlay."));
+	NavSystem->Build();
 }

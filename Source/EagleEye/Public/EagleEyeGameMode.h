@@ -19,10 +19,15 @@ public:
 protected:
 	virtual void BeginPlay() override;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Navigation")
+	bool bBuildNavigationOnBeginPlay = true;
+
 	UPROPERTY(EditDefaultsOnly, Category="Detection|Shared Model")
 	TSubclassOf<ADetectionModelHostActor> DetectionModelHostClass;
 
 private:
+	void BuildNavigationOnBeginPlay() const;
+
 	UPROPERTY()
 	TObjectPtr<ADetectionModelHostActor> DetectionModelHost;
 };

@@ -250,6 +250,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bots")
 	bool bEnableBotSpawning = false;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bots|Random Movement")
+	bool bEnableSpawnedBotRandomMovement = true;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Bots")
 	TArray<FBotSpawnTypeConfig> BotSpawnTypes;
 
@@ -273,6 +276,9 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Navigation")
 	float NavBoundsHeight = 2000.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Navigation")
+	bool bRebuildNavMeshOnSectionChanges = true;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Terrain")
 	UProceduralMeshComponent* TerrainMesh;
@@ -371,6 +377,7 @@ private:
 		const FString& DebugName,
 		float SectionSizeX,
 		float SectionSizeY);
+	void ConfigureSpawnedBotRandomMovement(ABotCharacter& SpawnedBot) const;
 	void DestroyBotsForSection(FSectionData& SectionData);
 	void GatherPlayerStartLocations(TArray<FVector>& OutLocations) const;
 	bool IsNearAnyPlayerStart(const TArray<FVector>& PlayerStartLocations, const FVector& WorldLocation, float ClearanceRadius) const;
@@ -381,6 +388,7 @@ private:
 	void DestroySectionNavBounds(FSectionData& SectionData);
 	void RequestNavRebuild();
 	void PerformNavRebuild();
+	void BuildNavigationForCurrentWorld(const TCHAR* Reason) const;
 	void UpdateGeneratedNavigationData();
 	void MarkNavDirty(const FBox& Bounds);
 	FIntPoint GetSectionFromWorld(const FVector& Location) const;
