@@ -388,7 +388,7 @@ private:
 	void DestroySectionNavBounds(FSectionData& SectionData);
 	void RequestNavRebuild();
 	void PerformNavRebuild();
-	void BuildNavigationForCurrentWorld(const TCHAR* Reason) const;
+	void QueueNavigationRebuildForCurrentWorld(const TCHAR* Reason);
 	void UpdateGeneratedNavigationData();
 	void MarkNavDirty(const FBox& Bounds);
 	FIntPoint GetSectionFromWorld(const FVector& Location) const;

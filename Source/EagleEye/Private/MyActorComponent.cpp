@@ -15,7 +15,6 @@
 #include "RHI.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/Paths.h"
-#include "Misc/ConfigCacheIni.h"
 #include "HAL/FileManager.h"
 #include "Math/UnrealMathUtility.h"
 #include "RenderingThread.h"
@@ -363,6 +362,7 @@ namespace
 
     bool IsActorComponentDetectionMetricLoggingEnabled()
     {
+        UEagleEyeDetectionSettings::LoadRuntimeConfig();
         const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
         return !Settings || Settings->bEnableDetectionMetricLogs;
     }
@@ -867,6 +867,7 @@ void UMyActorComponent::SetLogFovDetectionMetrics(bool bEnabled)
 
 bool UMyActorComponent::ShouldLogFrameTimings() const
 {
+    UEagleEyeDetectionSettings::LoadRuntimeConfig();
     const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
     return bLogFrameTimings && (!Settings || Settings->bEnableDetectionPerformanceLogs);
 }
@@ -1553,6 +1554,7 @@ void UMyActorComponent::ConfigureOwnerCaptureVisibility(AActor* Owner)
 
 void UMyActorComponent::ApplyProjectDetectionSettings()
 {
+    UEagleEyeDetectionSettings::LoadRuntimeConfig();
     const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
     if (!Settings)
     {

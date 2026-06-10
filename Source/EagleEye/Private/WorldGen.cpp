@@ -1812,21 +1812,24 @@ void AWorldGen::PerformNavRebuild()
 	}
 
 	UpdateGeneratedNavigationData();
-	BuildNavigationForCurrentWorld(TEXT("section change"));
+	QueueNavigationRebuildForCurrentWorld(TEXT("section change"));
 }
 
-void AWorldGen::BuildNavigationForCurrentWorld(const TCHAR* Reason) const
+void AWorldGen::QueueNavigationRebuildForCurrentWorld(const TCHAR* Reason)
 {
 	UWorld* World = GetWorld();
 	UNavigationSystemV1* NavSystem = World ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
 	if (!NavSystem)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("WorldGen: Cannot rebuild navmesh after %s because navigation system is unavailable."), Reason);
+		UE_LOG(LogTemp, Warning, TEXT("WorldGen: Cannot queue navmesh rebuild after %s because navigation system is unavailable."), Reason);
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("WorldGen: Rebuilding navmesh after %s."), Reason);
-	NavSystem->Build();
+	UE_LOG(LogTemp, Log, TEXT("WorldGen: Queuing async navmesh rebuild after %s."), Reason);
+	for (const TPair<FIntPoint, FSectionData>& Pair : LoadedSections)
+	{
+		MarkNavDirty(Pair.Value.Bounds);
+	}
 }
 
 void AWorldGen::UpdateGeneratedNavigationData()

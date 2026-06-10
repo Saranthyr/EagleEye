@@ -100,6 +100,8 @@ private:
     void DrawDetectionSettingsMenu();
     void RefreshDetectionSettingsMenu();
     void RebuildDetectionSettingsOptions();
+    bool CanAcceptDetectionSettingsMenuInput(float& LastInputTime, float MinIntervalSeconds);
+    void ResetDetectionSettingsMenuInputTimers();
     void AdjustDetectionSettingsValue(int32 Direction);
     void ApplyPendingDetectionSettings();
     FString GetDetectionSettingsItemLabel(int32 ItemIndex) const;
@@ -125,4 +127,8 @@ private:
     TArray<FString> ModelPathOptions;
     TArray<FString> NamesPathOptions;
     FString LastDetectionSettingsMessage;
+    float LastDetectionSettingsMenuToggleInputTime = -1000.f;
+    float LastDetectionSettingsNavigationInputTime = -1000.f;
+    float LastDetectionSettingsValueInputTime = -1000.f;
+    float LastDetectionSettingsConfirmInputTime = -1000.f;
 };

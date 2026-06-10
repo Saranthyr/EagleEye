@@ -11,12 +11,15 @@
 #include "GameFramework/PlayerController.h"
 #include "Camera/CameraComponent.h"
 #include "HAL/FileManager.h"
-#include "Misc/ConfigCacheIni.h"
 #include "Misc/Paths.h"
 
 namespace
 {
     constexpr int32 DetectionSettingsMenuItemCount = 15;
+    constexpr float DetectionSettingsMenuToggleCooldownSeconds = 0.30f;
+    constexpr float DetectionSettingsMenuNavigationCooldownSeconds = 0.16f;
+    constexpr float DetectionSettingsMenuValueCooldownSeconds = 0.14f;
+    constexpr float DetectionSettingsMenuConfirmCooldownSeconds = 0.25f;
 
     FString DetectionBackendToString(int32 Value)
     {
@@ -144,18 +147,29 @@ void AMyHUD::SetDetectionSettingsMenuOpen(bool bOpen)
         *GetNameSafe(this));
     if (bDetectionSettingsMenuOpen)
     {
+        ResetDetectionSettingsMenuInputTimers();
         RefreshDetectionSettingsMenu();
     }
 }
 
 void AMyHUD::ToggleDetectionSettingsMenu()
 {
+    if (!CanAcceptDetectionSettingsMenuInput(
+        LastDetectionSettingsMenuToggleInputTime,
+        DetectionSettingsMenuToggleCooldownSeconds))
+    {
+        return;
+    }
+
     SetDetectionSettingsMenuOpen(!bDetectionSettingsMenuOpen);
 }
 
 bool AMyHUD::HandleDetectionSettingsMenuUp()
 {
-    if (!bDetectionSettingsMenuOpen)
+    if (!bDetectionSettingsMenuOpen ||
+        !CanAcceptDetectionSettingsMenuInput(
+            LastDetectionSettingsNavigationInputTime,
+            DetectionSettingsMenuNavigationCooldownSeconds))
     {
         return false;
     }
@@ -166,7 +180,10 @@ bool AMyHUD::HandleDetectionSettingsMenuUp()
 
 bool AMyHUD::HandleDetectionSettingsMenuDown()
 {
-    if (!bDetectionSettingsMenuOpen)
+    if (!bDetectionSettingsMenuOpen ||
+        !CanAcceptDetectionSettingsMenuInput(
+            LastDetectionSettingsNavigationInputTime,
+            DetectionSettingsMenuNavigationCooldownSeconds))
     {
         return false;
     }
@@ -177,7 +194,10 @@ bool AMyHUD::HandleDetectionSettingsMenuDown()
 
 bool AMyHUD::HandleDetectionSettingsMenuLeft()
 {
-    if (!bDetectionSettingsMenuOpen)
+    if (!bDetectionSettingsMenuOpen ||
+        !CanAcceptDetectionSettingsMenuInput(
+            LastDetectionSettingsValueInputTime,
+            DetectionSettingsMenuValueCooldownSeconds))
     {
         return false;
     }
@@ -188,7 +208,10 @@ bool AMyHUD::HandleDetectionSettingsMenuLeft()
 
 bool AMyHUD::HandleDetectionSettingsMenuRight()
 {
-    if (!bDetectionSettingsMenuOpen)
+    if (!bDetectionSettingsMenuOpen ||
+        !CanAcceptDetectionSettingsMenuInput(
+            LastDetectionSettingsValueInputTime,
+            DetectionSettingsMenuValueCooldownSeconds))
     {
         return false;
     }
@@ -199,7 +222,10 @@ bool AMyHUD::HandleDetectionSettingsMenuRight()
 
 bool AMyHUD::HandleDetectionSettingsMenuConfirm()
 {
-    if (!bDetectionSettingsMenuOpen)
+    if (!bDetectionSettingsMenuOpen ||
+        !CanAcceptDetectionSettingsMenuInput(
+            LastDetectionSettingsConfirmInputTime,
+            DetectionSettingsMenuConfirmCooldownSeconds))
     {
         return false;
     }
@@ -217,7 +243,10 @@ bool AMyHUD::HandleDetectionSettingsMenuConfirm()
 
 bool AMyHUD::HandleDetectionSettingsMenuCancel()
 {
-    if (!bDetectionSettingsMenuOpen)
+    if (!bDetectionSettingsMenuOpen ||
+        !CanAcceptDetectionSettingsMenuInput(
+            LastDetectionSettingsConfirmInputTime,
+            DetectionSettingsMenuConfirmCooldownSeconds))
     {
         return false;
     }
@@ -229,6 +258,7 @@ bool AMyHUD::HandleDetectionSettingsMenuCancel()
 void AMyHUD::RefreshDetectionSettingsMenu()
 {
     RebuildDetectionSettingsOptions();
+    UEagleEyeDetectionSettings::LoadRuntimeConfig();
 
     const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
     if (!Settings)
@@ -302,6 +332,26 @@ void AMyHUD::CycleStringOption(const TArray<FString>& Options, FString& Value, i
 
     const int32 NextIndex = (CurrentIndex + Direction + Options.Num()) % Options.Num();
     Value = Options[NextIndex];
+}
+
+bool AMyHUD::CanAcceptDetectionSettingsMenuInput(float& LastInputTime, float MinIntervalSeconds)
+{
+    const UWorld* World = GetWorld();
+    const float Now = World ? World->GetTimeSeconds() : 0.f;
+    if (Now - LastInputTime < MinIntervalSeconds)
+    {
+        return false;
+    }
+
+    LastInputTime = Now;
+    return true;
+}
+
+void AMyHUD::ResetDetectionSettingsMenuInputTimers()
+{
+    LastDetectionSettingsNavigationInputTime = -1000.f;
+    LastDetectionSettingsValueInputTime = -1000.f;
+    LastDetectionSettingsConfirmInputTime = -1000.f;
 }
 
 void AMyHUD::AdjustDetectionSettingsValue(int32 Direction)
@@ -381,12 +431,7 @@ void AMyHUD::ApplyPendingDetectionSettings()
     Settings->bEnableDetectionDebugLogs = bPendingEnableDetectionDebugLogs;
     Settings->bEnableDetectionPerformanceLogs = bPendingEnableDetectionPerformanceLogs;
     Settings->bEnableDetectionMetricLogs = bPendingEnableDetectionMetricLogs;
-    Settings->SaveConfig(CPF_Config, *Settings->GetDefaultConfigFilename());
-    const bool bDefaultConfigUpdated = Settings->TryUpdateDefaultConfigFile();
-    if (GConfig)
-    {
-        GConfig->Flush(false, Settings->GetDefaultConfigFilename());
-    }
+    const bool bRuntimeConfigSaved = UEagleEyeDetectionSettings::SaveRuntimeConfig();
 
     int32 ReloadedComponents = 0;
     if (UWorld* World = GetWorld())
@@ -403,19 +448,20 @@ void AMyHUD::ApplyPendingDetectionSettings()
 
     LastDetectionSettingsMessage = FString::Printf(
         TEXT("Saved (%s). Reloaded %d detection component(s). Debug=%s Perf=%s Metrics=%s."),
-        bDefaultConfigUpdated ? TEXT("config ok") : TEXT("config write failed"),
+        bRuntimeConfigSaved ? TEXT("config ok") : TEXT("config write failed"),
         ReloadedComponents,
         Settings->bEnableDetectionDebugLogs ? TEXT("On") : TEXT("Off"),
         Settings->bEnableDetectionPerformanceLogs ? TEXT("On") : TEXT("Off"),
         Settings->bEnableDetectionMetricLogs ? TEXT("On") : TEXT("Off"));
-    UE_LOG(LogTemp, Log, TEXT("Detection settings applied: model=%s debug=%s perf=%s metrics=%s pathDecision=%s pathObject=%s config=%s reloaded=%d"),
+    UE_LOG(LogTemp, Log, TEXT("Detection settings applied: model=%s debug=%s perf=%s metrics=%s pathDecision=%s pathObject=%s config=%s path=%s reloaded=%d"),
         *Settings->ModelPathOverride,
         Settings->bEnableDetectionDebugLogs ? TEXT("true") : TEXT("false"),
         Settings->bEnableDetectionPerformanceLogs ? TEXT("true") : TEXT("false"),
         Settings->bEnableDetectionMetricLogs ? TEXT("true") : TEXT("false"),
         Settings->bEnablePathfindingDecisionLogs ? TEXT("true") : TEXT("false"),
         Settings->bEnablePathfindingObjectLogs ? TEXT("true") : TEXT("false"),
-        bDefaultConfigUpdated ? TEXT("updated") : TEXT("failed"),
+        bRuntimeConfigSaved ? TEXT("updated") : TEXT("failed"),
+        *UEagleEyeDetectionSettings::GetRuntimeConfigFilename(),
         ReloadedComponents);
 }
 

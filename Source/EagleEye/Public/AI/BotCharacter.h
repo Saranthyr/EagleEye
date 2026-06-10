@@ -29,6 +29,7 @@ class EAGLEEYE_API ABotCharacter : public ACharacter
 public:
     ABotCharacter();
 
+    virtual void PostInitializeComponents() override;
     virtual void BeginPlay() override;
     virtual void Tick(float DeltaSeconds) override;
     virtual float TakeDamage(
@@ -78,10 +79,19 @@ public:
     float GetCloseDamage() const { return CloseDamage; }
 
     UFUNCTION(BlueprintPure, Category="Gameplay|Damage")
+    float GetCloseDamageRange() const;
+
+    UFUNCTION(BlueprintPure, Category="Gameplay|Damage")
     bool IsCloseDamageHealing() const { return CloseDamage < 0.f; }
 
     UFUNCTION(BlueprintPure, Category="Gameplay|Damage")
+    bool IsProjectileHealing() const { return ProjectileDamage < 0.f; }
+
+    UFUNCTION(BlueprintPure, Category="Gameplay|Damage")
     float GetProjectileDamage() const { return ProjectileDamage; }
+
+    UFUNCTION(BlueprintPure, Category="Gameplay|Damage")
+    float GetProjectileAttackRange() const { return ProjectileAttackRange; }
 
     UFUNCTION(BlueprintCallable, Category="Gameplay|Health")
     float ApplyHealthDamage(float DamageAmount, AController* EventInstigator = nullptr, AActor* DamageCauser = nullptr);
@@ -91,6 +101,9 @@ public:
 
     UFUNCTION(BlueprintCallable, Category="Gameplay|Health")
     void ResetHealth();
+
+    UFUNCTION(BlueprintCallable, Category="Gameplay|Damage")
+    bool TryApplyCloseDamageToActor(AActor* TargetActor);
 
     UFUNCTION(BlueprintPure, Category="Gameplay|Health")
     float GetCurrentHealth() const { return CurrentHealth; }
@@ -126,9 +139,11 @@ public:
     float SharedDetectionMaxReporterDistance = 6000.f;
 
 protected:
+    void ConfigureCloseDamageHitbox();
     void TickCloseDamageHitbox();
     bool TryApplyCloseDamage(AActor* TargetActor);
-    bool IsValidDamageTarget(const AActor* TargetActor) const;
+    bool IsValidCloseDamageTarget(const AActor* TargetActor) const;
+    bool IsValidProjectileTarget(const AActor* TargetActor) const;
     void HandleDeath(AController* EventInstigator, AActor* DamageCauser);
     void EnableDeathRagdoll();
     void DisableDeathRagdoll();
@@ -220,7 +235,7 @@ protected:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage|Projectile")
     TSubclassOf<ABotDamageProjectile> ProjectileClass;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage|Projectile", meta=(ClampMin="0.0", DisplayName="Projectile Damage / Heal Amount"))
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage|Projectile", meta=(DisplayName="Projectile Damage (Negative Heals Bots)"))
     float ProjectileDamage = 15.f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Damage|Projectile", meta=(ClampMin="0.0"))

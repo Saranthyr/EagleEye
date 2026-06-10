@@ -30,12 +30,16 @@ ABotCharacter::ABotCharacter()
     CloseDamageHitbox = CreateDefaultSubobject<USphereComponent>(TEXT("CloseDamageHitbox"));
     CloseDamageHitbox->SetupAttachment(RootComponent);
     CloseDamageHitbox->InitSphereRadius(130.f);
-    CloseDamageHitbox->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
-    CloseDamageHitbox->SetCollisionObjectType(ECC_WorldDynamic);
-    CloseDamageHitbox->SetCollisionResponseToAllChannels(ECR_Ignore);
-    CloseDamageHitbox->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
-    CloseDamageHitbox->SetGenerateOverlapEvents(true);
+    ConfigureCloseDamageHitbox();
 
+    ApplyBotMovementSettings();
+}
+
+void ABotCharacter::PostInitializeComponents()
+{
+    Super::PostInitializeComponents();
+
+    ConfigureCloseDamageHitbox();
     ApplyBotMovementSettings();
 }
 
@@ -57,6 +61,7 @@ void ABotCharacter::BeginPlay()
     {
         CloseDamageHitbox->OnComponentBeginOverlap.AddDynamic(this, &ABotCharacter::HandleCloseDamageOverlap);
     }
+    ConfigureCloseDamageHitbox();
     SetCloseDamageHitboxEnabled(bEnableCloseHitboxDamage);
 }
 
@@ -178,7 +183,7 @@ void ABotCharacter::StopBotViewportRecording()
 
 bool ABotCharacter::TryThrowProjectileAtActor(AActor* TargetActor)
 {
-    if (bIsDead || !bEnableProjectileAttack || !IsValidDamageTarget(TargetActor))
+    if (bIsDead || !bEnableProjectileAttack || !IsValidProjectileTarget(TargetActor))
     {
         return false;
     }
@@ -231,8 +236,7 @@ bool ABotCharacter::TryThrowProjectileAtActor(AActor* TargetActor)
         return false;
     }
 
-    const bool bHealingProjectile = IsCloseDamageHealing() && TargetActor->IsA<ABotCharacter>();
-    Projectile->SetDamage(bHealingProjectile ? -FMath::Abs(ProjectileDamage) : ProjectileDamage);
+    Projectile->SetDamage(ProjectileDamage);
     Projectile->SetProjectileSpeed(ProjectileSpeed);
     Projectile->FireInDirection(Direction);
     LastProjectileAttackTime = CurrentTime;
@@ -314,8 +318,35 @@ void ABotCharacter::SetCloseDamageHitboxEnabled(bool bEnabled)
         return;
     }
 
+    ConfigureCloseDamageHitbox();
     CloseDamageHitbox->SetCollisionEnabled(bCloseDamageHitboxEnabled ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
     CloseDamageHitbox->SetGenerateOverlapEvents(bCloseDamageHitboxEnabled);
+}
+
+void ABotCharacter::ConfigureCloseDamageHitbox()
+{
+    if (!CloseDamageHitbox)
+    {
+        return;
+    }
+
+    CloseDamageHitbox->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+    CloseDamageHitbox->SetCollisionObjectType(ECC_WorldDynamic);
+    CloseDamageHitbox->SetCollisionResponseToAllChannels(ECR_Ignore);
+    CloseDamageHitbox->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
+    CloseDamageHitbox->SetGenerateOverlapEvents(true);
+    CloseDamageHitbox->SetCanEverAffectNavigation(false);
+    CloseDamageHitbox->CanCharacterStepUpOn = ECB_No;
+}
+
+float ABotCharacter::GetCloseDamageRange() const
+{
+    return CloseDamageHitbox ? CloseDamageHitbox->GetScaledSphereRadius() : 0.f;
+}
+
+bool ABotCharacter::TryApplyCloseDamageToActor(AActor* TargetActor)
+{
+    return TryApplyCloseDamage(TargetActor);
 }
 
 void ABotCharacter::TickCloseDamageHitbox()
@@ -337,7 +368,7 @@ void ABotCharacter::TickCloseDamageHitbox()
 
 bool ABotCharacter::TryApplyCloseDamage(AActor* TargetActor)
 {
-    if (bIsDead || !bCloseDamageHitboxEnabled || !IsValidDamageTarget(TargetActor) || FMath::IsNearlyZero(CloseDamage))
+    if (bIsDead || !bCloseDamageHitboxEnabled || !IsValidCloseDamageTarget(TargetActor) || FMath::IsNearlyZero(CloseDamage))
     {
         return false;
     }
@@ -385,7 +416,7 @@ bool ABotCharacter::TryApplyCloseDamage(AActor* TargetActor)
     return true;
 }
 
-bool ABotCharacter::IsValidDamageTarget(const AActor* TargetActor) const
+bool ABotCharacter::IsValidCloseDamageTarget(const AActor* TargetActor) const
 {
     if (bIsDead || !IsValid(TargetActor) || TargetActor == this)
     {
@@ -393,6 +424,25 @@ bool ABotCharacter::IsValidDamageTarget(const AActor* TargetActor) const
     }
 
     if (IsCloseDamageHealing())
+    {
+        const ABotCharacter* TargetBot = Cast<ABotCharacter>(TargetActor);
+        return TargetBot &&
+            !TargetBot->IsDead() &&
+            TargetBot->GetCurrentHealth() < TargetBot->GetMaxHealth();
+    }
+
+    const APawn* Pawn = Cast<APawn>(TargetActor);
+    return TargetActor->IsA<AEagleEyeCharacter>() || (Pawn && Pawn->IsPlayerControlled());
+}
+
+bool ABotCharacter::IsValidProjectileTarget(const AActor* TargetActor) const
+{
+    if (bIsDead || !IsValid(TargetActor) || TargetActor == this)
+    {
+        return false;
+    }
+
+    if (IsProjectileHealing())
     {
         const ABotCharacter* TargetBot = Cast<ABotCharacter>(TargetActor);
         return TargetBot &&

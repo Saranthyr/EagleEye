@@ -68,6 +68,7 @@ namespace
 
     bool IsDetectionMetricLoggingEnabled()
     {
+        UEagleEyeDetectionSettings::LoadRuntimeConfig();
         const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
         return !Settings || Settings->bEnableDetectionMetricLogs;
     }
@@ -1005,6 +1006,7 @@ namespace
 
     bool IsDetectionDebugEnabled()
     {
+        UEagleEyeDetectionSettings::LoadRuntimeConfig();
         const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
         return !Settings || Settings->bEnableDetectionDebugLogs;
     }

@@ -11,6 +11,10 @@ class EAGLEEYE_API UEagleEyeDetectionSettings : public UDeveloperSettings
     GENERATED_BODY()
 
 public:
+    static FString GetRuntimeConfigFilename();
+    static bool LoadRuntimeConfig(bool bForceReload = false);
+    static bool SaveRuntimeConfig();
+
     UPROPERTY(EditAnywhere, Config, Category="Model")
     EDetectionInferenceBackend InferenceBackend = EDetectionInferenceBackend::Auto;
 

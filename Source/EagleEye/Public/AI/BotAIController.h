@@ -84,6 +84,9 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Healing", meta=(ClampMin="0.0"))
     float HealingMeleeApproachMaxRange = 3000.f;
 
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Healing", meta=(ClampMin="0.0"))
+    float HealingMeleeMoveAcceptanceRadius = 55.f;
+
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Healing")
     bool bUseRangedHealingWhenMeleeUnreachable = true;
 

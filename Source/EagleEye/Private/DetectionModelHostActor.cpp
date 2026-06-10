@@ -36,6 +36,7 @@ void ADetectionModelHostActor::BeginPlay()
 {
     Super::BeginPlay();
 
+    UEagleEyeDetectionSettings::LoadRuntimeConfig();
     if (const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>())
     {
         bPreloadModelOnBeginPlay = Settings->bPreloadModelHostOnBeginPlay;

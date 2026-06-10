@@ -148,12 +148,14 @@ namespace
 
     bool IsPathfindingDecisionLoggingEnabled()
     {
+        UEagleEyeDetectionSettings::LoadRuntimeConfig();
         const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
         return !Settings || Settings->bEnablePathfindingDecisionLogs;
     }
 
     bool IsPathfindingObjectLoggingEnabled()
     {
+        UEagleEyeDetectionSettings::LoadRuntimeConfig();
         const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
         return (!Settings || Settings->bEnablePathfindingDecisionLogs) &&
             (!Settings || Settings->bEnablePathfindingObjectLogs);

@@ -3,10 +3,10 @@
 #include "AI/BotCharacter.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Navigation/PathFollowingComponent.h"
-#include "NavigationPath.h"
 #include "NavigationSystem.h"
 #include "Perception/AIPerceptionComponent.h"
 #include "Perception/AIPerceptionTypes.h"
@@ -215,7 +215,7 @@ void ABotAIController::Tick(float DeltaSeconds)
 
     if (ABotCharacter* BotCharacter = Cast<ABotCharacter>(GetPawn()))
     {
-        if (!BotCharacter->IsCloseDamageHealing())
+        if (!BotCharacter->IsCloseDamageHealing() && !BotCharacter->IsProjectileHealing())
         {
             BotCharacter->TryThrowProjectileAtLocation(DetectedTargetLocation);
         }
@@ -339,28 +339,7 @@ bool ABotAIController::CanReachHealingTargetForMelee(const ABotCharacter& Healer
         return false;
     }
 
-    if (HealerBot.IsFlyingBot())
-    {
-        return true;
-    }
-
-    if (!HealerBot.IsWalkingBot())
-    {
-        return false;
-    }
-
-    UWorld* World = HealerBot.GetWorld();
-    if (!World)
-    {
-        return false;
-    }
-
-    UNavigationPath* Path = UNavigationSystemV1::FindPathToLocationSynchronously(
-        World,
-        HealerBot.GetActorLocation(),
-        TargetBot.GetActorLocation(),
-        const_cast<ABotCharacter*>(&HealerBot));
-    return Path && Path->IsValid() && !Path->IsPartial();
+    return HealerBot.IsFlyingBot() || HealerBot.IsWalkingBot();
 }
 
 ABotCharacter* ABotAIController::FindHealingTarget(const ABotCharacter* HealerBot) const
@@ -415,7 +394,9 @@ void ABotAIController::UpdateHealingTarget(float DeltaSeconds)
         return;
     }
 
-    if (!bEnableAllyHealing || !HealerBot || !HealerBot->IsCloseDamageHealing())
+    if (!bEnableAllyHealing ||
+        !HealerBot ||
+        (!HealerBot->IsCloseDamageHealing() && !HealerBot->IsProjectileHealing()))
     {
         CurrentHealingTarget = nullptr;
         bCurrentHealingTargetUsesMelee = false;
@@ -447,18 +428,6 @@ void ABotAIController::UpdateHealingTarget(float DeltaSeconds)
         return;
     }
 
-    bCurrentHealingTargetUsesMelee = ShouldUseMeleeHealing(*HealerBot, *TargetBot);
-    if (!bCurrentHealingTargetUsesMelee)
-    {
-        ClearHealingBlackboardTarget(*BlackboardComponent);
-        ClearFocus(EAIFocusPriority::Gameplay);
-        if (bUseRangedHealingWhenMeleeUnreachable)
-        {
-            HealerBot->TryThrowProjectileAtActor(TargetBot);
-        }
-        return;
-    }
-
     const FVector TargetLocation = TargetBot->GetActorLocation();
     BlackboardComponent->SetValueAsBool(HasDetectedTargetKey, true);
     BlackboardComponent->SetValueAsBool(HasLineOfSightKey, true);
@@ -466,12 +435,68 @@ void ABotAIController::UpdateHealingTarget(float DeltaSeconds)
     BlackboardComponent->SetValueAsVector(TargetLocationKey, TargetLocation);
     BlackboardComponent->SetValueAsVector(DetectedTargetLocationKey, TargetLocation);
     SetFocalPoint(TargetLocation, EAIFocusPriority::Gameplay);
+
+    bCurrentHealingTargetUsesMelee = HealerBot->IsCloseDamageHealing() && ShouldUseMeleeHealing(*HealerBot, *TargetBot);
+    if (bCurrentHealingTargetUsesMelee)
+    {
+        float CloseDamageRange = HealerBot->GetCloseDamageRange();
+        if (const UCapsuleComponent* TargetCapsule = TargetBot->GetCapsuleComponent())
+        {
+            CloseDamageRange += TargetCapsule->GetScaledCapsuleRadius();
+        }
+
+        if (CloseDamageRange > 0.f &&
+            FVector::DistSquared(HealerBot->GetActorLocation(), TargetLocation) <= FMath::Square(CloseDamageRange))
+        {
+            HealerBot->TryApplyCloseDamageToActor(TargetBot);
+        }
+
+        MoveToActor(
+            TargetBot,
+            FMath::Max(0.f, HealingMeleeMoveAcceptanceRadius),
+            false,
+            true,
+            true,
+            nullptr,
+            true);
+        return;
+    }
+
+    if (HealerBot->IsProjectileHealing() &&
+        (!HealerBot->IsCloseDamageHealing() || bUseRangedHealingWhenMeleeUnreachable))
+    {
+        HealerBot->TryThrowProjectileAtActor(TargetBot);
+
+        const float ProjectileRange = HealerBot->GetProjectileAttackRange();
+        const float DistanceSq = FVector::DistSquared(HealerBot->GetActorLocation(), TargetLocation);
+        if (ProjectileRange > 0.f && DistanceSq > FMath::Square(ProjectileRange * 0.85f))
+        {
+            MoveToActor(
+                TargetBot,
+                FMath::Max(100.f, ProjectileRange * 0.75f),
+                true,
+                true,
+                true,
+                nullptr,
+                true);
+        }
+        else
+        {
+            StopMovement();
+        }
+        return;
+    }
+
+    ClearHealingBlackboardTarget(*BlackboardComponent);
+    ClearFocus(EAIFocusPriority::Gameplay);
 }
 
 void ABotAIController::ClearHealingTarget(UBlackboardComponent& BlackboardComponent)
 {
     CurrentHealingTarget = nullptr;
     bCurrentHealingTargetUsesMelee = false;
+    StopMovement();
+    ClearFocus(EAIFocusPriority::Gameplay);
     ClearHealingBlackboardTarget(BlackboardComponent);
 }
 

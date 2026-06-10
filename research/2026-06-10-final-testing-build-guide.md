@@ -47,3 +47,19 @@
   map to /Game/ThirdPerson/Blueprints/TestMap/TestWorld and changed GameMode default pawn fallback
   to native AEagleEyeCharacter. Build.sh EagleEyeEditor Linux Development succeeded. Reran UAT cook
   with corrected map; BUILD SUCCESSFUL, ExitCode=0, Success - 0 errors, 0 warnings.
+
+### 2026-06-10T13:38:05+03:00 - finding: Latest metrics build did not include ProcGen map
+
+- Detail: LocalBuildLogs/Log.txt shows MapsToCook=/Game/ThirdPerson/Blueprints/TestWorld only.
+  Saved/Cooked/Linux/EagleEye contains Content/ThirdPerson/Blueprints/TestMap/TestWorld.umap and no
+  ProcGen.umap. To include both intended maps use
+  -map=/Game/ThirdPerson/Blueprints/TestMap/TestWorld+/Game/ThirdPerson/Blueprints/ProcGen/ProcGen
+  or configure ProjectPackagingSettings MapsToCook.
+
+### 2026-06-10T13:53:18+03:00 - finding: GPU crash guard exists but did not trip in latest Linux-Metrics run
+
+- Detail: MyActorComponent writes Saved/OnnxRuntimeGpuCrashGuard.txt when ONNX Runtime GPU provider is
+  configured and clears it during ReleaseOnnxRuntime. Latest packaged logs show MIGraphX configured,
+  then ONNX Runtime model load failed: Failed to call function, then Auto retried CPU. No
+  OnnxRuntimeGpuCrashGuard.txt exists under Builds/Linux-Metrics/EagleEye/Saved. Metrics file
+  present is DetectionFrameTimes_ONNXRuntime_CPU.csv.
