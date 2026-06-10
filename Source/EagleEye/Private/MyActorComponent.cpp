@@ -256,6 +256,38 @@ namespace
         return Out;
     }
 
+    bool CopyRgbFloatMatToNchw(const cv::Mat& ImageRgbFloat, float* OutData, int32 Width, int32 Height)
+    {
+        if (!OutData ||
+            ImageRgbFloat.empty() ||
+            ImageRgbFloat.cols != Width ||
+            ImageRgbFloat.rows != Height ||
+            ImageRgbFloat.type() != CV_32FC3)
+        {
+            return false;
+        }
+
+        const int32 PlaneSize = Width * Height;
+        float* R = OutData;
+        float* G = OutData + PlaneSize;
+        float* B = OutData + (PlaneSize * 2);
+
+        for (int32 Y = 0; Y < Height; ++Y)
+        {
+            const cv::Vec3f* Row = ImageRgbFloat.ptr<cv::Vec3f>(Y);
+            const int32 RowOffset = Y * Width;
+            for (int32 X = 0; X < Width; ++X)
+            {
+                const int32 Index = RowOffset + X;
+                R[Index] = Row[X][0];
+                G[Index] = Row[X][1];
+                B[Index] = Row[X][2];
+            }
+        }
+
+        return true;
+    }
+
     void AddUniqueNormalizedDirectory(TArray<FString>& Directories, const FString& Directory)
     {
         if (Directory.IsEmpty())
@@ -548,6 +580,34 @@ void UMyActorComponent::SetCaptureFPS(float InCaptureFPS)
         CaptureInterval,
         true,
         CaptureInterval);
+}
+
+void UMyActorComponent::SetUseOwnerCameraCapture(bool bEnabled)
+{
+    if (bUseOwnerCameraCapture == bEnabled)
+    {
+        return;
+    }
+
+    bUseOwnerCameraCapture = bEnabled;
+    if (!bUseOwnerCameraCapture)
+    {
+        if (UWorld* World = GetWorld())
+        {
+            if (UCrowDetectionShareSubsystem* ShareSubsystem = World->GetSubsystem<UCrowDetectionShareSubsystem>())
+            {
+                ShareSubsystem->UnregisterDetector(GetOwner());
+            }
+        }
+        ReleaseOwnerCameraCaptureResources();
+    }
+    else if (UWorld* World = GetWorld())
+    {
+        if (UCrowDetectionShareSubsystem* ShareSubsystem = World->GetSubsystem<UCrowDetectionShareSubsystem>())
+        {
+            ShareSubsystem->RegisterDetector(GetOwner());
+        }
+    }
 }
 
 void UMyActorComponent::SetRecordOwnerCameraCaptureVideo(bool bEnabled)
@@ -981,6 +1041,7 @@ void UMyActorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
     ResetOwnerCameraReadback();
 
     CloseOwnerCameraVideoWriter(false);
+    ReleaseOwnerCameraCaptureResources();
 
     if (bSharedVisionModelHost)
     {
@@ -1191,6 +1252,38 @@ bool UMyActorComponent::EnsureOwnerCameraCapture()
     OwnerDepthSceneCapture->CaptureSource = ESceneCaptureSource::SCS_SceneDepth;
     ConfigureOwnerCaptureVisibility(Owner);
     return true;
+}
+
+void UMyActorComponent::ReleaseOwnerCameraCaptureResources()
+{
+    ResetOwnerCameraReadback();
+    ClearLastFrameSceneDepth();
+
+    if (OwnerSceneCapture)
+    {
+        OwnerSceneCapture->TextureTarget = nullptr;
+        OwnerSceneCapture->DestroyComponent();
+        OwnerSceneCapture = nullptr;
+    }
+
+    if (OwnerDepthSceneCapture)
+    {
+        OwnerDepthSceneCapture->TextureTarget = nullptr;
+        OwnerDepthSceneCapture->DestroyComponent();
+        OwnerDepthSceneCapture = nullptr;
+    }
+
+    if (OwnerCaptureRenderTarget)
+    {
+        OwnerCaptureRenderTarget->ReleaseResource();
+        OwnerCaptureRenderTarget = nullptr;
+    }
+
+    if (OwnerDepthRenderTarget)
+    {
+        OwnerDepthRenderTarget->ReleaseResource();
+        OwnerDepthRenderTarget = nullptr;
+    }
 }
 
 void UMyActorComponent::ConfigureOwnerCaptureVisibility(AActor* Owner)
@@ -2842,12 +2935,10 @@ void UMyActorComponent::ResetInferenceOutputState()
 
 EDetectionInferenceBackend UMyActorComponent::DetectAutomaticInferenceBackend(const FString& ModelPathUE) const
 {
-#if WITH_TENSORRT
     if (ModelPathUE.EndsWith(TEXT(".plan"), ESearchCase::IgnoreCase))
     {
         return EDetectionInferenceBackend::TensorRT;
     }
-#endif
 
 #if WITH_ONNXRUNTIME
     if (ModelPathUE.EndsWith(TEXT(".onnx"), ESearchCase::IgnoreCase))
@@ -2902,6 +2993,10 @@ EDetectionInferenceBackend UMyActorComponent::ResolveEffectiveInferenceBackend(c
         return EDetectionInferenceBackend::TensorRT;
 #else
         UE_LOG(LogTemp, Warning, TEXT("TensorRT backend requested but this build was compiled without TensorRT. Falling back."));
+        if (ModelPathUE.EndsWith(TEXT(".plan"), ESearchCase::IgnoreCase))
+        {
+            return EDetectionInferenceBackend::TensorRT;
+        }
         RequestedBackend = EDetectionInferenceBackend::Auto;
 #endif
     }
@@ -3456,19 +3551,13 @@ bool UMyActorComponent::RunTensorRTInference_BG(const cv::Mat& ModelInputBGR)
         TrtInputHost.SetNumUninitialized(TrtInputElements);
     }
 
-    std::vector<cv::Mat> Channels;
-    cv::split(imgFloat, Channels);
-    if (Channels.size() != 3)
+    if (!CopyRgbFloatMatToNchw(imgFloat, TrtInputHost.GetData(), ModelInputWidth, ModelInputHeight))
     {
-        UE_LOG(LogTemp, Error, TEXT("Unexpected channel count from preprocessing: %d"), Channels.size());
+        UE_LOG(LogTemp, Error, TEXT("TensorRT preprocessing produced unexpected image layout: %dx%d type=%d"),
+            imgFloat.cols,
+            imgFloat.rows,
+            imgFloat.type());
         return false;
-    }
-
-    float* InputPtr = TrtInputHost.GetData();
-    for (int32 c = 0; c < 3; ++c)
-    {
-        const float* Src = Channels[c].ptr<float>();
-        FMemory::Memcpy(InputPtr + (c * PlaneSize), Src, PlaneSize * sizeof(float));
     }
 
     if (!RunTensorRT())
@@ -3690,19 +3779,13 @@ bool UMyActorComponent::RunOnnxRuntimeInference_BG(const cv::Mat& ModelInputBGR)
         TrtInputElements = PlaneSize * 3;
     }
 
-    std::vector<cv::Mat> Channels;
-    cv::split(imgFloat, Channels);
-    if (Channels.size() != 3)
+    if (!CopyRgbFloatMatToNchw(imgFloat, OnnxRuntimeInputHost.GetData(), ModelInputWidth, ModelInputHeight))
     {
-        UE_LOG(LogTemp, Error, TEXT("Unexpected channel count from preprocessing: %d"), Channels.size());
+        UE_LOG(LogTemp, Error, TEXT("ONNX Runtime preprocessing produced unexpected image layout: %dx%d type=%d"),
+            imgFloat.cols,
+            imgFloat.rows,
+            imgFloat.type());
         return false;
-    }
-
-    float* InputPtr = OnnxRuntimeInputHost.GetData();
-    for (int32 c = 0; c < 3; ++c)
-    {
-        const float* Src = Channels[c].ptr<float>();
-        FMemory::Memcpy(InputPtr + (c * PlaneSize), Src, PlaneSize * sizeof(float));
     }
 
     try

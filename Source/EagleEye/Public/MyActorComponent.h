@@ -104,7 +104,7 @@ public:
     UFUNCTION()
     void TickCapture();
 
-    void SetUseOwnerCameraCapture(bool bEnabled) { bUseOwnerCameraCapture = bEnabled; }
+    void SetUseOwnerCameraCapture(bool bEnabled);
     void SetCaptureFPS(float InCaptureFPS);
     void SetCaptureResolution(int32 InWidth, int32 InHeight);
     void SetMaxOwnerCameraCaptureDistance(float InDistance) { MaxOwnerCameraCaptureDistance = InDistance; }
@@ -162,6 +162,7 @@ private:
     bool PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight);
     bool EnqueueAsyncOwnerCameraReadback();
     bool EnsureOwnerCameraCapture();
+    void ReleaseOwnerCameraCaptureResources();
     bool ShouldSkipOwnerCameraCapture() const;
     bool ShouldRecordOwnerCameraVideo() const;
     void PublishFovOnlyDetectionFrame();

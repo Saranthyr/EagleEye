@@ -56,8 +56,8 @@ public class EagleEye : ModuleRules
 
             string TensorRTIncludePath = !String.IsNullOrEmpty(TensorRTRoot) ? Path.Combine(TensorRTRoot, "include") : null;
             string TensorRTLibPath = !String.IsNullOrEmpty(TensorRTRoot) ? Path.Combine(TensorRTRoot, "lib") : null;
-            string TensorRTInferLib = !String.IsNullOrEmpty(TensorRTLibPath) ? Path.Combine(TensorRTLibPath, "nvinfer.lib") : null;
-            string TensorRTPluginLib = !String.IsNullOrEmpty(TensorRTLibPath) ? Path.Combine(TensorRTLibPath, "nvinfer_plugin.lib") : null;
+            string TensorRTInferLib = FindVersionedThenUnversionedImportLibrary(TensorRTLibPath, "nvinfer");
+            string TensorRTPluginLib = FindVersionedThenUnversionedImportLibrary(TensorRTLibPath, "nvinfer_plugin");
 
             string CudaRoot = Environment.GetEnvironmentVariable("CUDA_PATH");
             if (String.IsNullOrEmpty(CudaRoot))
@@ -81,9 +81,14 @@ public class EagleEye : ModuleRules
                 AddImportLibrary(TensorRTPluginLib);
                 StageMatchingRuntimeFiles(Path.Combine(TensorRTRoot, "bin"), "nvinfer*.dll");
                 StageMatchingRuntimeFiles(Path.Combine(TensorRTRoot, "bin"), "nvinfer_plugin*.dll");
+                CopyMatchingRuntimeFilesToBinaryOutput(Path.Combine(TensorRTRoot, "bin"), "nvinfer*.dll");
+                CopyMatchingRuntimeFilesToBinaryOutput(Path.Combine(TensorRTRoot, "bin"), "nvinfer_plugin*.dll");
                 AddSystemIncludePath(CudaIncludePath);
                 AddImportLibrary(CudaRuntimeLib);
                 StageMatchingRuntimeFiles(Path.Combine(CudaRoot, "bin"), "cudart64*.dll");
+                StageMatchingRuntimeFiles(Path.Combine(CudaRoot, "bin", "x64"), "cudart64*.dll");
+                CopyMatchingRuntimeFilesToBinaryOutput(Path.Combine(CudaRoot, "bin"), "cudart64*.dll");
+                CopyMatchingRuntimeFilesToBinaryOutput(Path.Combine(CudaRoot, "bin", "x64"), "cudart64*.dll");
             }
             PublicDefinitions.Add(bWithTensorRT ? "WITH_TENSORRT=1" : "WITH_TENSORRT=0");
         }
@@ -436,6 +441,41 @@ public class EagleEye : ModuleRules
         }
 
         return null;
+    }
+
+    private static string FindVersionedThenUnversionedImportLibrary(string DirectoryPath, string BaseName)
+    {
+        if (String.IsNullOrEmpty(DirectoryPath) || !Directory.Exists(DirectoryPath))
+        {
+            return null;
+        }
+
+        List<KeyValuePair<int, string>> VersionedLibraries = new List<KeyValuePair<int, string>>();
+        foreach (string CandidatePath in Directory.GetFiles(DirectoryPath, BaseName + "_*.lib", SearchOption.TopDirectoryOnly))
+        {
+            string CandidateName = Path.GetFileNameWithoutExtension(CandidatePath);
+            string Prefix = BaseName + "_";
+            if (!CandidateName.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string VersionText = CandidateName.Substring(Prefix.Length);
+            int Version = 0;
+            if (Int32.TryParse(VersionText, out Version))
+            {
+                VersionedLibraries.Add(new KeyValuePair<int, string>(Version, CandidatePath));
+            }
+        }
+
+        VersionedLibraries.Sort((Left, Right) => Right.Key.CompareTo(Left.Key));
+        if (VersionedLibraries.Count > 0)
+        {
+            return VersionedLibraries[0].Value;
+        }
+
+        string UnversionedPath = Path.Combine(DirectoryPath, BaseName + ".lib");
+        return File.Exists(UnversionedPath) ? UnversionedPath : null;
     }
 
     private static string FindFirstExistingDirectory(List<string> Directories)
