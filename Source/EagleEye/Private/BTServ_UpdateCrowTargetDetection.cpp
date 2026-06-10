@@ -1,6 +1,7 @@
 #include "AI/BTServ_UpdateCrowTargetDetection.h"
 
 #include "AIController.h"
+#include "AI/BotCharacter.h"
 #include "AI/CrowDetectionShareSubsystem.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
@@ -240,7 +241,8 @@ namespace
 
     FResolvedActorMetric FindResolvedActorMetric(
         const APawn& ControlledPawn,
-        const FVector* TargetLocation)
+        const FVector* TargetLocation,
+        float MatchRadius = ResolvedActorMatchRadius)
     {
         FResolvedActorMetric Metric;
         const UWorld* World = ControlledPawn.GetWorld();
@@ -278,7 +280,7 @@ namespace
         Metric.ActorClassName = BestPawn->GetClass() ? BestPawn->GetClass()->GetName() : FString();
         Metric.Distance = FMath::Sqrt(BestDistSq);
         Metric.bIsPlayer = BestPawn == PlayerPawn;
-        Metric.bMatchesResolvedTarget = Metric.Distance <= ResolvedActorMatchRadius;
+        Metric.bMatchesResolvedTarget = Metric.Distance <= MatchRadius;
         return Metric;
     }
 
@@ -1415,6 +1417,11 @@ void UBTServ_UpdateCrowTargetDetection::TickNode(
 
     UMyActorComponent* Detector = ControlledPawn->FindComponentByClass<UMyActorComponent>();
     UCameraComponent* Camera = ControlledPawn->FindComponentByClass<UCameraComponent>();
+    const ABotCharacter* BotCharacter = Cast<ABotCharacter>(ControlledPawn);
+    const bool bUseFlockSharedDetections = !BotCharacter || BotCharacter->ShouldUseFlockSharedDetections();
+    const bool bPublishDetectionsToFlock = !BotCharacter || BotCharacter->ShouldPublishDetectionsToFlock();
+    const float SharedDetectionMaxAgeSeconds = BotCharacter ? BotCharacter->GetSharedDetectionMaxAgeSeconds() : 1.5f;
+    const float SharedDetectionMaxReporterDistance = BotCharacter ? BotCharacter->GetSharedDetectionMaxReporterDistance() : 6000.f;
     if (!Detector || !Camera || Detector->LastFrameSourceWidth <= 0 || Detector->LastFrameSourceHeight <= 0)
     {
         if (bUseFlockSharedDetections && ApplySharedDetection(
@@ -1889,6 +1896,77 @@ void UBTServ_UpdateCrowTargetDetection::TickNode(
     }
 
     TargetLocation += TargetLocationOffset;
+
+    if (bRequirePlayerResolvedTarget)
+    {
+        const FResolvedActorMetric TargetActorMetric = FindResolvedActorMetric(
+            *ControlledPawn,
+            &TargetLocation,
+            PlayerTargetMatchRadius);
+        if (!TargetActorMetric.bMatchesResolvedTarget || !TargetActorMetric.bIsPlayer)
+        {
+            Memory->ConsecutiveDetections = 0;
+            ++Memory->ConsecutiveMisses;
+            AppendDepthDetectionMetricRow(
+                *ControlledPawn,
+                *Detector,
+                TargetLocationOffset,
+                TargetActorMetric.ActorName.IsEmpty() ? TEXT("unresolved_target") : TEXT("non_player_target"),
+                false,
+                false,
+                &TargetBox,
+                &TargetPixel,
+                &ResolvedDepthPixel,
+                TargetRayBoxVerticalBias,
+                SceneDepth,
+                DepthSampleCount,
+                DepthClusterSampleCount,
+                RequiredDepthClusterSamples,
+                RequiredDepthClusterRatio,
+                DepthResolveStats,
+                &TargetLocation,
+                nullptr,
+                bMatchedTrackedBox,
+                TrackMatchIoU,
+                TrackMatchDistance,
+                0.f,
+                false,
+                Memory->ConsecutiveDetections,
+                Memory->ConsecutiveMisses);
+
+            KeepMemoryActive(
+                *Blackboard,
+                HasTargetKey,
+                DetectedTargetLocationKey,
+                DetectionConfidenceKey,
+                DetectedClassIdKey,
+                DetectedClassLabelKey,
+                *Memory,
+                CurrentTime,
+                LoseTargetAfterSeconds);
+            PrintCrowDetectionDebug(
+                *ControlledPawn,
+                FString::Printf(
+                    TEXT("reject target actor=%s class=%s isPlayer=%s match=%s dist=%.1f radius=%.1f target=%s detectionClass=%s[%d] conf=%.2f seq=%d misses=%d"),
+                    TargetActorMetric.ActorName.IsEmpty() ? TEXT("None") : *TargetActorMetric.ActorName,
+                    TargetActorMetric.ActorClassName.IsEmpty() ? TEXT("None") : *TargetActorMetric.ActorClassName,
+                    TargetActorMetric.bIsPlayer ? TEXT("true") : TEXT("false"),
+                    TargetActorMetric.bMatchesResolvedTarget ? TEXT("true") : TEXT("false"),
+                    TargetActorMetric.Distance,
+                    PlayerTargetMatchRadius,
+                    *TargetLocation.ToCompactString(),
+                    *TargetBox.ClassLabel,
+                    TargetBox.ClassId,
+                    TargetBox.Confidence,
+                    Detector->LastFrameSequence,
+                    Memory->ConsecutiveMisses),
+                FColor::Red,
+                10,
+                bDrawDebug,
+                bLogDebug);
+            return;
+        }
+    }
 
     bool bClampedTargetJump = false;
     float RawTargetJumpDistance = 0.f;

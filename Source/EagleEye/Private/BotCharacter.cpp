@@ -25,10 +25,6 @@ ABotCharacter::ABotCharacter()
     DetectionComponent = CreateDefaultSubobject<UMyActorComponent>(TEXT("DetectionComponent"));
     DetectionComponent->SetupAttachment(RootComponent);
     DetectionComponent->SetUseOwnerCameraCapture(true);
-    DetectionComponent->SetCaptureFPS(8.f);
-    DetectionComponent->SetCaptureResolution(640, 640);
-    DetectionComponent->SetMaxOwnerCameraCaptureDistance(8000.f);
-    DetectionComponent->SetMaxActiveOwnerCameraCaptures(2);
     DetectionComponent->SetUseSharedVisionModel(true);
 
     CloseDamageHitbox = CreateDefaultSubobject<USphereComponent>(TEXT("CloseDamageHitbox"));

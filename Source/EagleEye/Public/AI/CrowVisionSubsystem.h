@@ -22,6 +22,13 @@ public:
     void RegisterModelHost(UMyActorComponent* Component);
     void UnregisterModelHost(UMyActorComponent* Component);
     void ConfigureModelHostLimits(int32 MaxActiveUsers, int32 MaxQueuedFrames);
+    void ConfigureFrameSource(
+        float InCaptureFPS,
+        int32 InCaptureWidth,
+        int32 InCaptureHeight,
+        float InMaxDistanceToPlayer,
+        bool bInStaggerInitialCapture,
+        float InMaxInitialCaptureDelay);
 
     void SubmitFrame(
         UMyActorComponent* Requester,
@@ -30,6 +37,12 @@ public:
         int32 Height);
 
     bool IsShuttingDown() const { return bIsShuttingDown.load(); }
+    float GetFrameSourceCaptureFPS() const { return FrameSourceCaptureFPS; }
+    int32 GetFrameSourceCaptureWidth() const { return FrameSourceCaptureWidth; }
+    int32 GetFrameSourceCaptureHeight() const { return FrameSourceCaptureHeight; }
+    float GetFrameSourceMaxDistanceToPlayer() const { return FrameSourceMaxDistanceToPlayer; }
+    bool ShouldStaggerInitialCapture() const { return bStaggerInitialFrameSourceCapture; }
+    float GetMaxInitialCaptureDelay() const { return MaxInitialFrameSourceCaptureDelay; }
 
 private:
     struct FQueuedFrame
@@ -55,12 +68,21 @@ private:
     void HandleWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources);
     bool HasActiveRequestForRequesterLocked(const UMyActorComponent* Requester) const;
     int32 CountActiveModelUsersLocked() const;
+    float GetRequesterDistanceToPlayerSq(const UMyActorComponent* Requester) const;
+    int32 FindFarthestPendingFrameIndexLocked() const;
+    void SortPendingFramesByRequesterDistanceLocked();
 
     FCriticalSection QueueMutex;
     TArray<TSharedPtr<FQueuedFrame>> PendingFrames;
     TSharedPtr<FQueuedFrame> InFlightFrame;
     int32 MaxActiveModelUsers = 2;
     int32 MaxQueuedModelFrames = 2;
+    float FrameSourceCaptureFPS = 8.f;
+    int32 FrameSourceCaptureWidth = 640;
+    int32 FrameSourceCaptureHeight = 640;
+    float FrameSourceMaxDistanceToPlayer = 8000.f;
+    bool bStaggerInitialFrameSourceCapture = true;
+    float MaxInitialFrameSourceCaptureDelay = 0.75f;
 
     FCriticalSection HostsMutex;
     TArray<TWeakObjectPtr<UMyActorComponent>> ModelHosts;

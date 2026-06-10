@@ -6,6 +6,7 @@
 #include "AI/CrowDetectionShareSubsystem.h"
 #include "AI/CrowVisionSubsystem.h"
 #include "EagleEyeDetectionSettings.h"
+#include "EagleEyeModelDiscovery.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
@@ -241,6 +242,31 @@ namespace
         return 1.0f / (1.0f + FMath::Exp(-Clamped));
     }
 
+    FORCEINLINE bool IsClassIdLike(float V, int32 NumClassesHint)
+    {
+        if (!FMath::IsFinite(V))
+        {
+            return false;
+        }
+
+        const int32 Rounded = FMath::RoundToInt(V);
+        if (FMath::Abs(V - static_cast<float>(Rounded)) > 0.01f || Rounded < 0)
+        {
+            return false;
+        }
+
+        return NumClassesHint <= 0 || Rounded < NumClassesHint;
+    }
+
+    FORCEINLINE float NormalizeConfidence(float Score)
+    {
+        if (!FMath::IsFinite(Score))
+        {
+            return -1.0f;
+        }
+        return (Score < 0.0f || Score > 1.0f) ? Sigmoidf(Score) : Score;
+    }
+
     FString MatShapeToString(const cv::Mat& M)
     {
         FString Out = TEXT("[");
@@ -251,6 +277,21 @@ namespace
                 Out += TEXT(", ");
             }
             Out += FString::FromInt(M.size[i]);
+        }
+        Out += TEXT("]");
+        return Out;
+    }
+
+    FString TensorShapeToString(const std::vector<int64_t>& Shape)
+    {
+        FString Out = TEXT("[");
+        for (size_t i = 0; i < Shape.size(); ++i)
+        {
+            if (i > 0)
+            {
+                Out += TEXT(", ");
+            }
+            Out += FString::Printf(TEXT("%lld"), static_cast<long long>(Shape[i]));
         }
         Out += TEXT("]");
         return Out;
@@ -439,6 +480,128 @@ namespace
         }
     }
 
+    bool TryLoadRuntimeLibrary(const TArray<FString>& Candidates, FString& OutReason, void*& OutHandle)
+    {
+        if (OutHandle)
+        {
+            return true;
+        }
+
+        for (const FString& Candidate : Candidates)
+        {
+            if (Candidate.IsEmpty())
+            {
+                continue;
+            }
+
+            void* Handle = FPlatformProcess::GetDllHandle(*Candidate);
+            if (Handle)
+            {
+                OutHandle = Handle;
+                return true;
+            }
+        }
+
+        OutReason = FString::Printf(TEXT("failed to load any of: %s"), *FString::Join(Candidates, TEXT(", ")));
+        return false;
+    }
+
+#if PLATFORM_WINDOWS && WITH_ONNXRUNTIME_DML
+    void* GDirectMLRuntimeHandle = nullptr;
+#endif
+
+#if PLATFORM_LINUX && WITH_ONNXRUNTIME_MIGRAPHX
+    void* GMIGraphXRuntimeHandle = nullptr;
+    void* GMIGraphXOnnxRuntimeHandle = nullptr;
+    void* GMIGraphXTfRuntimeHandle = nullptr;
+    void* GMIGraphXCRuntimeHandle = nullptr;
+#endif
+
+    bool IsOnnxRuntimeProviderRuntimeAvailable(EOnnxRuntimeExecutionProvider Provider, FString& OutReason)
+    {
+        switch (Provider)
+        {
+        case EOnnxRuntimeExecutionProvider::CPU:
+            return true;
+        case EOnnxRuntimeExecutionProvider::DirectML:
+#if PLATFORM_WINDOWS && WITH_ONNXRUNTIME_DML
+            return TryLoadRuntimeLibrary(
+                {
+                    FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), TEXT("Win64"), TEXT("DirectML.dll")),
+                    FPaths::Combine(FPlatformProcess::BaseDir(), TEXT("DirectML.dll")),
+                    TEXT("DirectML.dll")
+                },
+                OutReason,
+                GDirectMLRuntimeHandle);
+#else
+            OutReason = TEXT("DirectML runtime check is not available on this platform/build");
+            return false;
+#endif
+        case EOnnxRuntimeExecutionProvider::MIGraphX:
+#if PLATFORM_LINUX && WITH_ONNXRUNTIME_MIGRAPHX
+            if (!TryLoadRuntimeLibrary(
+                {
+                    FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), TEXT("Linux"), TEXT("libmigraphx.so.2015000")),
+                    FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), TEXT("Linux"), TEXT("libmigraphx.so")),
+                    FPaths::Combine(FPlatformProcess::BaseDir(), TEXT("libmigraphx.so.2015000")),
+                    FPaths::Combine(FPlatformProcess::BaseDir(), TEXT("libmigraphx.so")),
+                    TEXT("libmigraphx.so.2015000"),
+                    TEXT("libmigraphx.so")
+                },
+                OutReason,
+                GMIGraphXRuntimeHandle))
+            {
+                return false;
+            }
+            if (!TryLoadRuntimeLibrary(
+                {
+                    FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), TEXT("Linux"), TEXT("libmigraphx_onnx.so.2015000")),
+                    FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), TEXT("Linux"), TEXT("libmigraphx_onnx.so")),
+                    FPaths::Combine(FPlatformProcess::BaseDir(), TEXT("libmigraphx_onnx.so.2015000")),
+                    FPaths::Combine(FPlatformProcess::BaseDir(), TEXT("libmigraphx_onnx.so")),
+                    TEXT("libmigraphx_onnx.so.2015000"),
+                    TEXT("libmigraphx_onnx.so")
+                },
+                OutReason,
+                GMIGraphXOnnxRuntimeHandle))
+            {
+                return false;
+            }
+            if (!TryLoadRuntimeLibrary(
+                {
+                    FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), TEXT("Linux"), TEXT("libmigraphx_tf.so.2015000")),
+                    FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), TEXT("Linux"), TEXT("libmigraphx_tf.so")),
+                    FPaths::Combine(FPlatformProcess::BaseDir(), TEXT("libmigraphx_tf.so.2015000")),
+                    FPaths::Combine(FPlatformProcess::BaseDir(), TEXT("libmigraphx_tf.so")),
+                    TEXT("libmigraphx_tf.so.2015000"),
+                    TEXT("libmigraphx_tf.so")
+                },
+                OutReason,
+                GMIGraphXTfRuntimeHandle))
+            {
+                return false;
+            }
+            return TryLoadRuntimeLibrary(
+                {
+                    FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), TEXT("Linux"), TEXT("libmigraphx_c.so.3")),
+                    FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), TEXT("Linux"), TEXT("libmigraphx_c.so")),
+                    FPaths::Combine(FPlatformProcess::BaseDir(), TEXT("libmigraphx_c.so.3")),
+                    FPaths::Combine(FPlatformProcess::BaseDir(), TEXT("libmigraphx_c.so")),
+                    TEXT("libmigraphx_c.so.3"),
+                    TEXT("libmigraphx_c.so")
+                },
+                OutReason,
+                GMIGraphXCRuntimeHandle);
+#else
+            OutReason = TEXT("MIGraphX runtime check is not available on this platform/build");
+            return false;
+#endif
+        default:
+            OutReason = TEXT("unknown ONNX Runtime provider");
+            return false;
+        }
+    }
+
     enum class EDetectedGpuVendor : uint8
     {
         Nvidia,
@@ -515,6 +678,74 @@ namespace
         case EDetectedOperatingSystem::Other:
         default:
             return TEXT("Other");
+        }
+    }
+
+    void ConfigureOpenCVDNNForCPU(cv::dnn::Net& Net)
+    {
+        Net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+        Net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+    }
+
+    bool HasOpenCVDNNCudaDevice(int32& OutDeviceCount, FString& OutReason)
+    {
+        OutDeviceCount = 0;
+        try
+        {
+            OutDeviceCount = cv::cuda::getCudaEnabledDeviceCount();
+        }
+        catch (const cv::Exception& e)
+        {
+            OutReason = FString(e.what());
+            return false;
+        }
+
+        if (OutDeviceCount <= 0)
+        {
+            OutReason = TEXT("no CUDA-capable OpenCV device found");
+            return false;
+        }
+
+        return true;
+    }
+
+    bool ConfigureOpenCVDNNBackend(cv::dnn::Net& Net, bool bPreferCUDA, bool bUseFP16)
+    {
+        if (bPreferCUDA)
+        {
+            int32 CudaDeviceCount = 0;
+            FString CudaUnavailableReason;
+            if (HasOpenCVDNNCudaDevice(CudaDeviceCount, CudaUnavailableReason))
+            {
+                try
+                {
+                    Net.setPreferableTarget(bUseFP16 ? cv::dnn::DNN_TARGET_CUDA_FP16 : cv::dnn::DNN_TARGET_CUDA);
+                    Net.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
+                    UE_LOG(LogTemp, Log, TEXT("OpenCV DNN backend configured: CUDA%s (devices=%d)"),
+                        bUseFP16 ? TEXT(" FP16") : TEXT(""),
+                        CudaDeviceCount);
+                    return true;
+                }
+                catch (const cv::Exception& e)
+                {
+                    CudaUnavailableReason = FString(e.what());
+                }
+            }
+
+            UE_LOG(LogTemp, Warning, TEXT("OpenCV DNN CUDA requested but unavailable (%s). Using CPU backend."),
+                *CudaUnavailableReason);
+        }
+
+        try
+        {
+            ConfigureOpenCVDNNForCPU(Net);
+            UE_LOG(LogTemp, Log, TEXT("OpenCV DNN backend configured: CPU"));
+            return true;
+        }
+        catch (const cv::Exception& e)
+        {
+            UE_LOG(LogTemp, Error, TEXT("OpenCV DNN CPU backend setup failed: %s"), *FString(e.what()));
+            return false;
         }
     }
 
@@ -963,6 +1194,7 @@ void UMyActorComponent::BeginPlay() {
     OwnerCameraReadbackWarmupEndSeconds = FPlatformTime::Seconds() + 0.5;
 
     ApplyProjectDetectionSettings();
+    ApplySharedVisionFrameSourceSettings();
 
     const bool bNeedsModelInitialization = !bUseFovOnlyPersonDetection && (!bUseSharedVisionModel || bSharedVisionModelHost);
     if (bNeedsModelInitialization)
@@ -1097,6 +1329,8 @@ void UMyActorComponent::TickCapture() {
     {
         return;
     }
+
+    ApplySharedVisionFrameSourceSettings();
 
     if (bUseFovOnlyPersonDetection)
     {
@@ -1328,7 +1562,6 @@ void UMyActorComponent::ApplyProjectDetectionSettings()
     InferenceBackend = Settings->InferenceBackend;
     OnnxRuntimeExecutionProvider = Settings->OnnxRuntimeExecutionProvider;
     ModelPathOverride = Settings->ModelPathOverride;
-    DarknetCfgPathOverride = Settings->DarknetCfgPathOverride;
     NamesPathOverride = Settings->NamesPathOverride;
     bOpenCVDNNPreferCUDA = Settings->bOpenCVDNNPreferCUDA;
     bOpenCVDNNUseFP16 = Settings->bOpenCVDNNUseFP16;
@@ -1337,30 +1570,57 @@ void UMyActorComponent::ApplyProjectDetectionSettings()
     LetterboxValue = FMath::Clamp(Settings->LetterboxValue, 0, 255);
     ConfidenceThreshold = FMath::Clamp(Settings->ConfidenceThreshold, 0.01f, 0.99f);
     NmsThreshold = FMath::Clamp(Settings->NmsThreshold, 0.01f, 0.99f);
-    MaxActiveOwnerCameraCaptures = FMath::Max(0, Settings->MaxActiveSharedDetectionBots);
-    MaxOwnerCameraCaptureDistance = FMath::Max(0.f, Settings->SharedDetectionMaxBotDistance);
     bRecordFrameTimes = Settings->bRecordFrameTimes;
     FrameTimeCsvPath = Settings->FrameTimeCsvPath;
     bResetFrameTimeLogOnBeginPlay = Settings->bResetFrameTimeLogOnBeginPlay;
     FrameTimeFlushInterval = FMath::Clamp(Settings->FrameTimeFlushInterval, 1, 600);
 }
 
+void UMyActorComponent::ApplySharedVisionFrameSourceSettings()
+{
+    if (!bUseSharedVisionModel || bSharedVisionModelHost)
+    {
+        return;
+    }
+
+    UWorld* World = GetWorld();
+    const UCrowVisionSubsystem* VisionSubsystem = World ? World->GetSubsystem<UCrowVisionSubsystem>() : nullptr;
+    if (!VisionSubsystem)
+    {
+        return;
+    }
+
+    const float PreviousCaptureFPS = CaptureFPS;
+    CaptureFPS = VisionSubsystem->GetFrameSourceCaptureFPS();
+    CaptureWidth = VisionSubsystem->GetFrameSourceCaptureWidth();
+    CaptureHeight = VisionSubsystem->GetFrameSourceCaptureHeight();
+    MaxOwnerCameraCaptureDistance = VisionSubsystem->GetFrameSourceMaxDistanceToPlayer();
+    bStaggerInitialCapture = VisionSubsystem->ShouldStaggerInitialCapture();
+    MaxInitialCaptureDelay = VisionSubsystem->GetMaxInitialCaptureDelay();
+
+    if (!FMath::IsNearlyEqual(PreviousCaptureFPS, CaptureFPS) && World->GetTimerManager().IsTimerActive(TimerHandle_Capture))
+    {
+        World->GetTimerManager().SetTimer(
+            TimerHandle_Capture,
+            this,
+            &UMyActorComponent::TickCapture,
+            1.0f / FMath::Clamp(CaptureFPS, 1.0f, 120.0f),
+            true);
+    }
+}
+
 void UMyActorComponent::ResolveConfiguredRuntimePaths()
 {
     const FString ResolvedNamesPath = ResolveRuntimeFilePath(
         NamesPathOverride.IsEmpty() ? TEXT("coco.names") : NamesPathOverride);
-    const FString ResolvedModelPath = ResolveRuntimeFilePath(
-        ModelPathOverride.IsEmpty() ? TEXT("yolo26x.plan") : ModelPathOverride);
-    const FString ResolvedCfgPath = ResolveRuntimeFilePath(
-        DarknetCfgPathOverride.IsEmpty() ? TEXT("yolov7.cfg") : DarknetCfgPathOverride);
+    const FString ResolvedModelSelection = EagleEyeModelDiscovery::NormalizeModelSelection(
+        ModelPathOverride.IsEmpty() ? TEXT("yolo26x") : ModelPathOverride);
 
     NamesPath = ToUtf8Path(ResolvedNamesPath);
-    WeightsPath = ToUtf8Path(ResolvedModelPath);
-    CfgPath = ToUtf8Path(ResolvedCfgPath);
+    WeightsPath = ToUtf8Path(ResolvedModelSelection);
 
-    UE_LOG(LogTemp, Log, TEXT("Detection model path: %s"), *ResolvedModelPath);
+    UE_LOG(LogTemp, Log, TEXT("Detection model selection: %s"), *ResolvedModelSelection);
     UE_LOG(LogTemp, Log, TEXT("Detection names path: %s"), *ResolvedNamesPath);
-    UE_LOG(LogTemp, Log, TEXT("Detection cfg path: %s"), *ResolvedCfgPath);
 }
 
 void UMyActorComponent::ApplyRuntimeDetectionSettingsFromConfig(bool bReloadModel)
@@ -1372,6 +1632,7 @@ void UMyActorComponent::ApplyRuntimeDetectionSettingsFromConfig(bool bReloadMode
     }
 
     ApplyProjectDetectionSettings();
+    ApplySharedVisionFrameSourceSettings();
     ResolveConfiguredRuntimePaths();
 
     {
@@ -1800,10 +2061,7 @@ bool UMyActorComponent::ShouldSkipOwnerCameraCapture() const
     {
         if (const UCrowDetectionShareSubsystem* ShareSubsystem = World->GetSubsystem<UCrowDetectionShareSubsystem>())
         {
-            return !ShareSubsystem->ShouldRunDetector(
-                const_cast<AActor*>(Owner),
-                MaxActiveOwnerCameraCaptures,
-                MaxOwnerCameraCaptureDistance);
+            return !ShareSubsystem->ShouldRunDetector(const_cast<AActor*>(Owner));
         }
     }
 
@@ -2933,48 +3191,54 @@ void UMyActorComponent::ResetInferenceOutputState()
     TrtOutputDetections = 0;
 }
 
-EDetectionInferenceBackend UMyActorComponent::DetectAutomaticInferenceBackend(const FString& ModelPathUE) const
+TArray<EDetectionInferenceBackend> UMyActorComponent::BuildAutomaticInferenceBackendCandidates(const FString& ModelPathUE) const
 {
-    if (ModelPathUE.EndsWith(TEXT(".plan"), ESearchCase::IgnoreCase))
+    TArray<EDetectionInferenceBackend> Candidates;
+    auto AddCandidate = [&Candidates](EDetectionInferenceBackend Backend)
     {
-        return EDetectionInferenceBackend::TensorRT;
-    }
+        Candidates.AddUnique(Backend);
+    };
 
-#if WITH_ONNXRUNTIME
-    if (ModelPathUE.EndsWith(TEXT(".onnx"), ESearchCase::IgnoreCase))
-    {
-        return EDetectionInferenceBackend::ONNXRuntime;
-    }
-#endif
-
-    if (ModelPathUE.EndsWith(TEXT(".onnx"), ESearchCase::IgnoreCase))
-    {
-        return EDetectionInferenceBackend::OpenCVDNN;
-    }
+    const FString ModelExtension = FPaths::GetExtension(ModelPathUE);
+    const bool bTensorFamilyModel =
+        ModelExtension.IsEmpty() ||
+        ModelPathUE.EndsWith(TEXT(".onnx"), ESearchCase::IgnoreCase) ||
+        ModelPathUE.EndsWith(TEXT(".plan"), ESearchCase::IgnoreCase);
 
     const EDetectedOperatingSystem DetectedOS = DetectOperatingSystem();
     const EDetectedGpuVendor DetectedGpu = DetectGpuVendor(GRHIAdapterName);
 
-#if PLATFORM_LINUX && WITH_TENSORRT
-    if (DetectedOS == EDetectedOperatingSystem::Linux && DetectedGpu == EDetectedGpuVendor::Nvidia)
+    if (bTensorFamilyModel &&
+        (DetectedOS == EDetectedOperatingSystem::Windows || DetectedOS == EDetectedOperatingSystem::Linux) &&
+        DetectedGpu == EDetectedGpuVendor::Nvidia)
     {
-        return EDetectionInferenceBackend::TensorRT;
-    }
+#if WITH_TENSORRT
+        AddCandidate(EDetectionInferenceBackend::TensorRT);
+#else
+        UE_LOG(LogTemp, Warning, TEXT("NVIDIA adapter detected, but TensorRT is not compiled into this build. Skipping TensorRT Auto candidate."));
 #endif
+    }
 
+    if (bTensorFamilyModel)
+    {
 #if WITH_ONNXRUNTIME
-#if PLATFORM_WINDOWS && WITH_ONNXRUNTIME_DML
-    if (DetectedOS == EDetectedOperatingSystem::Windows && DetectedGpu == EDetectedGpuVendor::AMD)
-    {
-        return EDetectionInferenceBackend::ONNXRuntime;
-    }
-#elif PLATFORM_LINUX && WITH_ONNXRUNTIME_MIGRAPHX
-    if (DetectedOS == EDetectedOperatingSystem::Linux && DetectedGpu == EDetectedGpuVendor::AMD)
-    {
-        return EDetectionInferenceBackend::ONNXRuntime;
-    }
+        AddCandidate(EDetectionInferenceBackend::ONNXRuntime);
+#else
+        UE_LOG(LogTemp, Warning, TEXT("ONNX Runtime is not compiled into this build. Auto will use OpenCV DNN CPU fallback."));
 #endif
-#endif
+    }
+
+    AddCandidate(EDetectionInferenceBackend::OpenCVDNN);
+    return Candidates;
+}
+
+EDetectionInferenceBackend UMyActorComponent::DetectAutomaticInferenceBackend(const FString& ModelPathUE) const
+{
+    const TArray<EDetectionInferenceBackend> Candidates = BuildAutomaticInferenceBackendCandidates(ModelPathUE);
+    if (Candidates.Num() > 0)
+    {
+        return Candidates[0];
+    }
 
     return EDetectionInferenceBackend::OpenCVDNN;
 }
@@ -3035,15 +3299,12 @@ EOnnxRuntimeExecutionProvider UMyActorComponent::ResolveEffectiveOnnxRuntimeProv
     const EDetectedGpuVendor DetectedGpu = DetectGpuVendor(GRHIAdapterName);
 
 #if PLATFORM_WINDOWS
-    if (DetectedOS == EDetectedOperatingSystem::Windows)
+    if (DetectedOS == EDetectedOperatingSystem::Windows && DetectedGpu == EDetectedGpuVendor::AMD)
     {
 #if WITH_ONNXRUNTIME_DML
         return EOnnxRuntimeExecutionProvider::DirectML;
 #else
-        if (DetectedGpu == EDetectedGpuVendor::AMD)
-        {
-            UE_LOG(LogTemp, Warning, TEXT("AMD adapter detected, but ONNX Runtime DirectML provider is not compiled into this build. Using CPU provider."));
-        }
+        UE_LOG(LogTemp, Warning, TEXT("AMD adapter detected, but ONNX Runtime DirectML provider is not compiled into this build. Using CPU provider."));
 #endif
     }
 #endif
@@ -3114,6 +3375,12 @@ void UMyActorComponent::ClearOnnxRuntimeGpuSessionActive() const
 
 FString UMyActorComponent::ResolveModelPathForBackend(const FString& ModelPathUE, EDetectionInferenceBackend Backend) const
 {
+    const FString ResolvedModelAssetPath = EagleEyeModelDiscovery::ResolveModelPathForBackend(ModelPathUE, Backend);
+    if (!ResolvedModelAssetPath.IsEmpty())
+    {
+        return ResolvedModelAssetPath;
+    }
+
     if (Backend == EDetectionInferenceBackend::TensorRT &&
         ModelPathUE.EndsWith(TEXT(".onnx"), ESearchCase::IgnoreCase))
     {
@@ -3150,10 +3417,83 @@ FString UMyActorComponent::ResolveModelPathForBackend(const FString& ModelPathUE
     return ModelPathUE;
 }
 
-	bool UMyActorComponent::LoadYOLO()
-	{
-	    try
-	    {
+		bool UMyActorComponent::LoadYOLO()
+		{
+            if (InferenceBackend == EDetectionInferenceBackend::Auto)
+            {
+                const FString ModelPathUE = FString(WeightsPath.c_str());
+                const TArray<EDetectionInferenceBackend> BackendCandidates = BuildAutomaticInferenceBackendCandidates(ModelPathUE);
+                const EDetectionInferenceBackend SavedInferenceBackend = InferenceBackend;
+                const EOnnxRuntimeExecutionProvider SavedOnnxProvider = OnnxRuntimeExecutionProvider;
+                const bool bSavedOpenCVDNNPreferCUDA = bOpenCVDNNPreferCUDA;
+
+                auto RestoreAutoSettings = [&]()
+                {
+                    InferenceBackend = SavedInferenceBackend;
+                    OnnxRuntimeExecutionProvider = SavedOnnxProvider;
+                    bOpenCVDNNPreferCUDA = bSavedOpenCVDNNPreferCUDA;
+                };
+
+                const EDetectedOperatingSystem DetectedOS = DetectOperatingSystem();
+                const EDetectedGpuVendor DetectedGpu = DetectGpuVendor(GRHIAdapterName);
+                UE_LOG(LogTemp, Log, TEXT("Auto inference candidates (OS=%s, GPU=%s, adapter=%s, model=%s): %d"),
+                    OperatingSystemToString(DetectedOS),
+                    GpuVendorToString(DetectedGpu),
+                    *GRHIAdapterName,
+                    *ModelPathUE,
+                    BackendCandidates.Num());
+
+                for (EDetectionInferenceBackend CandidateBackend : BackendCandidates)
+                {
+                    InferenceBackend = CandidateBackend;
+                    OnnxRuntimeExecutionProvider = SavedOnnxProvider;
+                    bOpenCVDNNPreferCUDA = (CandidateBackend == EDetectionInferenceBackend::OpenCVDNN)
+                        ? false
+                        : bSavedOpenCVDNNPreferCUDA;
+
+                    UE_LOG(LogTemp, Log, TEXT("Auto inference trying backend: %s%s"),
+                        BackendToString(CandidateBackend),
+                        CandidateBackend == EDetectionInferenceBackend::OpenCVDNN ? TEXT(" (CPU fallback)") : TEXT(""));
+
+                    if (LoadYOLO())
+                    {
+                        RestoreAutoSettings();
+                        return true;
+                    }
+
+                    ReleaseTensorRT();
+                    ReleaseOnnxRuntime();
+                    OpenCVDnnNet = cv::dnn::Net();
+                    bIsModelLoaded = false;
+
+                    if (CandidateBackend == EDetectionInferenceBackend::ONNXRuntime &&
+                        SavedOnnxProvider == EOnnxRuntimeExecutionProvider::Auto)
+                    {
+                        InferenceBackend = EDetectionInferenceBackend::ONNXRuntime;
+                        OnnxRuntimeExecutionProvider = EOnnxRuntimeExecutionProvider::CPU;
+                        UE_LOG(LogTemp, Warning, TEXT("Auto inference retrying ONNX Runtime with CPU provider."));
+
+                        if (LoadYOLO())
+                        {
+                            RestoreAutoSettings();
+                            return true;
+                        }
+
+                        ReleaseOnnxRuntime();
+                        bIsModelLoaded = false;
+                    }
+
+                    UE_LOG(LogTemp, Warning, TEXT("Auto inference backend failed, trying next option: %s"),
+                        BackendToString(CandidateBackend));
+                }
+
+                RestoreAutoSettings();
+                UE_LOG(LogTemp, Error, TEXT("Auto inference failed: no backend could load model %s"), *ModelPathUE);
+                return false;
+            }
+
+		    try
+		    {
 	        cv::setUseOptimized(true);
 	        cv::setNumThreads(FPlatformMisc::NumberOfCoresIncludingHyperthreads());
 
@@ -3161,12 +3501,12 @@ FString UMyActorComponent::ResolveModelPathForBackend(const FString& ModelPathUE
             ReleaseOnnxRuntime();
 	        OpenCVDnnNet = cv::dnn::Net();
 
-	        FString ModelPathUE = FString(WeightsPath.c_str());
-	        if (!FPlatformFileManager::Get().GetPlatformFile().FileExists(*ModelPathUE))
-	        {
-	            UE_LOG(LogTemp, Error, TEXT("Model file not found: %s"), *ModelPathUE);
-	            return false;
-	        }
+		        FString ModelPathUE = FString(WeightsPath.c_str());
+		        if (ModelPathUE.IsEmpty())
+		        {
+		            UE_LOG(LogTemp, Error, TEXT("Model selection is empty"));
+		            return false;
+		        }
 
             EffectiveInferenceBackend = ResolveEffectiveInferenceBackend(ModelPathUE);
             ModelPathUE = ResolveModelPathForBackend(ModelPathUE, EffectiveInferenceBackend);
@@ -3342,22 +3682,9 @@ FString UMyActorComponent::ResolveModelPathForBackend(const FString& ModelPathUE
                 OpenCVDnnNet = cv::dnn::readNetFromONNX(std::string(TCHAR_TO_UTF8(*OpenCvModelPath)));
                 bIsOnnxModel = true;
             }
-            else if (OpenCvModelPath.EndsWith(TEXT(".weights")))
-            {
-                const FString CfgPathUE = FString(CfgPath.c_str());
-                if (!FPlatformFileManager::Get().GetPlatformFile().FileExists(*CfgPathUE))
-                {
-                    UE_LOG(LogTemp, Error, TEXT("Darknet cfg not found: %s"), *CfgPathUE);
-                    return false;
-                }
-                OpenCVDnnNet = cv::dnn::readNetFromDarknet(
-                    std::string(TCHAR_TO_UTF8(*CfgPathUE)),
-                    std::string(TCHAR_TO_UTF8(*OpenCvModelPath)));
-                bIsOnnxModel = false;
-            }
             else
             {
-                UE_LOG(LogTemp, Error, TEXT("Unsupported OpenCV model format: %s"), *OpenCvModelPath);
+                UE_LOG(LogTemp, Error, TEXT("Unsupported OpenCV model format: %s (only .onnx is supported)"), *OpenCvModelPath);
                 return false;
             }
 
@@ -3367,26 +3694,9 @@ FString UMyActorComponent::ResolveModelPathForBackend(const FString& ModelPathUE
                 return false;
             }
 
-            try
+            if (!ConfigureOpenCVDNNBackend(OpenCVDnnNet, bOpenCVDNNPreferCUDA, bOpenCVDNNUseFP16))
             {
-                if (bOpenCVDNNPreferCUDA)
-                {
-                    OpenCVDnnNet.setPreferableTarget(
-                        bOpenCVDNNUseFP16 ? cv::dnn::DNN_TARGET_CUDA_FP16 : cv::dnn::DNN_TARGET_CUDA);
-                    OpenCVDnnNet.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
-                }
-                else
-                {
-                    OpenCVDnnNet.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
-                    OpenCVDnnNet.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
-                }
-            }
-            catch (const cv::Exception& e)
-            {
-                UE_LOG(LogTemp, Warning, TEXT("OpenCV DNN preferred backend setup failed (%s). Falling back to CPU."),
-                    *FString(e.what()));
-                OpenCVDnnNet.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
-                OpenCVDnnNet.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+                return false;
             }
 
             const int32 ClampedInputSize = FMath::Clamp(OnnxInputSize, 160, 1280);
@@ -3573,7 +3883,7 @@ bool UMyActorComponent::RunTensorRTInference_BG(const cv::Mat& ModelInputBGR)
 #endif
 }
 
-bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
+bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE, bool bForceCPUProvider)
 {
 #if WITH_ONNXRUNTIME
     if (!ModelPathUE.EndsWith(TEXT(".onnx"), ESearchCase::IgnoreCase))
@@ -3594,7 +3904,10 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
         };
         ConfigureBaseSessionOptions();
 
-        EffectiveOnnxRuntimeExecutionProvider = ResolveEffectiveOnnxRuntimeProvider();
+        EffectiveOnnxRuntimeExecutionProvider = bForceCPUProvider
+            ? EOnnxRuntimeExecutionProvider::CPU
+            : ResolveEffectiveOnnxRuntimeProvider();
+        const bool bProviderAuto = OnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::Auto;
         if (!IsOnnxRuntimeProviderCompiled(EffectiveOnnxRuntimeExecutionProvider))
         {
             UE_LOG(LogTemp, Error, TEXT("ONNX Runtime provider requested but not compiled into this build: %s"),
@@ -3603,8 +3916,25 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
             return false;
         }
 
+        FString ProviderRuntimeUnavailableReason;
+        if (!IsOnnxRuntimeProviderRuntimeAvailable(EffectiveOnnxRuntimeExecutionProvider, ProviderRuntimeUnavailableReason))
+        {
+            if (!bProviderAuto)
+            {
+                UE_LOG(LogTemp, Error, TEXT("ONNX Runtime provider runtime unavailable: %s (%s)"),
+                    OnnxProviderToString(EffectiveOnnxRuntimeExecutionProvider),
+                    *ProviderRuntimeUnavailableReason);
+                ReleaseOnnxRuntime();
+                return false;
+            }
+
+            UE_LOG(LogTemp, Warning, TEXT("ONNX Runtime provider runtime unavailable: %s (%s). Falling back to CPU."),
+                OnnxProviderToString(EffectiveOnnxRuntimeExecutionProvider),
+                *ProviderRuntimeUnavailableReason);
+            EffectiveOnnxRuntimeExecutionProvider = EOnnxRuntimeExecutionProvider::CPU;
+        }
+
         bool bProviderConfigured = false;
-        const bool bProviderAuto = OnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::Auto;
 
 #if WITH_ONNXRUNTIME_DML
         if (EffectiveOnnxRuntimeExecutionProvider == EOnnxRuntimeExecutionProvider::DirectML)
@@ -3698,6 +4028,13 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE)
         {
             Ort::AllocatedStringPtr OutputName = OnnxRuntimeSession->GetOutputNameAllocated(OutputIndex, Allocator);
             OnnxRuntimeOutputNames.Add(std::string(OutputName.get()));
+            const Ort::TypeInfo OutputTypeInfo = OnnxRuntimeSession->GetOutputTypeInfo(OutputIndex);
+            const auto OutputTensorInfo = OutputTypeInfo.GetTensorTypeAndShapeInfo();
+            UE_LOG(LogTemp, Log, TEXT("ONNX Runtime output[%d]: name=%s shape=%s type=%d"),
+                static_cast<int32>(OutputIndex),
+                *FString(OutputName.get()),
+                *TensorShapeToString(OutputTensorInfo.GetShape()),
+                static_cast<int32>(OutputTensorInfo.GetElementType()));
         }
 
         const Ort::TypeInfo InputTypeInfo = OnnxRuntimeSession->GetInputTypeInfo(0);
@@ -3831,6 +4168,9 @@ bool UMyActorComponent::RunOnnxRuntimeInference_BG(const cv::Mat& ModelInputBGR)
 
         Ort::Value* ChosenOutput = nullptr;
         int64 BestElementCount = -1;
+        int32 BestOutputScore = TNumericLimits<int32>::Min();
+        std::vector<int64_t> ChosenOutputShape;
+        const int32 NumClassesHint = static_cast<int32>(ClassNames.size());
         for (Ort::Value& Output : Outputs)
         {
             if (!Output.IsTensor())
@@ -3845,21 +4185,60 @@ bool UMyActorComponent::RunOnnxRuntimeInference_BG(const cv::Mat& ModelInputBGR)
             }
 
             const int64 ElementCount = static_cast<int64>(TensorInfo.GetElementCount());
-            if (ElementCount > BestElementCount)
+            const std::vector<int64_t> Shape = TensorInfo.GetShape();
+            TArray<int32> NonSingletonDims;
+            for (int64_t Dim : Shape)
             {
+                if (Dim > 1 && Dim <= TNumericLimits<int32>::Max())
+                {
+                    NonSingletonDims.Add(static_cast<int32>(Dim));
+                }
+            }
+
+            int32 OutputScore = TNumericLimits<int32>::Min() / 2;
+            if (NonSingletonDims.Num() == 2)
+            {
+                int32 Attrs = NonSingletonDims[NonSingletonDims.Num() - 2];
+                int32 Dets = NonSingletonDims[NonSingletonDims.Num() - 1];
+                if (Dets <= 256 && Attrs > Dets)
+                {
+                    Swap(Attrs, Dets);
+                }
+
+                if (Attrs >= 5 && Attrs <= 512 && Dets >= 16)
+                {
+                    OutputScore = 1000000 + FMath::Min(Dets, 100000);
+                    if (Attrs == 6)
+                    {
+                        OutputScore += 500000;
+                    }
+                    if (NumClassesHint > 0 && (Attrs == (4 + NumClassesHint) || Attrs == (5 + NumClassesHint)))
+                    {
+                        OutputScore += 400000;
+                    }
+                    if (Attrs >= 64 && Attrs <= 128)
+                    {
+                        OutputScore += 100000;
+                    }
+                }
+            }
+
+            if (OutputScore > BestOutputScore ||
+                (OutputScore == BestOutputScore && ElementCount > BestElementCount))
+            {
+                BestOutputScore = OutputScore;
                 BestElementCount = ElementCount;
                 ChosenOutput = &Output;
+                ChosenOutputShape = Shape;
             }
         }
 
-        if (!ChosenOutput || BestElementCount <= 0)
+        if (!ChosenOutput || BestElementCount <= 0 || BestOutputScore < 0)
         {
-            UE_LOG(LogTemp, Error, TEXT("ONNX Runtime produced no usable float tensor output"));
+            UE_LOG(LogTemp, Error, TEXT("ONNX Runtime produced no detection-like float tensor output"));
             return false;
         }
 
-        Ort::TensorTypeAndShapeInfo OutputInfo = ChosenOutput->GetTensorTypeAndShapeInfo();
-        const std::vector<int64_t> OutputShape = OutputInfo.GetShape();
         constexpr int64 MaxSupportedOutputElements = 32ll * 1024ll * 1024ll;
         if (BestElementCount > TNumericLimits<int32>::Max() || BestElementCount > MaxSupportedOutputElements)
         {
@@ -3883,7 +4262,7 @@ bool UMyActorComponent::RunOnnxRuntimeInference_BG(const cv::Mat& ModelInputBGR)
         TrtOutputElements = OutputElementCount;
 
         TArray<int32> NonSingletonDims;
-        for (int64_t Dim : OutputShape)
+        for (int64_t Dim : ChosenOutputShape)
         {
             if (Dim > 1 && Dim <= TNumericLimits<int32>::Max())
             {
@@ -3891,15 +4270,26 @@ bool UMyActorComponent::RunOnnxRuntimeInference_BG(const cv::Mat& ModelInputBGR)
             }
         }
 
-        if (NonSingletonDims.Num() >= 2)
+        if (NonSingletonDims.Num() == 2)
         {
             TrtOutputChannels = NonSingletonDims[NonSingletonDims.Num() - 2];
             TrtOutputDetections = NonSingletonDims[NonSingletonDims.Num() - 1];
         }
         else
         {
-            UE_LOG(LogTemp, Error, TEXT("Unsupported ONNX Runtime output rank"));
+            UE_LOG(LogTemp, Error, TEXT("Unsupported ONNX Runtime detection output shape: %s"), *TensorShapeToString(ChosenOutputShape));
             return false;
+        }
+
+        static int32 OnnxOutputShapeLogDecimator = 0;
+        if ((OnnxOutputShapeLogDecimator++ % 120) == 0)
+        {
+            UE_LOG(LogTemp, Log, TEXT("ONNX Runtime selected output: shape=%s resolved=[%d,%d] elements=%d score=%d"),
+                *TensorShapeToString(ChosenOutputShape),
+                TrtOutputChannels,
+                TrtOutputDetections,
+                TrtOutputElements,
+                BestOutputScore);
         }
 
         return true;
@@ -3979,8 +4369,7 @@ bool UMyActorComponent::RunOpenCVDNNInference_BG(const cv::Mat& ModelInputBGR)
             *Err);
         try
         {
-            OpenCVDnnNet.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
-            OpenCVDnnNet.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+            ConfigureOpenCVDNNForCPU(OpenCVDnnNet);
             ForwardOnce();
         }
         catch (const cv::Exception& RetryErr)
@@ -4321,30 +4710,147 @@ TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FC
 
         if (Attrs == 6)
         {
-            // End-to-end layout: [x1, y1, x2, y2, score, class_id].
+            // End-to-end layouts: [x1, y1, x2, y2, score, class_id] or
+            // [x1, y1, x2, y2, class_id, score], depending on exporter/backend.
+            struct FSixColumnLayoutStats
+            {
+                int32 ScoreAttr = 4;
+                int32 ClassAttr = 5;
+                int32 ClassLikeRows = 0;
+                int32 ScoreLikeRows = 0;
+                int32 ScoreRows = 0;
+                int32 AboveThresholdRows = 0;
+                int32 MappedRows = 0;
+                float MinScore = FLT_MAX;
+                float MaxScore = -FLT_MAX;
+                double ScoreSum = 0.0;
+            };
+
+            auto IsScoreLike = [](float Value) -> bool
+            {
+                return FMath::IsFinite(Value) && Value >= 0.0f && Value <= 1.0f;
+            };
+
+            auto EvaluateSixColumnLayout = [&](int32 ScoreAttr, int32 ClassAttr) -> FSixColumnLayoutStats
+            {
+                FSixColumnLayoutStats Stats;
+                Stats.ScoreAttr = ScoreAttr;
+                Stats.ClassAttr = ClassAttr;
+                for (int32 i = 0; i < Dets; ++i)
+                {
+                    const float x1 = ReadAttr(0, i);
+                    const float y1 = ReadAttr(1, i);
+                    const float x2 = ReadAttr(2, i);
+                    const float y2 = ReadAttr(3, i);
+                    const float RawScore = ReadAttr(ScoreAttr, i);
+                    const float RawClass = ReadAttr(ClassAttr, i);
+                    if (!FMath::IsFinite(x1) || !FMath::IsFinite(y1) || !FMath::IsFinite(x2) || !FMath::IsFinite(y2))
+                    {
+                        continue;
+                    }
+
+                    if (IsClassIdLike(RawClass, NumClassesHint))
+                    {
+                        ++Stats.ClassLikeRows;
+                    }
+                    if (IsScoreLike(RawScore))
+                    {
+                        ++Stats.ScoreLikeRows;
+                    }
+
+                    const float Score = NormalizeConfidence(RawScore);
+                    if (Score < 0.0f)
+                    {
+                        continue;
+                    }
+
+                    ++Stats.ScoreRows;
+                    Stats.MinScore = FMath::Min(Stats.MinScore, Score);
+                    Stats.MaxScore = FMath::Max(Stats.MaxScore, Score);
+                    Stats.ScoreSum += Score;
+
+                    if (Score < ConfThreshold || !IsClassIdLike(RawClass, NumClassesHint))
+                    {
+                        continue;
+                    }
+                    ++Stats.AboveThresholdRows;
+
+                    cv::Rect ProbeBox;
+                    float ProbeOverflow = 0.0f;
+                    if (MapXYXYToSource(x1, y1, x2, y2, bUseLetterbox, ProbeBox, ProbeOverflow))
+                    {
+                        ++Stats.MappedRows;
+                    }
+                }
+                return Stats;
+            };
+
+            const FSixColumnLayoutStats StandardLayout = EvaluateSixColumnLayout(4, 5);
+            const bool bUseOpenCvAdaptiveSixColumnLayout =
+                EffectiveInferenceBackend == EDetectionInferenceBackend::OpenCVDNN;
+            const FSixColumnLayoutStats SwappedLayout =
+                bUseOpenCvAdaptiveSixColumnLayout ? EvaluateSixColumnLayout(5, 4) : FSixColumnLayoutStats{};
+            const FSixColumnLayoutStats& ChosenLayout =
+                (bUseOpenCvAdaptiveSixColumnLayout && SwappedLayout.MappedRows > StandardLayout.MappedRows)
+                    ? SwappedLayout
+                    : StandardLayout;
+
+            if (bUseOpenCvAdaptiveSixColumnLayout)
+            {
+                static int32 OpenCvSixColumnLayoutLogDecimator = 0;
+                if ((OpenCvSixColumnLayoutLogDecimator++ % 60) == 0)
+                {
+                    auto AvgScore = [](const FSixColumnLayoutStats& Stats) -> float
+                    {
+                        return Stats.ScoreRows > 0
+                            ? static_cast<float>(Stats.ScoreSum / static_cast<double>(Stats.ScoreRows))
+                            : 0.0f;
+                    };
+
+                    UE_LOG(LogTemp, Warning,
+                        TEXT("OpenCVDNN 6-col layout stats: chosen=[score=%d,class=%d] standard(mapped=%d above=%d classLike=%d scoreLike=%d score=[%.3f,%.3f,%.3f]) swapped(mapped=%d above=%d classLike=%d scoreLike=%d score=[%.3f,%.3f,%.3f]) dets=%d conf=%.2f"),
+                        ChosenLayout.ScoreAttr,
+                        ChosenLayout.ClassAttr,
+                        StandardLayout.MappedRows,
+                        StandardLayout.AboveThresholdRows,
+                        StandardLayout.ClassLikeRows,
+                        StandardLayout.ScoreLikeRows,
+                        StandardLayout.MinScore == FLT_MAX ? 0.0f : StandardLayout.MinScore,
+                        AvgScore(StandardLayout),
+                        StandardLayout.MaxScore == -FLT_MAX ? 0.0f : StandardLayout.MaxScore,
+                        SwappedLayout.MappedRows,
+                        SwappedLayout.AboveThresholdRows,
+                        SwappedLayout.ClassLikeRows,
+                        SwappedLayout.ScoreLikeRows,
+                        SwappedLayout.MinScore == FLT_MAX ? 0.0f : SwappedLayout.MinScore,
+                        AvgScore(SwappedLayout),
+                        SwappedLayout.MaxScore == -FLT_MAX ? 0.0f : SwappedLayout.MaxScore,
+                        Dets,
+                        ConfThreshold);
+                }
+            }
+
             for (int32 i = 0; i < Dets; ++i)
             {
                 const float x1 = ReadAttr(0, i);
                 const float y1 = ReadAttr(1, i);
                 const float x2 = ReadAttr(2, i);
                 const float y2 = ReadAttr(3, i);
-                float score = ReadAttr(4, i);
-                const float classF = ReadAttr(5, i);
-                if (!FMath::IsFinite(score) || !FMath::IsFinite(classF))
+                const float RawScore = ReadAttr(ChosenLayout.ScoreAttr, i);
+                const float RawClass = ReadAttr(ChosenLayout.ClassAttr, i);
+                if (!FMath::IsFinite(RawScore) || !FMath::IsFinite(RawClass) ||
+                    !IsClassIdLike(RawClass, NumClassesHint))
                 {
                     continue;
                 }
 
-                if (score < 0.0f || score > 1.0f)
-                {
-                    score = Sigmoidf(score);
-                }
+                const float score = NormalizeConfidence(RawScore);
                 if (score < ConfThreshold)
                 {
                     continue;
                 }
 
-                int32 classId = FMath::RoundToInt(classF);
+                int32 classId = FMath::RoundToInt(RawClass);
                 if (NumClassesHint > 0)
                 {
                     classId = FMath::Clamp(classId, 0, NumClassesHint - 1);
@@ -4539,11 +5045,6 @@ TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FC
 //     // SceneCaptureComponent->TextureTarget = RenderTarget;
 //     // SceneCaptureComponent->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
 //     // UE_LOG(LogTemp, Log, TEXT("Init Complete!"));
-//     std::string FilePath1 = "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Source\\EagleEye\\yolov7.weights";
-//     std::string FilePath3 = "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Source\\EagleEye\\yolov7.cfg";
-//     std::string FilePath2 = "C:\\Users\\Saranthyr\\Documents\\Unreal Projects\\EagleEye\\Source\\EagleEye\\coco.names";
-//     get_class_names(FilePath2);
-//     get_yolo_net(FilePath3, FilePath1);
 //     // FString VectorString;
 //     // // UE_LOG(LogTemp, Warning, TEXT("%s"), );
 //     // for (size_t i = 0; i < class_names.size(); i++) {
@@ -4605,21 +5106,7 @@ TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV_BG(const TArray<FC
 //     ProcessWithOpenCV(Bitmap, Size.X, Size.Y, threshold, yolo_net);
 // }
 
-// void UMyActorComponent::get_yolo_net(const std::string& FilePath1, const std::string& FilePath2) {
-//     try
-//     {
-//         yolo_net = cv::dnn::readNetFromDarknet(FilePath1, FilePath2);
-
-//     }
-//     catch(const std::exception& e)
-//     {
-//         FString str(e.what());
-//         UE_LOG(LogTemp, Error, TEXT("%s"), *str);
-//     }
-    
-// }
-
-// TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV(const TArray<FColor>& Bitmap, int32 Width, int32 Height, int threshold, cv::dnn::Net& net) {
+	// TArray<FDetectionResult> UMyActorComponent::ProcessWithOpenCV(const TArray<FColor>& Bitmap, int32 Width, int32 Height, int threshold, cv::dnn::Net& net) {
 //     cv::Mat Image(Height, Width, CV_8UC4);
 //     TArray<FDetectionResult> results;
 

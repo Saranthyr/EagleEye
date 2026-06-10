@@ -17,14 +17,14 @@ public:
     UPROPERTY(EditAnywhere, Config, Category="Model")
     EOnnxRuntimeExecutionProvider OnnxRuntimeExecutionProvider = EOnnxRuntimeExecutionProvider::Auto;
 
-    UPROPERTY(EditAnywhere, Config, Category="Model")
-    FString ModelPathOverride = TEXT("yolo26x.plan");
+    UPROPERTY(EditAnywhere, Config, Category="Model", meta=(DisplayName="Model", GetOptions="GetAvailableModelNames"))
+    FString ModelPathOverride = TEXT("yolo26x");
+
+    UFUNCTION()
+    TArray<FString> GetAvailableModelNames() const;
 
     UPROPERTY(EditAnywhere, Config, Category="Model")
     FString NamesPathOverride = TEXT("coco.names");
-
-    UPROPERTY(EditAnywhere, Config, Category="Model")
-    FString DarknetCfgPathOverride = TEXT("yolov7.cfg");
 
     UPROPERTY(EditAnywhere, Config, Category="Model")
     bool bOpenCVDNNPreferCUDA = true;
@@ -47,11 +47,32 @@ public:
     UPROPERTY(EditAnywhere, Config, Category="Postprocess", meta=(ClampMin="0.01", ClampMax="0.99"))
     float NmsThreshold = 0.45f;
 
-    UPROPERTY(EditAnywhere, Config, Category="Shared Detection", meta=(ClampMin="0"))
-    int32 MaxActiveSharedDetectionBots = 2;
+    UPROPERTY(EditAnywhere, Config, Category="Model Host")
+    bool bPreloadModelHostOnBeginPlay = true;
 
-    UPROPERTY(EditAnywhere, Config, Category="Shared Detection", meta=(ClampMin="0.0"))
-    float SharedDetectionMaxBotDistance = 8000.f;
+    UPROPERTY(EditAnywhere, Config, Category="Model Host", meta=(ClampMin="1"))
+    int32 MaxActiveModelUsers = 2;
+
+    UPROPERTY(EditAnywhere, Config, Category="Model Host", meta=(ClampMin="1", ClampMax="120"))
+    int32 MaxQueuedModelFrames = 2;
+
+    UPROPERTY(EditAnywhere, Config, Category="Frame Source", meta=(ClampMin="1.0", ClampMax="120.0"))
+    float FrameSourceFPS = 8.f;
+
+    UPROPERTY(EditAnywhere, Config, Category="Frame Source", meta=(ClampMin="160", ClampMax="3840"))
+    int32 FrameSourceWidth = 640;
+
+    UPROPERTY(EditAnywhere, Config, Category="Frame Source", meta=(ClampMin="160", ClampMax="2160"))
+    int32 FrameSourceHeight = 640;
+
+    UPROPERTY(EditAnywhere, Config, Category="Frame Source", meta=(ClampMin="0.0"))
+    float MaxModelUserDistanceToPlayer = 8000.f;
+
+    UPROPERTY(EditAnywhere, Config, Category="Frame Source")
+    bool bStaggerInitialFrameSourceCapture = true;
+
+    UPROPERTY(EditAnywhere, Config, Category="Frame Source", meta=(ClampMin="0.0", ClampMax="5.0", EditCondition="bStaggerInitialFrameSourceCapture"))
+    float MaxInitialFrameSourceCaptureDelay = 0.75f;
 
     UPROPERTY(EditAnywhere, Config, Category="Benchmark")
     bool bRecordFrameTimes = false;

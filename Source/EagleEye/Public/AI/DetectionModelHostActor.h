@@ -29,14 +29,23 @@ protected:
     virtual void BeginPlay() override;
 
 private:
-    UPROPERTY(EditAnywhere, Category="Detection|Shared Model", meta=(AllowPrivateAccess="true"))
     bool bPreloadModelOnBeginPlay = true;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Shared Model", meta=(ClampMin="1", AllowPrivateAccess="true"))
     int32 MaxActiveModelUsers = 2;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Shared Model", meta=(ClampMin="1", ClampMax="120", AllowPrivateAccess="true"))
     int32 MaxQueuedModelFrames = 2;
+
+    float FrameSourceFPS = 8.f;
+
+    int32 FrameSourceWidth = 640;
+
+    int32 FrameSourceHeight = 640;
+
+    float MaxModelUserDistanceToPlayer = 8000.f;
+
+    bool bStaggerInitialFrameSourceCapture = true;
+
+    float MaxInitialFrameSourceCaptureDelay = 0.75f;
 
     UPROPERTY(VisibleAnywhere, Category="Components", meta=(AllowPrivateAccess="true"))
     TObjectPtr<USceneComponent> SceneRoot;

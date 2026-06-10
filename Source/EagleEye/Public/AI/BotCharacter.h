@@ -42,6 +42,10 @@ public:
     const FBotRandomMovementSettings& GetRandomMovementSettings() const { return RandomMovementSettings; }
     bool IsFlyingBot() const;
     bool IsWalkingBot() const;
+    bool ShouldPublishDetectionsToFlock() const { return bPublishDetectionsToFlock; }
+    bool ShouldUseFlockSharedDetections() const { return bUseFlockSharedDetections; }
+    float GetSharedDetectionMaxAgeSeconds() const { return SharedDetectionMaxAgeSeconds; }
+    float GetSharedDetectionMaxReporterDistance() const { return SharedDetectionMaxReporterDistance; }
 
     UFUNCTION(BlueprintCallable, Category="AI|Movement")
     void ApplyBotMovementSettings();
@@ -108,6 +112,18 @@ public:
 
     UPROPERTY(BlueprintAssignable, Category="Gameplay|Health")
     FBotDiedSignature OnBotDied;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|Flock Sharing", meta=(DisplayName="Publish Detections To Flock"))
+    bool bPublishDetectionsToFlock = true;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|Flock Sharing", meta=(DisplayName="Use Flock Shared Detections"))
+    bool bUseFlockSharedDetections = true;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|Flock Sharing", meta=(ClampMin="0.0", EditCondition="bUseFlockSharedDetections"))
+    float SharedDetectionMaxAgeSeconds = 1.5f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Detection|Flock Sharing", meta=(ClampMin="0.0", EditCondition="bUseFlockSharedDetections"))
+    float SharedDetectionMaxReporterDistance = 6000.f;
 
 protected:
     void TickCloseDamageHitbox();

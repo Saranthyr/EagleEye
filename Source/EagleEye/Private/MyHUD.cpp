@@ -4,6 +4,7 @@
 #include "MyHUD.h"
 #include "Engine/Canvas.h"
 #include "EagleEyeDetectionSettings.h"
+#include "EagleEyeModelDiscovery.h"
 #include "EagleEyeCharacter.h"
 #include "EngineUtils.h"
 #include "MyActorComponent.h"
@@ -235,9 +236,8 @@ void AMyHUD::RefreshDetectionSettingsMenu()
         return;
     }
 
-    PendingModelPathOverride = Settings->ModelPathOverride;
+    PendingModelPathOverride = EagleEyeModelDiscovery::NormalizeModelSelection(Settings->ModelPathOverride);
     PendingNamesPathOverride = Settings->NamesPathOverride;
-    PendingDarknetCfgPathOverride = Settings->DarknetCfgPathOverride;
     PendingInferenceBackend = static_cast<int32>(Settings->InferenceBackend);
     PendingOnnxRuntimeExecutionProvider = static_cast<int32>(Settings->OnnxRuntimeExecutionProvider);
     PendingConfidenceThreshold = FMath::Clamp(Settings->ConfidenceThreshold, 0.01f, 0.99f);
@@ -267,11 +267,7 @@ void AMyHUD::RebuildDetectionSettingsOptions()
     ModelPathOptions.Reset();
     NamesPathOptions.Reset();
 
-    TArray<FString> ModelExtensions;
-    ModelExtensions.Add(TEXT("plan"));
-    ModelExtensions.Add(TEXT("onnx"));
-    ModelExtensions.Add(TEXT("weights"));
-    FindRuntimeFileOptions(ModelPathOptions, ModelExtensions);
+    ModelPathOptions = EagleEyeModelDiscovery::GetAvailableModelNames();
 
     TArray<FString> NamesExtensions;
     NamesExtensions.Add(TEXT("names"));
@@ -373,7 +369,6 @@ void AMyHUD::ApplyPendingDetectionSettings()
 
     Settings->ModelPathOverride = PendingModelPathOverride;
     Settings->NamesPathOverride = PendingNamesPathOverride;
-    Settings->DarknetCfgPathOverride = PendingDarknetCfgPathOverride.IsEmpty() ? TEXT("yolov7.cfg") : PendingDarknetCfgPathOverride;
     Settings->InferenceBackend = static_cast<EDetectionInferenceBackend>(PendingInferenceBackend);
     Settings->OnnxRuntimeExecutionProvider = static_cast<EOnnxRuntimeExecutionProvider>(PendingOnnxRuntimeExecutionProvider);
     Settings->ConfidenceThreshold = FMath::Clamp(PendingConfidenceThreshold, 0.01f, 0.99f);

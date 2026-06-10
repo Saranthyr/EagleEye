@@ -66,6 +66,12 @@ protected:
     UPROPERTY(EditAnywhere, Category="Detection", meta=(ClampMin="1", ClampMax="10"))
     int32 RequiredConsecutiveDetections = 2;
 
+    UPROPERTY(EditAnywhere, Category="Detection|Target Validation")
+    bool bRequirePlayerResolvedTarget = false;
+
+    UPROPERTY(EditAnywhere, Category="Detection|Target Validation", meta=(ClampMin="0.0", EditCondition="bRequirePlayerResolvedTarget"))
+    float PlayerTargetMatchRadius = 450.f;
+
     UPROPERTY(EditAnywhere, Category="YOLO Tracking")
     bool bEnableYoloBoxTracking = true;
 
@@ -107,18 +113,6 @@ protected:
 
     UPROPERTY(EditAnywhere, Category="Detection")
     FVector TargetLocationOffset = FVector(0.f, 0.f, 150.f);
-
-    UPROPERTY(EditAnywhere, Category="Shared Detection")
-    bool bPublishDetectionsToFlock = true;
-
-    UPROPERTY(EditAnywhere, Category="Shared Detection")
-    bool bUseFlockSharedDetections = true;
-
-    UPROPERTY(EditAnywhere, Category="Shared Detection", meta=(ClampMin="0.0"))
-    float SharedDetectionMaxAgeSeconds = 1.5f;
-
-    UPROPERTY(EditAnywhere, Category="Shared Detection", meta=(ClampMin="0.0"))
-    float SharedDetectionMaxReporterDistance = 6000.f;
 
     UPROPERTY(EditAnywhere, Category="Debug")
     bool bDrawDebug = false;

@@ -108,7 +108,6 @@ public:
     void SetCaptureFPS(float InCaptureFPS);
     void SetCaptureResolution(int32 InWidth, int32 InHeight);
     void SetMaxOwnerCameraCaptureDistance(float InDistance) { MaxOwnerCameraCaptureDistance = InDistance; }
-    void SetMaxActiveOwnerCameraCaptures(int32 InMaxActive) { MaxActiveOwnerCameraCaptures = InMaxActive; }
     void SetHideOwnerFromOwnerCameraCapture(bool bEnabled) { bHideOwnerFromOwnerCameraCapture = bEnabled; }
     void SetRecordOwnerCameraCaptureVideo(bool bEnabled);
     void SetRecordOwnerCameraWhenDetectionSkipped(bool bEnabled) { bRecordOwnerCameraWhenDetectionSkipped = bEnabled; }
@@ -149,6 +148,7 @@ private:
     void StopWorker();
     void RequestOnnxRuntimeInferenceTerminate();
     void ApplyProjectDetectionSettings();
+    void ApplySharedVisionFrameSourceSettings();
     void ResolveConfiguredRuntimePaths();
     void CaptureAndEnqueue(bool bSubmitDetection = true);
     void CopyResultsFromWorker(); // game-thread copy from shared buffer
@@ -221,82 +221,58 @@ private:
         int32 Height = 0;
     };
 
-    UPROPERTY(EditAnywhere, Category="Detection|Performance", meta=(ClampMin="1.0", ClampMax="120.0"))
     float CaptureFPS = 60.0f;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Performance", meta=(ClampMin="160", ClampMax="3840"))
     int32 OnnxInputSize = 640;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Capture")
     bool bUseOwnerCameraCapture = false;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Capture", meta=(ClampMin="160", ClampMax="3840"))
     int32 CaptureWidth = 640;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Capture", meta=(ClampMin="160", ClampMax="2160"))
     int32 CaptureHeight = 640;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Capture", meta=(ClampMin="0.0"))
     float MaxOwnerCameraCaptureDistance = 0.f;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Capture", meta=(ClampMin="0"))
-    int32 MaxActiveOwnerCameraCaptures = 0;
-
-    UPROPERTY(EditAnywhere, Category="Detection|Capture")
     bool bUseAsyncOwnerCameraReadback = true;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Capture")
     bool bHideOwnerFromOwnerCameraCapture = true;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Recording")
     bool bRecordOwnerCameraCaptureVideo = false;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Recording")
     bool bRecordOwnerCameraWhenDetectionSkipped = true;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Recording")
     FString OwnerCameraVideoOutputPath;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Recording")
     FString OwnerCameraVideoEncoderPath = TEXT("ffmpeg");
 
-    UPROPERTY(EditAnywhere, Category="Detection|Recording", meta=(ClampMin="1", ClampMax="120"))
     int32 MaxQueuedOwnerCameraVideoFrames = 2;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Recording")
     bool bApplyOwnerCameraVideoGammaCorrection = true;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Shared Model")
     bool bUseSharedVisionModel = false;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Shared Model")
     bool bSharedVisionModelHost = false;
 
-    UPROPERTY(EditAnywhere, Category="Detection|FOV")
     bool bUseFovOnlyPersonDetection = false;
 
-    UPROPERTY(EditAnywhere, Category="Detection|FOV")
+    UPROPERTY(EditAnywhere, Category="Detection|Metrics")
     bool bLogFovDetectionMetrics = false;
 
-    UPROPERTY(EditAnywhere, Category="Detection|FOV")
+    UPROPERTY(EditAnywhere, Category="Detection|Metrics")
     bool bResetFovDetectionMetricsTableOnBeginPlay = true;
 
-    UPROPERTY(EditAnywhere, Category="Detection|FOV")
+    UPROPERTY(EditAnywhere, Category="Detection|Metrics")
     FString FovDetectionMetricsCsvPath;
 
-    UPROPERTY(EditAnywhere, Category="Detection|FOV", meta=(ClampMin="0.0"))
     float FovOnlyDetectionMaxDistance = 8000.f;
 
-    UPROPERTY(EditAnywhere, Category="Detection|FOV", meta=(ClampMin="1", ClampMax="512"))
     int32 FovOnlySyntheticBoxSizePixels = 64;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Performance")
+    UPROPERTY(EditAnywhere, Category="Detection|Logging")
     bool bLogFrameTimings = false;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Performance")
     bool bStaggerInitialCapture = true;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Performance", meta=(ClampMin="0.0", ClampMax="5.0"))
     float MaxInitialCaptureDelay = 0.75f;
 
     UPROPERTY()
@@ -372,29 +348,19 @@ private:
 
     // YOLO state (paths only; net will be created inside worker)
     std::string WeightsPath;
-    std::string CfgPath;
     std::string NamesPath;
     FCriticalSection InferenceMutex;
 
-    UPROPERTY(EditAnywhere, Config, Category="Detection|Model")
     FString ModelPathOverride;
 
-    UPROPERTY(EditAnywhere, Config, Category="Detection|Model")
-    FString DarknetCfgPathOverride;
-
-    UPROPERTY(EditAnywhere, Config, Category="Detection|Model")
     FString NamesPathOverride;
 
-    UPROPERTY(EditAnywhere, Config, Category="Detection|Model")
     EDetectionInferenceBackend InferenceBackend = EDetectionInferenceBackend::Auto;
 
-    UPROPERTY(EditAnywhere, Config, Category="Detection|Model")
     EOnnxRuntimeExecutionProvider OnnxRuntimeExecutionProvider = EOnnxRuntimeExecutionProvider::Auto;
 
-    UPROPERTY(EditAnywhere, Config, Category="Detection|Model")
     bool bOpenCVDNNPreferCUDA = true;
 
-    UPROPERTY(EditAnywhere, Config, Category="Detection|Model")
     bool bOpenCVDNNUseFP16 = true;
 
     std::vector<std::string> ClassNames;
@@ -404,19 +370,15 @@ private:
     int32 ModelInputWidth = 640;
     int32 ModelInputHeight = 640;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Performance")
+    UPROPERTY(EditAnywhere, Category="Detection|Logging")
     bool bLogPerf = false;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Postprocess", meta=(ClampMin="0.01", ClampMax="0.99"))
     float ConfidenceThreshold = 0.25f;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Postprocess", meta=(ClampMin="0.01", ClampMax="0.99"))
     float NmsThreshold = 0.45f;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Preprocess")
     bool bUseLetterbox = true;
 
-    UPROPERTY(EditAnywhere, Category="Detection|Preprocess", meta=(ClampMin="0", ClampMax="255"))
     int32 LetterboxValue = 114;
 
     UPROPERTY(EditAnywhere, Config, Category="Detection|Benchmark")
@@ -434,11 +396,12 @@ private:
     bool LoadYOLO();
     void ReleaseTensorRT();
     void ReleaseOnnxRuntime();
+    TArray<EDetectionInferenceBackend> BuildAutomaticInferenceBackendCandidates(const FString& ModelPathUE) const;
     EDetectionInferenceBackend DetectAutomaticInferenceBackend(const FString& ModelPathUE) const;
     EDetectionInferenceBackend ResolveEffectiveInferenceBackend(const FString& ModelPathUE) const;
     EOnnxRuntimeExecutionProvider ResolveEffectiveOnnxRuntimeProvider() const;
     FString ResolveModelPathForBackend(const FString& ModelPathUE, EDetectionInferenceBackend Backend) const;
-    bool LoadOnnxRuntime(const FString& ModelPathUE);
+    bool LoadOnnxRuntime(const FString& ModelPathUE, bool bForceCPUProvider = false);
     bool ShouldForceOnnxRuntimeCpuAfterGpuCrash() const;
     void MarkOnnxRuntimeGpuSessionActive() const;
     void ClearOnnxRuntimeGpuSessionActive() const;

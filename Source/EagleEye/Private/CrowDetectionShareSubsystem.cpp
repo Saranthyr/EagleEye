@@ -65,10 +65,13 @@ void UCrowDetectionShareSubsystem::UnregisterDetector(AActor* DetectorOwner)
     });
 }
 
-bool UCrowDetectionShareSubsystem::ShouldRunDetector(
-    AActor* DetectorOwner,
-    int32 MaxActiveDetectors,
-    float MaxDistanceToPlayer) const
+void UCrowDetectionShareSubsystem::ConfigureDetectorLimits(int32 InMaxActiveDetectors, float InMaxDistanceToPlayer)
+{
+    MaxActiveDetectors = FMath::Max(0, InMaxActiveDetectors);
+    MaxDistanceToPlayer = FMath::Max(0.f, InMaxDistanceToPlayer);
+}
+
+bool UCrowDetectionShareSubsystem::ShouldRunDetector(AActor* DetectorOwner) const
 {
     if (!IsValid(DetectorOwner))
     {

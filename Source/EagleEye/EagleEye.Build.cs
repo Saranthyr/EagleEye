@@ -270,12 +270,42 @@ public class EagleEye : ModuleRules
                 {
                     AddNativeSharedLibrary(OnnxImportOrSharedLib);
                     string MIGraphXProviderLib = FindFirstExistingFile(OnnxLibDirs, "libonnxruntime_providers_migraphx.so");
-                    bWithOnnxRuntimeMIGraphX = File.Exists(MIGraphXProviderHeader) && File.Exists(MIGraphXProviderLib);
+                    string RocmHome = Environment.GetEnvironmentVariable("ROCM_HOME");
+                    if (String.IsNullOrEmpty(RocmHome))
+                    {
+                        RocmHome = "/opt/rocm";
+                    }
+                    List<string> MIGraphXRuntimeDirs = new List<string>(OnnxLibDirs)
+                    {
+                        Path.Combine(RocmHome, "lib"),
+                        Path.Combine(RocmHome, "lib", "migraphx"),
+                        Path.Combine(RocmHome, "lib", "migraphx", "lib"),
+                        "/usr/lib/x86_64-linux-gnu"
+                    };
+                    string MIGraphXRuntimeLib = FindFirstMatchingFile(MIGraphXRuntimeDirs, "libmigraphx.so*");
+                    string MIGraphXOnnxRuntimeLib = FindFirstMatchingFile(MIGraphXRuntimeDirs, "libmigraphx_onnx.so*");
+                    string MIGraphXTfRuntimeLib = FindFirstMatchingFile(MIGraphXRuntimeDirs, "libmigraphx_tf.so*");
+                    string MIGraphXCRuntimeLib = FindFirstMatchingFile(MIGraphXRuntimeDirs, "libmigraphx_c.so*");
+                    bWithOnnxRuntimeMIGraphX =
+                        File.Exists(MIGraphXProviderHeader) &&
+                        File.Exists(MIGraphXProviderLib) &&
+                        File.Exists(MIGraphXRuntimeLib) &&
+                        File.Exists(MIGraphXOnnxRuntimeLib) &&
+                        File.Exists(MIGraphXTfRuntimeLib) &&
+                        File.Exists(MIGraphXCRuntimeLib);
 
                     foreach (string LibDir in OnnxLibDirs)
                     {
                         StageMatchingRuntimeFiles(LibDir, "libonnxruntime.so*");
                         StageMatchingRuntimeFiles(LibDir, "libonnxruntime_providers*.so");
+                    }
+                    if (bWithOnnxRuntimeMIGraphX)
+                    {
+                        foreach (string MIGraphXRuntimeDir in MIGraphXRuntimeDirs)
+                        {
+                            StageMatchingRuntimeFiles(MIGraphXRuntimeDir, "libmigraphx*.so*");
+                            CopyMatchingRuntimeFilesToBinaryOutput(MIGraphXRuntimeDir, "libmigraphx*.so*");
+                        }
                     }
                 }
             }
@@ -307,11 +337,9 @@ public class EagleEye : ModuleRules
 
         string[] RuntimeModelExtensions =
         {
-            ".cfg",
             ".names",
             ".onnx",
-            ".plan",
-            ".weights"
+            ".plan"
         };
 
         foreach (string RuntimeModelFile in Directory.GetFiles(ModuleDirectory, "*.*", SearchOption.TopDirectoryOnly))
@@ -325,6 +353,9 @@ public class EagleEye : ModuleRules
                     StagedFileType.NonUFS);
             }
         }
+        string ProjectRoot = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", ".."));
+        StageRuntimeModelDirectory(Path.Combine(ProjectRoot, "Models"), Path.Combine("$(TargetOutputDir)", "Models"), RuntimeModelExtensions);
+        StageRuntimeModelDirectory(Path.Combine(ModuleDirectory, "Models"), Path.Combine("$(TargetOutputDir)", "Models"), RuntimeModelExtensions);
 
         bEnableExceptions = true;
     }
@@ -407,6 +438,29 @@ public class EagleEye : ModuleRules
             RuntimeDependencies.Add(
                 Path.Combine("$(BinaryOutputDir)", Path.GetFileName(RuntimeFile)),
                 RuntimeFile,
+            StagedFileType.NonUFS);
+        }
+    }
+
+    private void StageRuntimeModelDirectory(string DirectoryPath, string TargetRoot, string[] RuntimeModelExtensions)
+    {
+        if (!Directory.Exists(DirectoryPath))
+        {
+            return;
+        }
+
+        foreach (string RuntimeModelFile in Directory.GetFiles(DirectoryPath, "*.*", SearchOption.AllDirectories))
+        {
+            string Extension = Path.GetExtension(RuntimeModelFile).ToLowerInvariant();
+            if (Array.IndexOf(RuntimeModelExtensions, Extension) < 0)
+            {
+                continue;
+            }
+
+            string RelativePath = Path.GetRelativePath(DirectoryPath, RuntimeModelFile);
+            RuntimeDependencies.Add(
+                Path.Combine(TargetRoot, RelativePath),
+                RuntimeModelFile,
                 StagedFileType.NonUFS);
         }
     }
@@ -437,6 +491,26 @@ public class EagleEye : ModuleRules
             if (File.Exists(CandidatePath))
             {
                 return CandidatePath;
+            }
+        }
+
+        return null;
+    }
+
+    private static string FindFirstMatchingFile(List<string> Directories, string Pattern)
+    {
+        foreach (string DirectoryPath in Directories)
+        {
+            if (String.IsNullOrEmpty(DirectoryPath) || !Directory.Exists(DirectoryPath))
+            {
+                continue;
+            }
+
+            string[] Matches = Directory.GetFiles(DirectoryPath, Pattern, SearchOption.TopDirectoryOnly);
+            if (Matches.Length > 0)
+            {
+                Array.Sort(Matches, StringComparer.Ordinal);
+                return Matches[0];
             }
         }
 

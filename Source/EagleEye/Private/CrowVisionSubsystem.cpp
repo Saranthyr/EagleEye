@@ -3,7 +3,9 @@
 #include "AI/DetectionModelHostActor.h"
 #include "Async/Async.h"
 #include "Engine/World.h"
+#include "GameFramework/Pawn.h"
 #include "HAL/PlatformProcess.h"
+#include "Kismet/GameplayStatics.h"
 #include "Misc/ScopeLock.h"
 #include "MyActorComponent.h"
 
@@ -100,11 +102,28 @@ void UCrowVisionSubsystem::ConfigureModelHostLimits(int32 MaxActiveUsers, int32 
 {
     FScopeLock Lock(&QueueMutex);
     MaxActiveModelUsers = FMath::Max(1, MaxActiveUsers);
-    MaxQueuedModelFrames = FMath::Max(1, MaxQueuedFrames);
+    MaxQueuedModelFrames = FMath::Max(MaxActiveModelUsers, MaxQueuedFrames);
     while (PendingFrames.Num() > MaxQueuedModelFrames)
     {
         PendingFrames.RemoveAt(0);
     }
+    SortPendingFramesByRequesterDistanceLocked();
+}
+
+void UCrowVisionSubsystem::ConfigureFrameSource(
+    float InCaptureFPS,
+    int32 InCaptureWidth,
+    int32 InCaptureHeight,
+    float InMaxDistanceToPlayer,
+    bool bInStaggerInitialCapture,
+    float InMaxInitialCaptureDelay)
+{
+    FrameSourceCaptureFPS = FMath::Clamp(InCaptureFPS, 1.f, 120.f);
+    FrameSourceCaptureWidth = FMath::Max(160, InCaptureWidth);
+    FrameSourceCaptureHeight = FMath::Max(160, InCaptureHeight);
+    FrameSourceMaxDistanceToPlayer = FMath::Max(0.f, InMaxDistanceToPlayer);
+    bStaggerInitialFrameSourceCapture = bInStaggerInitialCapture;
+    MaxInitialFrameSourceCaptureDelay = FMath::Clamp(InMaxInitialCaptureDelay, 0.f, 5.f);
 }
 
 void UCrowVisionSubsystem::SubmitFrame(
@@ -146,11 +165,32 @@ void UCrowVisionSubsystem::SubmitFrame(
                 !PendingFrame->ModelHost.IsValid();
         });
 
-        if (HasActiveRequestForRequesterLocked(Requester) ||
-            CountActiveModelUsersLocked() >= MaxActiveModelUsers ||
-            PendingFrames.Num() >= MaxQueuedModelFrames)
+        if (HasActiveRequestForRequesterLocked(Requester))
         {
             return;
+        }
+
+        if (CountActiveModelUsersLocked() >= MaxActiveModelUsers ||
+            PendingFrames.Num() >= MaxQueuedModelFrames)
+        {
+            const int32 FarthestPendingFrameIndex = FindFarthestPendingFrameIndexLocked();
+            if (FarthestPendingFrameIndex == INDEX_NONE)
+            {
+                return;
+            }
+
+            const TSharedPtr<FQueuedFrame>& FarthestPendingFrame = PendingFrames[FarthestPendingFrameIndex];
+            const float RequesterDistanceSq = GetRequesterDistanceToPlayerSq(Requester);
+            const float FarthestDistanceSq = GetRequesterDistanceToPlayerSq(FarthestPendingFrame.IsValid()
+                ? FarthestPendingFrame->Requester.Get()
+                : nullptr);
+            if (!FMath::IsFinite(RequesterDistanceSq) ||
+                (FMath::IsFinite(FarthestDistanceSq) && RequesterDistanceSq >= FarthestDistanceSq))
+            {
+                return;
+            }
+
+            PendingFrames.RemoveAt(FarthestPendingFrameIndex);
         }
 
         Frame->RequestSerial = Requester->BeginSharedVisionRequest();
@@ -160,6 +200,7 @@ void UCrowVisionSubsystem::SubmitFrame(
         }
 
         PendingFrames.Add(Frame);
+        SortPendingFramesByRequesterDistanceLocked();
     }
 
     StartWorker();
@@ -445,4 +486,57 @@ int32 UCrowVisionSubsystem::CountActiveModelUsersLocked() const
     }
 
     return ActiveRequesters.Num();
+}
+
+float UCrowVisionSubsystem::GetRequesterDistanceToPlayerSq(const UMyActorComponent* Requester) const
+{
+    const AActor* RequesterOwner = Requester ? Requester->GetOwner() : nullptr;
+    UWorld* World = Requester ? Requester->GetWorld() : GetWorld();
+    const APlayerController* PlayerController = World ? UGameplayStatics::GetPlayerController(World, 0) : nullptr;
+    const APawn* PlayerPawn = PlayerController ? PlayerController->GetPawn() : nullptr;
+    if (!RequesterOwner || !PlayerPawn)
+    {
+        return FLT_MAX;
+    }
+
+    return FVector::DistSquared(RequesterOwner->GetActorLocation(), PlayerPawn->GetActorLocation());
+}
+
+int32 UCrowVisionSubsystem::FindFarthestPendingFrameIndexLocked() const
+{
+    int32 FarthestIndex = INDEX_NONE;
+    float FarthestDistanceSq = -1.f;
+
+    for (int32 Index = 0; Index < PendingFrames.Num(); ++Index)
+    {
+        const TSharedPtr<FQueuedFrame>& Frame = PendingFrames[Index];
+        const UMyActorComponent* Requester = Frame.IsValid() ? Frame->Requester.Get() : nullptr;
+        const float DistanceSq = GetRequesterDistanceToPlayerSq(Requester);
+        if (FarthestIndex == INDEX_NONE || DistanceSq > FarthestDistanceSq)
+        {
+            FarthestIndex = Index;
+            FarthestDistanceSq = DistanceSq;
+        }
+    }
+
+    return FarthestIndex;
+}
+
+void UCrowVisionSubsystem::SortPendingFramesByRequesterDistanceLocked()
+{
+    PendingFrames.Sort([this](const TSharedPtr<FQueuedFrame>& A, const TSharedPtr<FQueuedFrame>& B)
+    {
+        const UMyActorComponent* RequesterA = A.IsValid() ? A->Requester.Get() : nullptr;
+        const UMyActorComponent* RequesterB = B.IsValid() ? B->Requester.Get() : nullptr;
+        const float DistanceASq = GetRequesterDistanceToPlayerSq(RequesterA);
+        const float DistanceBSq = GetRequesterDistanceToPlayerSq(RequesterB);
+        if (!FMath::IsNearlyEqual(DistanceASq, DistanceBSq))
+        {
+            return DistanceASq < DistanceBSq;
+        }
+
+        const double SubmitA = A.IsValid() ? A->SubmitTimeSeconds : TNumericLimits<double>::Max();
+        const double SubmitB = B.IsValid() ? B->SubmitTimeSeconds : TNumericLimits<double>::Max();
+        return SubmitA < SubmitB;
+    });
 }

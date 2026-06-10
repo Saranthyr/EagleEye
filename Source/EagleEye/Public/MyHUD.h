@@ -110,7 +110,6 @@ private:
     int32 SelectedDetectionSettingsItem = 0;
     FString PendingModelPathOverride;
     FString PendingNamesPathOverride;
-    FString PendingDarknetCfgPathOverride;
     int32 PendingInferenceBackend = 0;
     int32 PendingOnnxRuntimeExecutionProvider = 0;
     float PendingConfidenceThreshold = 0.25f;

@@ -37,7 +37,8 @@ public:
     void RegisterDetector(AActor* DetectorOwner);
     void UnregisterDetector(AActor* DetectorOwner);
 
-    bool ShouldRunDetector(AActor* DetectorOwner, int32 MaxActiveDetectors, float MaxDistanceToPlayer) const;
+    void ConfigureDetectorLimits(int32 MaxActiveDetectors, float MaxDistanceToPlayer);
+    bool ShouldRunDetector(AActor* DetectorOwner) const;
 
     void PublishTargetDetection(AActor* Reporter, const FVector& TargetLocation, float Confidence, int32 ClassId, const FString& ClassLabel);
 
@@ -58,6 +59,9 @@ private:
 
     UPROPERTY()
     TArray<FCrowSharedTargetDetection> RecentTargetDetections;
+
+    int32 MaxActiveDetectors = 2;
+    float MaxDistanceToPlayer = 8000.f;
 
     APawn* GetPlayerPawn() const;
 };
