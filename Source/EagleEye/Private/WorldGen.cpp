@@ -31,6 +31,41 @@ namespace
 			(BodySetup->AggGeom.GetElementCount() > 0 ||
 				BodySetup->CollisionTraceFlag == CTF_UseComplexAsSimple);
 	}
+
+	void LogWorldGenNavState(
+		const UObject* WorldContext,
+		const TCHAR* Event,
+		const TCHAR* Reason,
+		int32 LoadedSectionCount,
+		int32 PendingCreateCount,
+		int32 PendingDestroyCount,
+		bool bEnableNavMesh,
+		bool bAutoNavBounds,
+		bool bRebuildNavMeshOnSectionChanges)
+	{
+		UWorld* World = WorldContext ? WorldContext->GetWorld() : nullptr;
+		UNavigationSystemV1* NavSystem = World ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
+		ANavigationData* DefaultNavData = NavSystem
+			? NavSystem->GetDefaultNavDataInstance(FNavigationSystem::DontCreate)
+			: nullptr;
+
+		UE_LOG(
+			LogTemp,
+			Log,
+			TEXT("WorldGenNavDebug: event=%s reason=%s world=%s navSystem=%s defaultNav=%s defaultNavClass=%s loadedSections=%d pendingCreate=%d pendingDestroy=%d enableNav=%s autoBounds=%s rebuildOnChange=%s"),
+			Event ? Event : TEXT("None"),
+			Reason ? Reason : TEXT("None"),
+			World ? *World->GetName() : TEXT("None"),
+			NavSystem ? TEXT("valid") : TEXT("null"),
+			*GetNameSafe(DefaultNavData),
+			DefaultNavData ? *DefaultNavData->GetClass()->GetName() : TEXT("None"),
+			LoadedSectionCount,
+			PendingCreateCount,
+			PendingDestroyCount,
+			bEnableNavMesh ? TEXT("true") : TEXT("false"),
+			bAutoNavBounds ? TEXT("true") : TEXT("false"),
+			bRebuildNavMeshOnSectionChanges ? TEXT("true") : TEXT("false"));
+	}
 }
 
 // Sets default values
@@ -1705,6 +1740,16 @@ ANavMeshBoundsVolume* AWorldGen::CreateSectionNavBounds(const FBox& WorldBounds)
 		Params);
 	if (!BoundsVolume)
 	{
+		LogWorldGenNavState(
+			this,
+			TEXT("NavBoundsSpawnFailed"),
+			TEXT("CreateSectionNavBounds"),
+			LoadedSections.Num(),
+			PendingSectionsToCreate.Num(),
+			PendingSectionsToDestroy.Num(),
+			bEnableNavMesh,
+			bAutoNavBounds,
+			bRebuildNavMeshOnSectionChanges);
 		return nullptr;
 	}
 
@@ -1767,6 +1812,29 @@ ANavMeshBoundsVolume* AWorldGen::CreateSectionNavBounds(const FBox& WorldBounds)
 		NavSystem->OnNavigationBoundsUpdated(BoundsVolume);
 	}
 
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("WorldGenNavDebug: event=NavBoundsCreated actor=%s template=%s center=%s desiredExtent=%s currentExtent=%s scale=%s worldBoundsMin=%s worldBoundsMax=%s"),
+		*GetNameSafe(BoundsVolume),
+		*GetNameSafe(TemplateVolume),
+		*WorldBounds.GetCenter().ToCompactString(),
+		*DesiredExtent.ToCompactString(),
+		*CurrentExtent.ToCompactString(),
+		*BoundsVolume->GetActorScale3D().ToCompactString(),
+		*WorldBounds.Min.ToCompactString(),
+		*WorldBounds.Max.ToCompactString());
+	LogWorldGenNavState(
+		this,
+		TEXT("AfterNavBoundsUpdated"),
+		TEXT("CreateSectionNavBounds"),
+		LoadedSections.Num(),
+		PendingSectionsToCreate.Num(),
+		PendingSectionsToDestroy.Num(),
+		bEnableNavMesh,
+		bAutoNavBounds,
+		bRebuildNavMeshOnSectionChanges);
+
 	return BoundsVolume;
 }
 
@@ -1783,6 +1851,24 @@ void AWorldGen::DestroySectionNavBounds(FSectionData& SectionData)
 		NavSystem->OnNavigationBoundsUpdated(BoundsVolume);
 	}
 
+	UE_LOG(
+		LogTemp,
+		Log,
+		TEXT("WorldGenNavDebug: event=NavBoundsDestroy actor=%s boundsMin=%s boundsMax=%s"),
+		*GetNameSafe(BoundsVolume),
+		*BoundsVolume->GetComponentsBoundingBox(true).Min.ToCompactString(),
+		*BoundsVolume->GetComponentsBoundingBox(true).Max.ToCompactString());
+	LogWorldGenNavState(
+		this,
+		TEXT("BeforeNavBoundsDestroy"),
+		TEXT("DestroySectionNavBounds"),
+		LoadedSections.Num(),
+		PendingSectionsToCreate.Num(),
+		PendingSectionsToDestroy.Num(),
+		bEnableNavMesh,
+		bAutoNavBounds,
+		bRebuildNavMeshOnSectionChanges);
+
 	BoundsVolume->Destroy();
 	SectionData.NavBoundsVolume = nullptr;
 }
@@ -1791,28 +1877,88 @@ void AWorldGen::RequestNavRebuild()
 {
 	if (!bEnableNavMesh || !bRebuildNavMeshOnSectionChanges)
 	{
+		LogWorldGenNavState(
+			this,
+			TEXT("DeferredRebuildSkipped"),
+			TEXT("disabled"),
+			LoadedSections.Num(),
+			PendingSectionsToCreate.Num(),
+			PendingSectionsToDestroy.Num(),
+			bEnableNavMesh,
+			bAutoNavBounds,
+			bRebuildNavMeshOnSectionChanges);
 		return;
 	}
 
 	UWorld* World = GetWorld();
 	if (!World)
 	{
+		LogWorldGenNavState(
+			this,
+			TEXT("DeferredRebuildSkipped"),
+			TEXT("no world"),
+			LoadedSections.Num(),
+			PendingSectionsToCreate.Num(),
+			PendingSectionsToDestroy.Num(),
+			bEnableNavMesh,
+			bAutoNavBounds,
+			bRebuildNavMeshOnSectionChanges);
 		return;
 	}
 
 	World->GetTimerManager().ClearTimer(DeferredNavRebuildHandle);
 	World->GetTimerManager().SetTimer(DeferredNavRebuildHandle, this, &AWorldGen::PerformNavRebuild, 0.05f, false);
+	LogWorldGenNavState(
+		this,
+		TEXT("DeferredRebuildScheduled"),
+		TEXT("section change"),
+		LoadedSections.Num(),
+		PendingSectionsToCreate.Num(),
+		PendingSectionsToDestroy.Num(),
+		bEnableNavMesh,
+		bAutoNavBounds,
+		bRebuildNavMeshOnSectionChanges);
 }
 
 void AWorldGen::PerformNavRebuild()
 {
 	if (!bEnableNavMesh || !bRebuildNavMeshOnSectionChanges)
 	{
+		LogWorldGenNavState(
+			this,
+			TEXT("DeferredRebuildPerformSkipped"),
+			TEXT("disabled"),
+			LoadedSections.Num(),
+			PendingSectionsToCreate.Num(),
+			PendingSectionsToDestroy.Num(),
+			bEnableNavMesh,
+			bAutoNavBounds,
+			bRebuildNavMeshOnSectionChanges);
 		return;
 	}
 
+	LogWorldGenNavState(
+		this,
+		TEXT("DeferredRebuildPerformBegin"),
+		TEXT("section change"),
+		LoadedSections.Num(),
+		PendingSectionsToCreate.Num(),
+		PendingSectionsToDestroy.Num(),
+		bEnableNavMesh,
+		bAutoNavBounds,
+		bRebuildNavMeshOnSectionChanges);
 	UpdateGeneratedNavigationData();
 	QueueNavigationRebuildForCurrentWorld(TEXT("section change"));
+	LogWorldGenNavState(
+		this,
+		TEXT("DeferredRebuildPerformEnd"),
+		TEXT("section change"),
+		LoadedSections.Num(),
+		PendingSectionsToCreate.Num(),
+		PendingSectionsToDestroy.Num(),
+		bEnableNavMesh,
+		bAutoNavBounds,
+		bRebuildNavMeshOnSectionChanges);
 }
 
 void AWorldGen::QueueNavigationRebuildForCurrentWorld(const TCHAR* Reason)
@@ -1822,14 +1968,44 @@ void AWorldGen::QueueNavigationRebuildForCurrentWorld(const TCHAR* Reason)
 	if (!NavSystem)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("WorldGen: Cannot queue navmesh rebuild after %s because navigation system is unavailable."), Reason);
+		LogWorldGenNavState(
+			this,
+			TEXT("QueueDirtyAreasFailed"),
+			Reason,
+			LoadedSections.Num(),
+			PendingSectionsToCreate.Num(),
+			PendingSectionsToDestroy.Num(),
+			bEnableNavMesh,
+			bAutoNavBounds,
+			bRebuildNavMeshOnSectionChanges);
 		return;
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("WorldGen: Queuing async navmesh rebuild after %s."), Reason);
+	LogWorldGenNavState(
+		this,
+		TEXT("QueueDirtyAreasBegin"),
+		Reason,
+		LoadedSections.Num(),
+		PendingSectionsToCreate.Num(),
+		PendingSectionsToDestroy.Num(),
+		bEnableNavMesh,
+		bAutoNavBounds,
+		bRebuildNavMeshOnSectionChanges);
 	for (const TPair<FIntPoint, FSectionData>& Pair : LoadedSections)
 	{
 		MarkNavDirty(Pair.Value.Bounds);
 	}
+	LogWorldGenNavState(
+		this,
+		TEXT("QueueDirtyAreasEnd"),
+		Reason,
+		LoadedSections.Num(),
+		PendingSectionsToCreate.Num(),
+		PendingSectionsToDestroy.Num(),
+		bEnableNavMesh,
+		bAutoNavBounds,
+		bRebuildNavMeshOnSectionChanges);
 }
 
 void AWorldGen::UpdateGeneratedNavigationData()
@@ -1890,7 +2066,29 @@ void AWorldGen::MarkNavDirty(const FBox& Bounds)
 
 	if (UNavigationSystemV1* NavSystem = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
 	{
-		NavSystem->AddDirtyArea(Bounds.ExpandBy(FVector(cellsize, cellsize, NavBoundsHeight)), ENavigationDirtyFlag::All);
+		const FBox DirtyBounds = Bounds.ExpandBy(FVector(cellsize, cellsize, NavBoundsHeight));
+		NavSystem->AddDirtyArea(DirtyBounds, ENavigationDirtyFlag::All);
+		UE_LOG(
+			LogTemp,
+			Log,
+			TEXT("WorldGenNavDebug: event=DirtyAreaQueued center=%s extent=%s min=%s max=%s"),
+			*DirtyBounds.GetCenter().ToCompactString(),
+			*DirtyBounds.GetExtent().ToCompactString(),
+			*DirtyBounds.Min.ToCompactString(),
+			*DirtyBounds.Max.ToCompactString());
+	}
+	else
+	{
+		LogWorldGenNavState(
+			this,
+			TEXT("DirtyAreaSkipped"),
+			TEXT("no navigation system"),
+			LoadedSections.Num(),
+			PendingSectionsToCreate.Num(),
+			PendingSectionsToDestroy.Num(),
+			bEnableNavMesh,
+			bAutoNavBounds,
+			bRebuildNavMeshOnSectionChanges);
 	}
 }
 

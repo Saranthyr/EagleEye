@@ -153,3 +153,18 @@
 
 - Detail: Ran Build.sh EagleEyeEditor Linux Development. Result: Succeeded. Existing ONNX Runtime warning
   remains unrelated.
+
+## Report Notes
+
+- Main findings:
+  - Blueprint defaults were still overriding the close heal hitbox into blocking/nav-affecting collision, so healer could approach but never overlap and movement/pathing saw hitboxes as obstacles. Runtime code now forces CloseDamageHitbox to WorldDynamic + Pawn overlap + no navigation affect after BP defaults load and before enabling it. Controller active melee range also accounts for target capsule radius. Build succeeded.
+- Evidence to cite:
+  -
+- Decisions and rationale:
+  -
+- Validation performed:
+  -
+- Unresolved questions:
+  -
+- Suggested report angle:
+  -

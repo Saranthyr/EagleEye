@@ -154,9 +154,9 @@ public class OpenCV412 : ModuleRules
 		else if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			string Win64LibPath = Path.Combine(ProjectThirdPartyPath, "Libraries", "Win64");
-			string OpenCVLib = Path.Combine(Win64LibPath, "opencv_world4100.lib");
-			string OpenCVDll = Path.Combine(Win64LibPath, "opencv_world4100.dll");
-			string OpenCVFfmpegDll = Path.Combine(Win64LibPath, "opencv_videoio_ffmpeg4100_64.dll");
+			string OpenCVLib = Path.Combine(Win64LibPath, "opencv_world4120.lib");
+			string OpenCVDll = Path.Combine(Win64LibPath, "opencv_world4120.dll");
+			string OpenCVFfmpegDll = Path.Combine(Win64LibPath, "opencv_videoio_ffmpeg4120_64.dll");
 
 			if (File.Exists(OpenCVLib))
 			{
@@ -177,6 +177,17 @@ public class OpenCV412 : ModuleRules
 					Path.Combine("$(TargetOutputDir)", Path.GetFileName(OpenCVFfmpegDll)),
 					OpenCVFfmpegDll,
 					StagedFileType.NonUFS);
+			}
+
+			foreach (string RuntimePattern in new[] { "cublas*.dll", "cufft*.dll", "npp*.dll" })
+			{
+				foreach (string RuntimeDll in Directory.GetFiles(Win64LibPath, RuntimePattern, SearchOption.TopDirectoryOnly))
+				{
+					RuntimeDependencies.Add(
+						Path.Combine("$(TargetOutputDir)", Path.GetFileName(RuntimeDll)),
+						RuntimeDll,
+						StagedFileType.NonUFS);
+				}
 			}
 		}
 

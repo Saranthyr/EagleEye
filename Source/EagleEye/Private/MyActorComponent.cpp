@@ -4334,20 +4334,11 @@ bool UMyActorComponent::RunOpenCVDNNInference_BG(const cv::Mat& ModelInputBGR)
         true,
         false);
 
-    std::vector<cv::Mat> Outputs;
+    cv::Mat ChosenOut;
     auto ForwardOnce = [&]() -> void
     {
-        Outputs.clear();
         OpenCVDnnNet.setInput(Blob);
-        const std::vector<cv::String> OutNames = OpenCVDnnNet.getUnconnectedOutLayersNames();
-        if (OutNames.empty())
-        {
-            Outputs.push_back(OpenCVDnnNet.forward());
-        }
-        else
-        {
-            OpenCVDnnNet.forward(Outputs, OutNames);
-        }
+        ChosenOut = OpenCVDnnNet.forward();
     };
 
     try
@@ -4378,57 +4369,6 @@ bool UMyActorComponent::RunOpenCVDNNInference_BG(const cv::Mat& ModelInputBGR)
         {
             UE_LOG(LogTemp, Error, TEXT("OpenCV DNN CPU fallback failed: %s"), *FString(RetryErr.what()));
             return false;
-        }
-    }
-
-    cv::Mat ChosenOut;
-    int64 BestScore = -1;
-    for (const cv::Mat& OutRef : Outputs)
-    {
-        cv::Mat Out = OutRef;
-        if (Out.empty())
-        {
-            continue;
-        }
-
-        int32 NonSingletonA = 0;
-        int32 NonSingletonB = 0;
-        int32 NonSingletonCount = 0;
-        for (int32 d = 0; d < Out.dims; ++d)
-        {
-            if (Out.size[d] > 1)
-            {
-                if (NonSingletonCount == 0)
-                {
-                    NonSingletonA = Out.size[d];
-                }
-                else if (NonSingletonCount == 1)
-                {
-                    NonSingletonB = Out.size[d];
-                }
-                ++NonSingletonCount;
-            }
-        }
-
-        int64 Score = static_cast<int64>(Out.total());
-        if (NonSingletonCount == 2)
-        {
-            const int32 MinSide = FMath::Min(NonSingletonA, NonSingletonB);
-            const int32 MaxSide = FMath::Max(NonSingletonA, NonSingletonB);
-            if (MinSide >= 5 && MinSide <= 512 && MaxSide >= 16)
-            {
-                Score += 1000000000LL;
-            }
-            if (MinSide == 6)
-            {
-                Score += 100000000LL;
-            }
-        }
-
-        if (Score > BestScore)
-        {
-            BestScore = Score;
-            ChosenOut = Out;
         }
     }
 
