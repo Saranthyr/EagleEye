@@ -166,14 +166,39 @@ void ABotAIController::ApplyRandomMovementSettings(const FBotRandomMovementSetti
     ResetRandomMovementState();
 }
 
+void ABotAIController::PushRandomMovementBlock()
+{
+    ++RandomMovementBlockCount;
+
+    bHasFlightDestination = false;
+    bHasWalkDestination = false;
+
+    if (bRandomWalkMoveActive)
+    {
+        StopMovement();
+        bRandomWalkMoveActive = false;
+    }
+}
+
+void ABotAIController::PopRandomMovementBlock()
+{
+    RandomMovementBlockCount = FMath::Max(0, RandomMovementBlockCount - 1);
+}
+
 void ABotAIController::ResetRandomMovementState()
 {
     bHasFlightOrigin = false;
     bHasFlightDestination = false;
     bHasWalkOrigin = false;
     bHasWalkDestination = false;
+    bRandomWalkMoveActive = false;
     DestinationHoldTimeRemaining = 0.f;
     WalkDestinationHoldTimeRemaining = 0.f;
+}
+
+bool ABotAIController::IsRandomMovementBlocked() const
+{
+    return RandomMovementBlockCount > 0;
 }
 
 void ABotAIController::Tick(float DeltaSeconds)
@@ -565,9 +590,14 @@ void ABotAIController::UpdateRandomFlight(float DeltaSeconds)
         return;
     }
 
+    if (IsRandomMovementBlocked())
+    {
+        bHasFlightDestination = false;
+        return;
+    }
+
     if (IsBlackboardKeyBlockingRandomMovement(ActiveRandomMovementSettings.RandomFlightBlockedByKey))
     {
-        StopMovement();
         bHasFlightDestination = false;
         return;
     }
@@ -607,9 +637,24 @@ void ABotAIController::UpdateRandomWalking(float DeltaSeconds)
         return;
     }
 
+    if (IsRandomMovementBlocked())
+    {
+        if (bRandomWalkMoveActive)
+        {
+            StopMovement();
+            bRandomWalkMoveActive = false;
+        }
+        bHasWalkDestination = false;
+        return;
+    }
+
     if (IsBlackboardKeyBlockingRandomMovement(ActiveRandomMovementSettings.RandomWalkingBlockedByKey))
     {
-        StopMovement();
+        if (bRandomWalkMoveActive)
+        {
+            StopMovement();
+            bRandomWalkMoveActive = false;
+        }
         bHasWalkDestination = false;
         return;
     }
@@ -634,6 +679,7 @@ void ABotAIController::UpdateRandomWalking(float DeltaSeconds)
 
     if (ToDestination.SizeSquared() <= FMath::Square(ActiveRandomMovementSettings.WalkAcceptanceRadius))
     {
+        bRandomWalkMoveActive = false;
         WalkDestinationHoldTimeRemaining -= DeltaSeconds;
         if (WalkDestinationHoldTimeRemaining <= 0.f)
         {
@@ -651,7 +697,12 @@ void ABotAIController::UpdateRandomWalking(float DeltaSeconds)
     if (MoveResult == EPathFollowingRequestResult::Failed)
     {
         bHasWalkDestination = false;
+        bRandomWalkMoveActive = false;
         StopMovement();
+    }
+    else
+    {
+        bRandomWalkMoveActive = MoveResult != EPathFollowingRequestResult::AlreadyAtGoal;
     }
 }
 
@@ -713,6 +764,7 @@ void ABotAIController::PickRandomWalkDestination()
                     ActiveRandomMovementSettings.WalkDestinationHoldMinSeconds,
                     ActiveRandomMovementSettings.WalkDestinationHoldMaxSeconds);
                 bHasWalkDestination = true;
+                bRandomWalkMoveActive = false;
                 return;
             }
         }

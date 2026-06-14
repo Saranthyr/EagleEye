@@ -26,6 +26,12 @@ public:
     UFUNCTION(BlueprintCallable, Category="AI|Random Movement")
     void ApplyRandomMovementSettings(const FBotRandomMovementSettings& InSettings);
 
+    UFUNCTION(BlueprintCallable, Category="AI|Random Movement")
+    void PushRandomMovementBlock();
+
+    UFUNCTION(BlueprintCallable, Category="AI|Random Movement")
+    void PopRandomMovementBlock();
+
 protected:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="AI")
     TObjectPtr<UAIPerceptionComponent> PerceptionComponentRef;
@@ -111,6 +117,7 @@ private:
     void ClearHealingTarget(UBlackboardComponent& BlackboardComponent);
     void ClearHealingBlackboardTarget(UBlackboardComponent& BlackboardComponent);
     void ResetRandomMovementState();
+    bool IsRandomMovementBlocked() const;
     void UpdateRandomFlight(float DeltaSeconds);
     void UpdateRandomWalking(float DeltaSeconds);
     void PickRandomFlightDestination();
@@ -133,4 +140,6 @@ private:
     bool bHasFlightDestination = false;
     bool bHasWalkOrigin = false;
     bool bHasWalkDestination = false;
+    bool bRandomWalkMoveActive = false;
+    int32 RandomMovementBlockCount = 0;
 };

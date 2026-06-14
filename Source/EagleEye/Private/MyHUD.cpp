@@ -580,6 +580,60 @@ void AMyHUD::DrawPlayerHealth()
     DrawText(HealthText, FLinearColor::White, X, Y - 22.f, nullptr, 1.0f, false);
 }
 
+void AMyHUD::DrawBotKillCount()
+{
+    if (!bKillCountHudEnabled || !Canvas)
+    {
+        return;
+    }
+
+    const APlayerController* PC = GetOwningPlayerController();
+    const AEagleEyeCharacter* PlayerCharacter = PC ? Cast<AEagleEyeCharacter>(PC->GetPawn()) : nullptr;
+    if (!PlayerCharacter)
+    {
+        return;
+    }
+
+    const FString KillText = FString::Printf(TEXT("Bots killed: %d"), PlayerCharacter->GetBotKillCount());
+    const float TextScale = 1.0f;
+    const float X = FMath::Clamp(HealthBarScreenOffset.X, 0.f, FMath::Max(0.f, Canvas->ClipX - 180.f));
+    const float HealthY = FMath::Clamp(
+        Canvas->ClipY - HealthBarScreenOffset.Y - FMath::Max(1.f, HealthBarHeight),
+        0.f,
+        FMath::Max(0.f, Canvas->ClipY - FMath::Max(1.f, HealthBarHeight)));
+    const float Y = FMath::Max(8.f, HealthY - 48.f);
+
+    DrawText(KillText, FLinearColor(0.95f, 0.95f, 0.95f, 1.f), X, Y, nullptr, TextScale, false);
+}
+
+void AMyHUD::DrawDeathPrompt()
+{
+    if (!bDeathPromptHudEnabled || !Canvas)
+    {
+        return;
+    }
+
+    const APlayerController* PC = GetOwningPlayerController();
+    const AEagleEyeCharacter* PlayerCharacter = PC ? Cast<AEagleEyeCharacter>(PC->GetPawn()) : nullptr;
+    if (!PlayerCharacter || !PlayerCharacter->IsDead())
+    {
+        return;
+    }
+
+    DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.55f), 0.f, 0.f, Canvas->ClipX, Canvas->ClipY);
+
+    const FString TitleText = TEXT("YOU DIED");
+    const FString KillText = FString::Printf(TEXT("Bots killed: %d"), PlayerCharacter->GetBotKillCount());
+    const FString PromptText = TEXT("Press any button to restart");
+
+    const float CenterX = Canvas->ClipX * 0.5f;
+    const float CenterY = Canvas->ClipY * 0.5f;
+
+    DrawText(TitleText, FLinearColor(0.95f, 0.08f, 0.04f, 1.f), CenterX - 92.f, CenterY - 76.f, nullptr, 2.0f, false);
+    DrawText(KillText, FLinearColor::White, CenterX - 74.f, CenterY - 18.f, nullptr, 1.15f, false);
+    DrawText(PromptText, FLinearColor(0.85f, 0.88f, 0.90f, 1.f), CenterX - 132.f, CenterY + 24.f, nullptr, 1.0f, false);
+}
+
 void AMyHUD::DrawDetectionList(const TArray<FDetectionResult>& Detections, int32 SourceWidth, int32 SourceHeight, AActor* CameraActor)
 {
     if (!Canvas || SourceWidth <= 0 || SourceHeight <= 0)
@@ -716,16 +770,19 @@ void AMyHUD::DrawHUD()
     }
 
     DrawPlayerHealth();
+    DrawBotKillCount();
+    DrawDeathPrompt();
+
+    APlayerController* PC = GetOwningPlayerController();
+    const AEagleEyeCharacter* PlayerCharacter = PC ? Cast<AEagleEyeCharacter>(PC->GetPawn()) : nullptr;
+    if (!PC || (PlayerCharacter && PlayerCharacter->IsDead()))
+    {
+        return;
+    }
 
     if (bDetectionSettingsMenuOpen)
     {
         DrawDetectionSettingsMenu();
-        return;
-    }
-
-    APlayerController* PC = GetOwningPlayerController();
-    if (!PC)
-    {
         return;
     }
 

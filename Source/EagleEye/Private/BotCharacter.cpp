@@ -12,6 +12,42 @@
 #include "Kismet/GameplayStatics.h"
 #include "MyActorComponent.h"
 
+namespace
+{
+    AEagleEyeCharacter* GetPlayerCharacterFromActor(AActor* Actor)
+    {
+        if (!IsValid(Actor))
+        {
+            return nullptr;
+        }
+
+        if (AEagleEyeCharacter* PlayerCharacter = Cast<AEagleEyeCharacter>(Actor))
+        {
+            return PlayerCharacter;
+        }
+
+        if (AEagleEyeCharacter* InstigatorCharacter = Cast<AEagleEyeCharacter>(Actor->GetInstigator()))
+        {
+            return InstigatorCharacter;
+        }
+
+        return Cast<AEagleEyeCharacter>(Actor->GetOwner());
+    }
+
+    AEagleEyeCharacter* ResolvePlayerKiller(AController* EventInstigator, AActor* DamageCauser)
+    {
+        if (EventInstigator)
+        {
+            if (AEagleEyeCharacter* PlayerCharacter = Cast<AEagleEyeCharacter>(EventInstigator->GetPawn()))
+            {
+                return PlayerCharacter;
+            }
+        }
+
+        return GetPlayerCharacterFromActor(DamageCauser);
+    }
+}
+
 ABotCharacter::ABotCharacter()
 {
     PrimaryActorTick.bCanEverTick = true;
@@ -585,6 +621,11 @@ void ABotCharacter::HandleDeath(AController* EventInstigator, AActor* DamageCaus
     else if (bDisableCollisionOnDeath)
     {
         SetActorEnableCollision(false);
+    }
+
+    if (AEagleEyeCharacter* KillerCharacter = ResolvePlayerKiller(EventInstigator, DamageCauser))
+    {
+        KillerCharacter->RegisterBotKill(this);
     }
 
     OnBotDied.Broadcast();

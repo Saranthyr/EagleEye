@@ -124,6 +124,15 @@ public:
 	UFUNCTION(BlueprintPure, Category="Gameplay|Health")
 	bool IsDead() const { return bIsDead; }
 
+	UFUNCTION(BlueprintPure, Category="Gameplay|Kills")
+	int32 GetBotKillCount() const { return BotKillCount; }
+
+	UFUNCTION(BlueprintCallable, Category="Gameplay|Kills")
+	void RegisterBotKill(ABotCharacter* KilledBot);
+
+	UFUNCTION(BlueprintCallable, Category="Gameplay|Death")
+	void RestartAfterDeath();
+
 	UPROPERTY(BlueprintAssignable, Category="Gameplay|Health")
 	FPlayerHealthChangedSignature OnHealthChanged;
 
@@ -168,11 +177,16 @@ protected:
 
 	void DisableDeathRagdoll();
 
+	void TryRestartAfterDeathInput();
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Gameplay|Health", meta=(ClampMin="1.0"))
 	float MaxHealth = 100.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Gameplay|Death")
 	bool bEnableRagdollOnDeath = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|Death", meta=(ClampMin="0.0"))
+	float RestartInputDelayAfterDeathSeconds = 0.25f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Gameplay|Attack")
 	TObjectPtr<USphereComponent> MeleeHitbox;
@@ -276,10 +290,14 @@ protected:
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Gameplay|Health")
 	bool bIsDead = false;
 
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Gameplay|Kills")
+	int32 BotKillCount = 0;
+
 	TWeakObjectPtr<AActor> LastMeleeDamageActor;
 	float LastMeleeAttackTime = -TNumericLimits<float>::Max();
 	float MeleeHitboxDisableTime = -TNumericLimits<float>::Max();
 	float LastProjectileAttackTime = -TNumericLimits<float>::Max();
+	float DeathTimeSeconds = -TNumericLimits<float>::Max();
 	float CameraBobPhase = 0.f;
 	float LastFallingSpeed = 0.f;
 	FVector2D PendingLookInput = FVector2D::ZeroVector;
@@ -289,6 +307,7 @@ protected:
 	FRotator CameraMotionRotation = FRotator::ZeroRotator;
 	FRotator CameraImpulseRotation = FRotator::ZeroRotator;
 	bool bMeleeHitboxEnabled = false;
+	bool bRestartAfterDeathRequested = false;
 
 protected:
 	// APawn interface

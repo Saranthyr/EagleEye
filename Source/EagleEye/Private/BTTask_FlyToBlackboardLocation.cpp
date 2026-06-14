@@ -1,6 +1,7 @@
 #include "AI/BTTask_FlyToBlackboardLocation.h"
 
 #include "AIController.h"
+#include "AI/BotAIController.h"
 #include "AI/BotCharacter.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
@@ -46,6 +47,7 @@ namespace
         float LastBestEffortRepathTime = -FLT_MAX;
         float BestMoveRequestDistance = FLT_MAX;
         float LastMoveProgressTime = -FLT_MAX;
+        bool bRandomMovementBlocked = false;
     };
 
     struct FWalkingPathDebugInfo
@@ -1480,6 +1482,15 @@ EBTNodeResult::Type UBTTask_FlyToBlackboardLocation::ExecuteTask(
         *Memory = FBTTaskFlyToBlackboardLocationMemory();
     }
 
+    if (Memory)
+    {
+        if (ABotAIController* BotAIController = Cast<ABotAIController>(AIController))
+        {
+            BotAIController->PushRandomMovementBlock();
+            Memory->bRandomMovementBlocked = true;
+        }
+    }
+
     if (bDrawDebug && IsPathfindingDecisionLoggingEnabled() && GEngine)
     {
         GEngine->AddOnScreenDebugMessage(
@@ -2080,6 +2091,17 @@ void UBTTask_FlyToBlackboardLocation::OnTaskFinished(
     Super::OnTaskFinished(OwnerComp, NodeMemory, TaskResult);
 
     AAIController* AIController = OwnerComp.GetAIOwner();
+    FBTTaskFlyToBlackboardLocationMemory* Memory =
+        reinterpret_cast<FBTTaskFlyToBlackboardLocationMemory*>(NodeMemory);
+    if (Memory && Memory->bRandomMovementBlocked)
+    {
+        if (ABotAIController* BotAIController = Cast<ABotAIController>(AIController))
+        {
+            BotAIController->PopRandomMovementBlock();
+        }
+        Memory->bRandomMovementBlocked = false;
+    }
+
     APawn* ControlledPawn = AIController ? AIController->GetPawn() : nullptr;
     UBlackboardComponent* Blackboard = OwnerComp.GetBlackboardComponent();
     const bool bUseFlyingMovement = ControlledPawn && Blackboard

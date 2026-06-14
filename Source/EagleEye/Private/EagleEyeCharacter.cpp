@@ -15,6 +15,7 @@
 #include "GameFramework/PlayerController.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
+#include "InputCoreTypes.h"
 #include "InputActionValue.h"
 #include "Kismet/GameplayStatics.h"
 #include "MyHUD.h"
@@ -129,6 +130,8 @@ void AEagleEyeCharacter::BeginPlay()
 	}
 	SetMeleeHitboxEnabled(false);
 
+	BotKillCount = 0;
+	bRestartAfterDeathRequested = false;
 	ResetHealth();
 
 	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
@@ -144,6 +147,12 @@ void AEagleEyeCharacter::BeginPlay()
 void AEagleEyeCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+
+	if (bIsDead)
+	{
+		TryRestartAfterDeathInput();
+		return;
+	}
 
 	ApplyRealisticCamera(DeltaSeconds);
 	TickMeleeHitbox();
@@ -239,6 +248,8 @@ void AEagleEyeCharacter::ResetHealth()
 	MaxHealth = FMath::Max(1.f, MaxHealth);
 	CurrentHealth = MaxHealth;
 	bIsDead = false;
+	bRestartAfterDeathRequested = false;
+	DeathTimeSeconds = -TNumericLimits<float>::Max();
 
 	DisableDeathRagdoll();
 
@@ -248,6 +259,37 @@ void AEagleEyeCharacter::ResetHealth()
 	}
 
 	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+}
+
+void AEagleEyeCharacter::RegisterBotKill(ABotCharacter* KilledBot)
+{
+	if (!IsValid(KilledBot))
+	{
+		return;
+	}
+
+	++BotKillCount;
+	UE_LOG(LogTemplateCharacter, Log, TEXT("%s killed bot %s. BotKillCount=%d"),
+		*GetNameSafe(this),
+		*GetNameSafe(KilledBot),
+		BotKillCount);
+}
+
+void AEagleEyeCharacter::RestartAfterDeath()
+{
+	if (!bIsDead || bRestartAfterDeathRequested)
+	{
+		return;
+	}
+
+	const FString LevelName = UGameplayStatics::GetCurrentLevelName(this, true);
+	if (LevelName.IsEmpty())
+	{
+		return;
+	}
+
+	bRestartAfterDeathRequested = true;
+	UGameplayStatics::OpenLevel(this, FName(*LevelName));
 }
 
 bool AEagleEyeCharacter::TryMeleeAttack()
@@ -371,6 +413,9 @@ void AEagleEyeCharacter::HandleDeath(AController* EventInstigator, AActor* Damag
 	}
 
 	bIsDead = true;
+	DeathTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+	bRestartAfterDeathRequested = false;
+	SetMeleeHitboxEnabled(false);
 
 	if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
 	{
@@ -378,11 +423,6 @@ void AEagleEyeCharacter::HandleDeath(AController* EventInstigator, AActor* Damag
 	}
 
 	EnableDeathRagdoll();
-
-	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
-	{
-		DisableInput(PlayerController);
-	}
 
 	OnPlayerDied.Broadcast();
 	K2_OnDeath(EventInstigator, DamageCauser);
@@ -533,6 +573,11 @@ void AEagleEyeCharacter::DetectionSettingsMenuCancelInput()
 
 void AEagleEyeCharacter::Move(const FInputActionValue& Value)
 {
+	if (bIsDead)
+	{
+		return;
+	}
+
 	if (const AMyHUD* Hud = GetExistingDetectionSettingsHud(this); Hud && Hud->IsDetectionSettingsMenuOpen())
 	{
 		return;
@@ -561,6 +606,11 @@ void AEagleEyeCharacter::Move(const FInputActionValue& Value)
 
 void AEagleEyeCharacter::Look(const FInputActionValue& Value)
 {
+	if (bIsDead)
+	{
+		return;
+	}
+
 	if (const AMyHUD* Hud = GetExistingDetectionSettingsHud(this); Hud && Hud->IsDetectionSettingsMenuOpen())
 	{
 		return;
@@ -688,6 +738,26 @@ void AEagleEyeCharacter::MeleeAttackInput()
 void AEagleEyeCharacter::ProjectileAttackInput()
 {
 	TryProjectileAttack();
+}
+
+void AEagleEyeCharacter::TryRestartAfterDeathInput()
+{
+	if (!bIsDead || bRestartAfterDeathRequested)
+	{
+		return;
+	}
+
+	const UWorld* World = GetWorld();
+	if (!World || World->GetTimeSeconds() - DeathTimeSeconds < RestartInputDelayAfterDeathSeconds)
+	{
+		return;
+	}
+
+	const APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	if (PlayerController && PlayerController->WasInputKeyJustPressed(EKeys::AnyKey))
+	{
+		RestartAfterDeath();
+	}
 }
 
 void AEagleEyeCharacter::TickMeleeHitbox()

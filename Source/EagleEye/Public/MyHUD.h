@@ -74,6 +74,12 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|HUD")
     FLinearColor HealthBarLowFillColor = FLinearColor(0.95f, 0.08f, 0.04f, 1.f);
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|HUD")
+    bool bKillCountHudEnabled = true;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gameplay|HUD")
+    bool bDeathPromptHudEnabled = true;
+
 private:
     enum class EDetectionSettingsMenuItem : uint8
     {
@@ -96,6 +102,8 @@ private:
     };
 
     void DrawPlayerHealth();
+    void DrawBotKillCount();
+    void DrawDeathPrompt();
     void DrawDetectionList(const TArray<FDetectionResult>& Detections, int32 SourceWidth, int32 SourceHeight, AActor* CameraActor);
     void DrawDetectionSettingsMenu();
     void RefreshDetectionSettingsMenu();
