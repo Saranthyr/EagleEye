@@ -768,6 +768,17 @@
 				"options": {
 					"cwd": "/home/saranthyr/Documents/Unreal Projects/EagleEye"
 				}
+			},
+			{
+				"label": "Package EagleEye Linux Metrics (MIGraphX Cache)",
+				"group": "build",
+				"command": "/home/saranthyr/Documents/Unreal Projects/EagleEye/Scripts/package-linux-metrics.sh",
+				"args": [],
+				"problemMatcher": "$msCompile",
+				"type": "process",
+				"options": {
+					"cwd": "/home/saranthyr/Documents/Unreal Projects/EagleEye"
+				}
 			}
 		]
 	},
