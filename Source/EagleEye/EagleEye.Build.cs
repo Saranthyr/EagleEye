@@ -5,6 +5,8 @@ using System.Collections.Generic;
 
 public class EagleEye : ModuleRules
 {
+    private readonly HashSet<string> RuntimeDependencyTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
     public EagleEye(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
@@ -286,25 +288,49 @@ public class EagleEye : ModuleRules
                     string MIGraphXOnnxRuntimeLib = FindFirstMatchingFile(MIGraphXRuntimeDirs, "libmigraphx_onnx.so*");
                     string MIGraphXTfRuntimeLib = FindFirstMatchingFile(MIGraphXRuntimeDirs, "libmigraphx_tf.so*");
                     string MIGraphXCRuntimeLib = FindFirstMatchingFile(MIGraphXRuntimeDirs, "libmigraphx_c.so*");
+                    string MIGraphXGpuRuntimeLib = FindFirstMatchingFile(MIGraphXRuntimeDirs, "libmigraphx_gpu.so*");
+                    string HipBlasLtRuntimeLib = FindFirstMatchingFile(MIGraphXRuntimeDirs, "libhipblaslt.so*");
+                    string RocmCoreRuntimeLib = FindFirstMatchingFile(MIGraphXRuntimeDirs, "librocm-core.so*");
+                    string RocRollerRuntimeLib = FindFirstMatchingFile(MIGraphXRuntimeDirs, "librocroller.so*");
                     bWithOnnxRuntimeMIGraphX =
                         File.Exists(MIGraphXProviderHeader) &&
                         File.Exists(MIGraphXProviderLib) &&
                         File.Exists(MIGraphXRuntimeLib) &&
                         File.Exists(MIGraphXOnnxRuntimeLib) &&
                         File.Exists(MIGraphXTfRuntimeLib) &&
-                        File.Exists(MIGraphXCRuntimeLib);
+                        File.Exists(MIGraphXCRuntimeLib) &&
+                        File.Exists(MIGraphXGpuRuntimeLib) &&
+                        File.Exists(HipBlasLtRuntimeLib) &&
+                        File.Exists(RocmCoreRuntimeLib) &&
+                        File.Exists(RocRollerRuntimeLib);
 
                     foreach (string LibDir in OnnxLibDirs)
                     {
-                        StageMatchingRuntimeFiles(LibDir, "libonnxruntime.so*");
-                        StageMatchingRuntimeFiles(LibDir, "libonnxruntime_providers*.so");
+                        AddRuntimeLibraryPath(LibDir);
+                        StageAndCopyMatchingRuntimeFiles(LibDir, "libonnxruntime.so*");
+                        StageAndCopyMatchingRuntimeFiles(LibDir, "libonnxruntime_providers*.so*");
                     }
                     if (bWithOnnxRuntimeMIGraphX)
                     {
                         foreach (string MIGraphXRuntimeDir in MIGraphXRuntimeDirs)
                         {
-                            StageMatchingRuntimeFiles(MIGraphXRuntimeDir, "libmigraphx*.so*");
-                            CopyMatchingRuntimeFilesToBinaryOutput(MIGraphXRuntimeDir, "libmigraphx*.so*");
+                            AddRuntimeLibraryPath(MIGraphXRuntimeDir);
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "libmigraphx*.so*");
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "libhipblaslt.so*");
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "libhiprtc.so*");
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "libhiprtc-builtins.so*");
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "libMIOpen.so*");
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "librocblas.so*");
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "libamd_comgr.so*");
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "libroctx64.so*");
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "librocm-core.so*");
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "librocroller.so*");
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "libhipblas.so*");
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "libhipsparse.so*");
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "librocfft.so*");
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "librocsolver.so*");
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "librocsparse.so*");
+                            StageAndCopyMatchingRuntimeFiles(MIGraphXRuntimeDir, "librccl.so*");
                         }
                     }
                 }
@@ -381,11 +407,25 @@ public class EagleEye : ModuleRules
         if (!String.IsNullOrEmpty(LibraryPath) && File.Exists(LibraryPath))
         {
             PublicAdditionalLibraries.Add(LibraryPath);
-            RuntimeDependencies.Add(
+            AddRuntimeDependencyOnce(
                 Path.Combine("$(TargetOutputDir)", Path.GetFileName(LibraryPath)),
                 LibraryPath,
                 StagedFileType.NonUFS);
         }
+    }
+
+    private void AddRuntimeLibraryPath(string DirectoryPath)
+    {
+        if (!String.IsNullOrEmpty(DirectoryPath) && Directory.Exists(DirectoryPath) && !PublicRuntimeLibraryPaths.Contains(DirectoryPath))
+        {
+            PublicRuntimeLibraryPaths.Add(DirectoryPath);
+        }
+    }
+
+    private void StageAndCopyMatchingRuntimeFiles(string DirectoryPath, string Pattern)
+    {
+        StageMatchingRuntimeFiles(DirectoryPath, Pattern);
+        CopyMatchingRuntimeFilesToBinaryOutput(DirectoryPath, Pattern);
     }
 
     private void StageMatchingRuntimeFiles(string DirectoryPath, string Pattern)
@@ -397,10 +437,10 @@ public class EagleEye : ModuleRules
 
         foreach (string RuntimeFile in Directory.GetFiles(DirectoryPath, Pattern, SearchOption.TopDirectoryOnly))
         {
-            RuntimeDependencies.Add(
+            AddRuntimeDependencyOnce(
                 Path.Combine("$(TargetOutputDir)", Path.GetFileName(RuntimeFile)),
-            RuntimeFile,
-            StagedFileType.NonUFS);
+                RuntimeFile,
+                StagedFileType.NonUFS);
         }
     }
 
@@ -408,7 +448,7 @@ public class EagleEye : ModuleRules
     {
         if (File.Exists(RuntimeFile))
         {
-            RuntimeDependencies.Add(
+            AddRuntimeDependencyOnce(
                 Path.Combine("$(TargetOutputDir)", Path.GetFileName(RuntimeFile)),
                 RuntimeFile,
                 StagedFileType.NonUFS);
@@ -419,7 +459,7 @@ public class EagleEye : ModuleRules
     {
         if (File.Exists(RuntimeFile))
         {
-            RuntimeDependencies.Add(
+            AddRuntimeDependencyOnce(
                 Path.Combine("$(BinaryOutputDir)", Path.GetFileName(RuntimeFile)),
                 RuntimeFile,
                 StagedFileType.NonUFS);
@@ -435,10 +475,10 @@ public class EagleEye : ModuleRules
 
         foreach (string RuntimeFile in Directory.GetFiles(DirectoryPath, Pattern, SearchOption.TopDirectoryOnly))
         {
-            RuntimeDependencies.Add(
+            AddRuntimeDependencyOnce(
                 Path.Combine("$(BinaryOutputDir)", Path.GetFileName(RuntimeFile)),
                 RuntimeFile,
-            StagedFileType.NonUFS);
+                StagedFileType.NonUFS);
         }
     }
 
@@ -462,6 +502,15 @@ public class EagleEye : ModuleRules
                 Path.Combine(TargetRoot, RelativePath),
                 RuntimeModelFile,
                 StagedFileType.NonUFS);
+        }
+    }
+
+    private void AddRuntimeDependencyOnce(string TargetPath, string SourcePath, StagedFileType StageType)
+    {
+        string NormalizedTargetPath = TargetPath.Replace('\\', '/');
+        if (RuntimeDependencyTargets.Add(NormalizedTargetPath))
+        {
+            RuntimeDependencies.Add(TargetPath, SourcePath, StageType);
         }
     }
 

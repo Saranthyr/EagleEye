@@ -34,7 +34,10 @@ public:
         UMyActorComponent* Requester,
         TArray<FColor>&& Pixels,
         int32 Width,
-        int32 Height);
+        int32 Height,
+        const FVector2D& DetectionTargetPixel,
+        bool bHasDetectionEvaluation,
+        bool bExpectedInFov);
 
     bool IsShuttingDown() const { return bIsShuttingDown.load(); }
     float GetFrameSourceCaptureFPS() const { return FrameSourceCaptureFPS; }
@@ -56,6 +59,9 @@ private:
         double SubmitTimeSeconds = 0.0;
         FString RequesterName;
         bool bRequesterLogFrameTimings = false;
+        FVector2D DetectionTargetPixel = FVector2D::ZeroVector;
+        bool bHasDetectionEvaluation = false;
+        bool bExpectedInFov = false;
         int32 RequestSerial = 0;
     };
 

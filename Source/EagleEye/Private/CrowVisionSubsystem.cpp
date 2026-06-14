@@ -130,7 +130,10 @@ void UCrowVisionSubsystem::SubmitFrame(
     UMyActorComponent* Requester,
     TArray<FColor>&& Pixels,
     int32 Width,
-    int32 Height)
+    int32 Height,
+    const FVector2D& DetectionTargetPixel,
+    bool bHasDetectionEvaluation,
+    bool bExpectedInFov)
 {
     if (bIsShuttingDown.load() || !IsValid(Requester) || Width <= 0 || Height <= 0 || Pixels.Num() != Width * Height)
     {
@@ -155,6 +158,9 @@ void UCrowVisionSubsystem::SubmitFrame(
     Frame->SubmitTimeSeconds = FPlatformTime::Seconds();
     Frame->RequesterName = GetNameSafe(Requester->GetOwner());
     Frame->bRequesterLogFrameTimings = Requester->ShouldLogFrameTimings();
+    Frame->DetectionTargetPixel = DetectionTargetPixel;
+    Frame->bHasDetectionEvaluation = bHasDetectionEvaluation;
+    Frame->bExpectedInFov = bExpectedInFov;
 
     {
         FScopeLock Lock(&QueueMutex);
@@ -271,6 +277,16 @@ void UCrowVisionSubsystem::StartWorker()
                 Frame->Height,
                 &InferenceMs);
             const double WorkerTotalMs = (FPlatformTime::Seconds() - WorkerStartSeconds) * 1000.0;
+            Host->RecordDetectionModelFrameTiming(
+                Frame->RequestSerial,
+                Frame->Width,
+                Frame->Height,
+                Detections,
+                WorkerTotalMs,
+                InferenceMs,
+                Frame->DetectionTargetPixel,
+                Frame->bHasDetectionEvaluation,
+                Frame->bExpectedInFov);
 
             if (Frame->bRequesterLogFrameTimings)
             {

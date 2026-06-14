@@ -3,8 +3,10 @@
 #include "MyActorComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
+#include "AIController.h"
 #include "AI/CrowDetectionShareSubsystem.h"
 #include "AI/CrowVisionSubsystem.h"
+#include "BehaviorTree/BlackboardComponent.h"
 #include "EagleEyeDetectionSettings.h"
 #include "EagleEyeModelDiscovery.h"
 #include "Components/SceneCaptureComponent2D.h"
@@ -43,6 +45,247 @@ namespace
     constexpr TCHAR OnnxRuntimeGpuCrashGuardFileName[] = TEXT("OnnxRuntimeGpuCrashGuard.txt");
     uint64 GOwnerCameraReadbackLastEnqueueFrame = MAX_uint64;
     uint64 GOwnerCameraReadbackLastLockFrame = MAX_uint64;
+
+    void SetVideoPixelBGRA(TArray<uint8>& RawFrame, int32 Width, int32 Height, int32 X, int32 Y, const FColor& Color)
+    {
+        if (X < 0 || X >= Width || Y < 0 || Y >= Height)
+        {
+            return;
+        }
+
+        const int32 Offset = ((Y * Width) + X) * 4;
+        RawFrame[Offset + 0] = Color.B;
+        RawFrame[Offset + 1] = Color.G;
+        RawFrame[Offset + 2] = Color.R;
+        RawFrame[Offset + 3] = Color.A;
+    }
+
+    void DrawVideoPointBGRA(TArray<uint8>& RawFrame, int32 Width, int32 Height, int32 X, int32 Y, const FColor& Color, int32 Radius)
+    {
+        for (int32 OffsetY = -Radius; OffsetY <= Radius; ++OffsetY)
+        {
+            for (int32 OffsetX = -Radius; OffsetX <= Radius; ++OffsetX)
+            {
+                SetVideoPixelBGRA(RawFrame, Width, Height, X + OffsetX, Y + OffsetY, Color);
+            }
+        }
+    }
+
+    void DrawVideoLineBGRA(TArray<uint8>& RawFrame, int32 Width, int32 Height, FVector2D Start, FVector2D End, const FColor& Color, int32 Thickness)
+    {
+        const float DeltaX = End.X - Start.X;
+        const float DeltaY = End.Y - Start.Y;
+        const int32 Steps = FMath::Max(1, FMath::RoundToInt(FMath::Max(FMath::Abs(DeltaX), FMath::Abs(DeltaY))));
+        const int32 Radius = FMath::Max(0, Thickness / 2);
+
+        for (int32 Step = 0; Step <= Steps; ++Step)
+        {
+            const float Alpha = static_cast<float>(Step) / static_cast<float>(Steps);
+            const int32 X = FMath::RoundToInt(FMath::Lerp(Start.X, End.X, Alpha));
+            const int32 Y = FMath::RoundToInt(FMath::Lerp(Start.Y, End.Y, Alpha));
+            DrawVideoPointBGRA(RawFrame, Width, Height, X, Y, Color, Radius);
+        }
+    }
+
+    void FillVideoRectBGRA(TArray<uint8>& RawFrame, int32 Width, int32 Height, int32 X, int32 Y, int32 RectWidth, int32 RectHeight, const FColor& Color)
+    {
+        const int32 MinX = FMath::Clamp(X, 0, Width);
+        const int32 MinY = FMath::Clamp(Y, 0, Height);
+        const int32 MaxX = FMath::Clamp(X + RectWidth, 0, Width);
+        const int32 MaxY = FMath::Clamp(Y + RectHeight, 0, Height);
+
+        for (int32 PixelY = MinY; PixelY < MaxY; ++PixelY)
+        {
+            for (int32 PixelX = MinX; PixelX < MaxX; ++PixelX)
+            {
+                SetVideoPixelBGRA(RawFrame, Width, Height, PixelX, PixelY, Color);
+            }
+        }
+    }
+
+    const uint8* GetVideoGlyphRows(TCHAR Character)
+    {
+        static constexpr uint8 Space[7] = { 0, 0, 0, 0, 0, 0, 0 };
+        static constexpr uint8 Unknown[7] = { 14, 17, 1, 2, 4, 0, 4 };
+        static constexpr uint8 A[7] = { 14, 17, 17, 31, 17, 17, 17 };
+        static constexpr uint8 B[7] = { 30, 17, 17, 30, 17, 17, 30 };
+        static constexpr uint8 C[7] = { 14, 17, 16, 16, 16, 17, 14 };
+        static constexpr uint8 D[7] = { 30, 17, 17, 17, 17, 17, 30 };
+        static constexpr uint8 E[7] = { 31, 16, 16, 30, 16, 16, 31 };
+        static constexpr uint8 F[7] = { 31, 16, 16, 30, 16, 16, 16 };
+        static constexpr uint8 G[7] = { 14, 17, 16, 23, 17, 17, 15 };
+        static constexpr uint8 H[7] = { 17, 17, 17, 31, 17, 17, 17 };
+        static constexpr uint8 I[7] = { 14, 4, 4, 4, 4, 4, 14 };
+        static constexpr uint8 J[7] = { 1, 1, 1, 1, 17, 17, 14 };
+        static constexpr uint8 K[7] = { 17, 18, 20, 24, 20, 18, 17 };
+        static constexpr uint8 L[7] = { 16, 16, 16, 16, 16, 16, 31 };
+        static constexpr uint8 M[7] = { 17, 27, 21, 21, 17, 17, 17 };
+        static constexpr uint8 N[7] = { 17, 25, 21, 19, 17, 17, 17 };
+        static constexpr uint8 O[7] = { 14, 17, 17, 17, 17, 17, 14 };
+        static constexpr uint8 P[7] = { 30, 17, 17, 30, 16, 16, 16 };
+        static constexpr uint8 Q[7] = { 14, 17, 17, 17, 21, 18, 13 };
+        static constexpr uint8 R[7] = { 30, 17, 17, 30, 20, 18, 17 };
+        static constexpr uint8 S[7] = { 15, 16, 16, 14, 1, 1, 30 };
+        static constexpr uint8 T[7] = { 31, 4, 4, 4, 4, 4, 4 };
+        static constexpr uint8 U[7] = { 17, 17, 17, 17, 17, 17, 14 };
+        static constexpr uint8 V[7] = { 17, 17, 17, 17, 17, 10, 4 };
+        static constexpr uint8 W[7] = { 17, 17, 17, 21, 21, 21, 10 };
+        static constexpr uint8 X[7] = { 17, 17, 10, 4, 10, 17, 17 };
+        static constexpr uint8 Y[7] = { 17, 17, 10, 4, 4, 4, 4 };
+        static constexpr uint8 Z[7] = { 31, 1, 2, 4, 8, 16, 31 };
+        static constexpr uint8 Zero[7] = { 14, 17, 19, 21, 25, 17, 14 };
+        static constexpr uint8 One[7] = { 4, 12, 4, 4, 4, 4, 14 };
+        static constexpr uint8 Two[7] = { 14, 17, 1, 2, 4, 8, 31 };
+        static constexpr uint8 Three[7] = { 30, 1, 1, 14, 1, 1, 30 };
+        static constexpr uint8 Four[7] = { 2, 6, 10, 18, 31, 2, 2 };
+        static constexpr uint8 Five[7] = { 31, 16, 16, 30, 1, 1, 30 };
+        static constexpr uint8 Six[7] = { 14, 16, 16, 30, 17, 17, 14 };
+        static constexpr uint8 Seven[7] = { 31, 1, 2, 4, 8, 8, 8 };
+        static constexpr uint8 Eight[7] = { 14, 17, 17, 14, 17, 17, 14 };
+        static constexpr uint8 Nine[7] = { 14, 17, 17, 15, 1, 1, 14 };
+        static constexpr uint8 Colon[7] = { 0, 4, 4, 0, 4, 4, 0 };
+        static constexpr uint8 Dot[7] = { 0, 0, 0, 0, 0, 12, 12 };
+        static constexpr uint8 Dash[7] = { 0, 0, 0, 14, 0, 0, 0 };
+        static constexpr uint8 Slash[7] = { 1, 1, 2, 4, 8, 16, 16 };
+        static constexpr uint8 Underscore[7] = { 0, 0, 0, 0, 0, 0, 31 };
+
+        switch (FChar::ToUpper(Character))
+        {
+        case TEXT('A'): return A;
+        case TEXT('B'): return B;
+        case TEXT('C'): return C;
+        case TEXT('D'): return D;
+        case TEXT('E'): return E;
+        case TEXT('F'): return F;
+        case TEXT('G'): return G;
+        case TEXT('H'): return H;
+        case TEXT('I'): return I;
+        case TEXT('J'): return J;
+        case TEXT('K'): return K;
+        case TEXT('L'): return L;
+        case TEXT('M'): return M;
+        case TEXT('N'): return N;
+        case TEXT('O'): return O;
+        case TEXT('P'): return P;
+        case TEXT('Q'): return Q;
+        case TEXT('R'): return R;
+        case TEXT('S'): return S;
+        case TEXT('T'): return T;
+        case TEXT('U'): return U;
+        case TEXT('V'): return V;
+        case TEXT('W'): return W;
+        case TEXT('X'): return X;
+        case TEXT('Y'): return Y;
+        case TEXT('Z'): return Z;
+        case TEXT('0'): return Zero;
+        case TEXT('1'): return One;
+        case TEXT('2'): return Two;
+        case TEXT('3'): return Three;
+        case TEXT('4'): return Four;
+        case TEXT('5'): return Five;
+        case TEXT('6'): return Six;
+        case TEXT('7'): return Seven;
+        case TEXT('8'): return Eight;
+        case TEXT('9'): return Nine;
+        case TEXT(':'): return Colon;
+        case TEXT('.'): return Dot;
+        case TEXT('-'): return Dash;
+        case TEXT('/'): return Slash;
+        case TEXT('_'): return Underscore;
+        case TEXT(' '): return Space;
+        default: return Unknown;
+        }
+    }
+
+    void DrawVideoTextBGRA(TArray<uint8>& RawFrame, int32 Width, int32 Height, int32 X, int32 Y, const FString& Text, const FColor& Color, int32 Scale)
+    {
+        const int32 SafeScale = FMath::Max(1, Scale);
+        int32 CursorX = X;
+
+        for (int32 CharIndex = 0; CharIndex < Text.Len(); ++CharIndex)
+        {
+            const uint8* Rows = GetVideoGlyphRows(Text[CharIndex]);
+            for (int32 Row = 0; Row < 7; ++Row)
+            {
+                for (int32 Col = 0; Col < 5; ++Col)
+                {
+                    if ((Rows[Row] & (1 << (4 - Col))) == 0)
+                    {
+                        continue;
+                    }
+
+                    FillVideoRectBGRA(
+                        RawFrame,
+                        Width,
+                        Height,
+                        CursorX + Col * SafeScale,
+                        Y + Row * SafeScale,
+                        SafeScale,
+                        SafeScale,
+                        Color);
+                }
+            }
+
+            CursorX += 6 * SafeScale;
+        }
+    }
+
+    void DrawDetectionsOnVideoFrameBGRA(
+        TArray<uint8>& RawFrame,
+        int32 Width,
+        int32 Height,
+        const TArray<FDetectionResult>& Detections,
+        int32 DetectionSourceWidth,
+        int32 DetectionSourceHeight)
+    {
+        if (Width <= 0 || Height <= 0 || DetectionSourceWidth <= 0 || DetectionSourceHeight <= 0 || Detections.IsEmpty())
+        {
+            return;
+        }
+
+        const float ScaleX = static_cast<float>(Width) / static_cast<float>(DetectionSourceWidth);
+        const float ScaleY = static_cast<float>(Height) / static_cast<float>(DetectionSourceHeight);
+        const FColor BoxColor(255, 0, 0, 255);
+        const FColor LabelColor(255, 255, 0, 255);
+        const FColor LabelBackgroundColor(0, 0, 0, 220);
+        constexpr int32 BoxThickness = 3;
+        constexpr int32 TextScale = 2;
+
+        for (const FDetectionResult& Detection : Detections)
+        {
+            if (Detection.Corners.Num() < 2)
+            {
+                continue;
+            }
+
+            float MinX = TNumericLimits<float>::Max();
+            float MinY = TNumericLimits<float>::Max();
+            for (int32 CornerIndex = 0; CornerIndex < Detection.Corners.Num(); ++CornerIndex)
+            {
+                FVector2D Start = Detection.Corners[CornerIndex];
+                FVector2D End = Detection.Corners[(CornerIndex + 1) % Detection.Corners.Num()];
+                Start.X *= ScaleX;
+                Start.Y *= ScaleY;
+                End.X *= ScaleX;
+                End.Y *= ScaleY;
+                MinX = FMath::Min(MinX, Start.X);
+                MinY = FMath::Min(MinY, Start.Y);
+                DrawVideoLineBGRA(RawFrame, Width, Height, Start, End, BoxColor, BoxThickness);
+            }
+
+            const FString Label = Detection.Label.IsEmpty()
+                ? FString::Printf(TEXT("CLASS %d: %.2f"), Detection.ClassId, Detection.Confidence)
+                : Detection.Label;
+            const FString TrimmedLabel = Label.Left(32);
+            const int32 LabelWidth = FMath::Max(1, TrimmedLabel.Len()) * 6 * TextScale + 4;
+            constexpr int32 LabelHeight = 7 * TextScale + 4;
+            const int32 LabelX = FMath::Clamp(FMath::FloorToInt(MinX), 0, FMath::Max(0, Width - LabelWidth));
+            const int32 LabelY = FMath::Clamp(FMath::FloorToInt(MinY) - LabelHeight, 0, FMath::Max(0, Height - LabelHeight));
+
+            FillVideoRectBGRA(RawFrame, Width, Height, LabelX, LabelY, LabelWidth, LabelHeight, LabelBackgroundColor);
+            DrawVideoTextBGRA(RawFrame, Width, Height, LabelX + 2, LabelY + 2, TrimmedLabel, LabelColor, TextScale);
+        }
+    }
 
     FString GetOnnxRuntimeGpuCrashGuardPath()
     {
@@ -512,6 +755,7 @@ namespace
 
 #if PLATFORM_LINUX && WITH_ONNXRUNTIME_MIGRAPHX
     void* GMIGraphXRuntimeHandle = nullptr;
+    void* GMIGraphXGpuRuntimeHandle = nullptr;
     void* GMIGraphXOnnxRuntimeHandle = nullptr;
     void* GMIGraphXTfRuntimeHandle = nullptr;
     void* GMIGraphXCRuntimeHandle = nullptr;
@@ -555,6 +799,20 @@ namespace
             }
             if (!TryLoadRuntimeLibrary(
                 {
+                    FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), TEXT("Linux"), TEXT("libmigraphx_gpu.so.2015000")),
+                    FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), TEXT("Linux"), TEXT("libmigraphx_gpu.so")),
+                    FPaths::Combine(FPlatformProcess::BaseDir(), TEXT("libmigraphx_gpu.so.2015000")),
+                    FPaths::Combine(FPlatformProcess::BaseDir(), TEXT("libmigraphx_gpu.so")),
+                    TEXT("libmigraphx_gpu.so.2015000"),
+                    TEXT("libmigraphx_gpu.so")
+                },
+                OutReason,
+                GMIGraphXGpuRuntimeHandle))
+            {
+                return false;
+            }
+            if (!TryLoadRuntimeLibrary(
+                {
                     FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), TEXT("Linux"), TEXT("libmigraphx_onnx.so.2015000")),
                     FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), TEXT("Linux"), TEXT("libmigraphx_onnx.so")),
                     FPaths::Combine(FPlatformProcess::BaseDir(), TEXT("libmigraphx_onnx.so.2015000")),
@@ -581,7 +839,7 @@ namespace
             {
                 return false;
             }
-            return TryLoadRuntimeLibrary(
+            if (!TryLoadRuntimeLibrary(
                 {
                     FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), TEXT("Linux"), TEXT("libmigraphx_c.so.3")),
                     FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries"), TEXT("Linux"), TEXT("libmigraphx_c.so")),
@@ -591,7 +849,11 @@ namespace
                     TEXT("libmigraphx_c.so")
                 },
                 OutReason,
-                GMIGraphXCRuntimeHandle);
+                GMIGraphXCRuntimeHandle))
+            {
+                return false;
+            }
+            return true;
 #else
             OutReason = TEXT("MIGraphX runtime check is not available on this platform/build");
             return false;
@@ -709,7 +971,7 @@ namespace
         return true;
     }
 
-    bool ConfigureOpenCVDNNBackend(cv::dnn::Net& Net, bool bPreferCUDA, bool bUseFP16)
+    bool ConfigureOpenCVDNNBackend(cv::dnn::Net& Net, bool bPreferCUDA, bool bUseFP16, FString* OutExecutionProviderLabel = nullptr)
     {
         if (bPreferCUDA)
         {
@@ -721,6 +983,10 @@ namespace
                 {
                     Net.setPreferableTarget(bUseFP16 ? cv::dnn::DNN_TARGET_CUDA_FP16 : cv::dnn::DNN_TARGET_CUDA);
                     Net.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
+                    if (OutExecutionProviderLabel)
+                    {
+                        *OutExecutionProviderLabel = bUseFP16 ? TEXT("CUDA_FP16") : TEXT("CUDA");
+                    }
                     UE_LOG(LogTemp, Log, TEXT("OpenCV DNN backend configured: CUDA%s (devices=%d)"),
                         bUseFP16 ? TEXT(" FP16") : TEXT(""),
                         CudaDeviceCount);
@@ -739,6 +1005,10 @@ namespace
         try
         {
             ConfigureOpenCVDNNForCPU(Net);
+            if (OutExecutionProviderLabel)
+            {
+                *OutExecutionProviderLabel = TEXT("CPU");
+            }
             UE_LOG(LogTemp, Log, TEXT("OpenCV DNN backend configured: CPU"));
             return true;
         }
@@ -765,6 +1035,32 @@ namespace
         FString Escaped = Value;
         Escaped.ReplaceInline(TEXT("\""), TEXT("\"\""));
         return FString::Printf(TEXT("\"%s\""), *Escaped);
+    }
+
+    FString SanitizeFrameTimingFileFragment(const FString& Value)
+    {
+        FString Sanitized;
+        Sanitized.Reserve(Value.Len());
+        for (const TCHAR Character : Value)
+        {
+            Sanitized.AppendChar(FChar::IsAlnum(Character) ? Character : TEXT('_'));
+        }
+
+        while (Sanitized.Contains(TEXT("__")))
+        {
+            Sanitized.ReplaceInline(TEXT("__"), TEXT("_"));
+        }
+
+        Sanitized.TrimStartAndEndInline();
+        while (Sanitized.StartsWith(TEXT("_")))
+        {
+            Sanitized.RemoveAt(0, 1, EAllowShrinking::No);
+        }
+        while (Sanitized.EndsWith(TEXT("_")))
+        {
+            Sanitized.RemoveAt(Sanitized.Len() - 1, 1, EAllowShrinking::No);
+        }
+        return Sanitized.IsEmpty() ? TEXT("Unknown") : Sanitized;
     }
 }
 
@@ -917,6 +1213,46 @@ FString UMyActorComponent::GetFrameTimingRuntimeLabel() const
     return BackendToString(EffectiveInferenceBackend);
 }
 
+FString UMyActorComponent::GetFrameTimingExecutionProviderLabel() const
+{
+    switch (EffectiveInferenceBackend)
+    {
+    case EDetectionInferenceBackend::ONNXRuntime:
+#if WITH_ONNXRUNTIME
+        return OnnxProviderToString(EffectiveOnnxRuntimeExecutionProvider);
+#else
+        return TEXT("Unavailable");
+#endif
+    case EDetectionInferenceBackend::OpenCVDNN:
+        return OpenCVDNNExecutionProviderLabel.IsEmpty() ? TEXT("CPU") : OpenCVDNNExecutionProviderLabel;
+    case EDetectionInferenceBackend::TensorRT:
+        return TEXT("TensorRT");
+    case EDetectionInferenceBackend::Auto:
+    default:
+        return TEXT("Auto");
+    }
+}
+
+FString UMyActorComponent::GetFrameTimingOperatingSystemLabel() const
+{
+    return OperatingSystemToString(DetectOperatingSystem());
+}
+
+FString UMyActorComponent::GetFrameTimingDetectionModelLabel() const
+{
+    if (!ActiveDetectionModelPath.IsEmpty())
+    {
+        return ActiveDetectionModelPath;
+    }
+
+    if (!WeightsPath.empty())
+    {
+        return FString(WeightsPath.c_str());
+    }
+
+    return ModelPathOverride.IsEmpty() ? TEXT("unknown") : ModelPathOverride;
+}
+
 FString UMyActorComponent::ResolveFrameTimeCsvPathForCurrentRuntime() const
 {
     if (!FrameTimeCsvPath.IsEmpty())
@@ -924,10 +1260,13 @@ FString UMyActorComponent::ResolveFrameTimeCsvPathForCurrentRuntime() const
         return FrameTimeCsvPath;
     }
 
+    const FString BackendFragment = SanitizeFrameTimingFileFragment(GetFrameTimingRuntimeLabel());
+    const FString ProviderFragment = SanitizeFrameTimingFileFragment(GetFrameTimingExecutionProviderLabel());
+    const FString OsFragment = SanitizeFrameTimingFileFragment(GetFrameTimingOperatingSystemLabel());
     return FPaths::Combine(
         FPaths::ProjectSavedDir(),
         TEXT("Profiling"),
-        FString::Printf(TEXT("DetectionFrameTimes_%s.csv"), *GetFrameTimingRuntimeFileSuffix()));
+        FString::Printf(TEXT("%s_%s_%s.csv"), *BackendFragment, *ProviderFragment, *OsFragment));
 }
 
 void UMyActorComponent::InitFrameTimingLog()
@@ -980,7 +1319,7 @@ void UMyActorComponent::InitFrameTimingLog()
 
     if (!IFileManager::Get().FileExists(*ResolvedFrameTimeCsvPath))
     {
-        const FString Header = TEXT("frame_sequence,backend,source_width,source_height,total_ms,inference_ms,detections\n");
+        const FString Header = TEXT("frame_sequence,backend,execution_provider,os,detection_model,source_width,source_height,total_ms,inference_ms,detections,detection_status,detection_correctness\n");
         FFileHelper::SaveStringToFile(Header, *ResolvedFrameTimeCsvPath, FFileHelper::EEncodingOptions::AutoDetect, &IFileManager::Get());
     }
 
@@ -1138,7 +1477,10 @@ void UMyActorComponent::AppendFrameTimingLogLine(
     int32 Height,
     int32 DetectionCount,
     double TotalMs,
-    double InferMs)
+    double InferMs,
+    bool bDetectionSucceeded,
+    bool bHasDetectionEvaluation,
+    bool bExpectedInFov)
 {
     if (!bRecordFrameTimes)
     {
@@ -1148,15 +1490,27 @@ void UMyActorComponent::AppendFrameTimingLogLine(
     InitFrameTimingLog();
 
     const FString BackendLabel = GetFrameTimingRuntimeLabel();
+    const FString ExecutionProviderLabel = GetFrameTimingExecutionProviderLabel();
+    const FString OperatingSystemLabel = GetFrameTimingOperatingSystemLabel();
+    const FString DetectionModelLabel = GetFrameTimingDetectionModelLabel();
+    const TCHAR* DetectionStatus = bDetectionSucceeded ? TEXT("success") : TEXT("fail");
+    const TCHAR* DetectionCorrectness = bHasDetectionEvaluation
+        ? (bDetectionSucceeded == bExpectedInFov ? TEXT("correct") : TEXT("incorrect"))
+        : TEXT("unavailable");
     const FString Line = FString::Printf(
-        TEXT("%d,%s,%d,%d,%.4f,%.4f,%d\n"),
+        TEXT("%d,%s,%s,%s,%s,%d,%d,%.4f,%.4f,%d,%s,%s\n"),
         Sequence,
-        *BackendLabel,
+        *EscapeActorComponentCsvField(BackendLabel),
+        *EscapeActorComponentCsvField(ExecutionProviderLabel),
+        *EscapeActorComponentCsvField(OperatingSystemLabel),
+        *EscapeActorComponentCsvField(DetectionModelLabel),
         Width,
         Height,
         TotalMs,
         InferMs,
-        DetectionCount);
+        DetectionCount,
+        DetectionStatus,
+        DetectionCorrectness);
 
     {
         FScopeLock Lock(&FrameTimeLogMutex);
@@ -1818,8 +2172,11 @@ void UMyActorComponent::RecordOwnerCameraVideoFrame(const TArray<FColor>& Pixels
 
     TSharedPtr<FOwnerCameraVideoFrame> Frame = MakeShared<FOwnerCameraVideoFrame>();
     Frame->Pixels = Pixels;
+    Frame->Detections = LastFrameDetections;
     Frame->Width = Width;
     Frame->Height = Height;
+    Frame->DetectionSourceWidth = LastFrameSourceWidth;
+    Frame->DetectionSourceHeight = LastFrameSourceHeight;
     PendingOwnerCameraVideoFrames.fetch_add(1);
     OwnerCameraVideoQueue.Enqueue(Frame);
 }
@@ -1868,14 +2225,26 @@ void UMyActorComponent::OwnerCameraVideoWorkerLoop()
                 continue;
             }
 
-            WriteOwnerCameraVideoFrameSync(Frame->Pixels, Frame->Width, Frame->Height);
+            WriteOwnerCameraVideoFrameSync(
+                Frame->Pixels,
+                Frame->Width,
+                Frame->Height,
+                Frame->Detections,
+                Frame->DetectionSourceWidth,
+                Frame->DetectionSourceHeight);
         }
     }
 
     FinalizeOwnerCameraVideoWriter(!bOwnerCameraVideoFastShutdown.load());
 }
 
-void UMyActorComponent::WriteOwnerCameraVideoFrameSync(const TArray<FColor>& Pixels, int32 Width, int32 Height)
+void UMyActorComponent::WriteOwnerCameraVideoFrameSync(
+    const TArray<FColor>& Pixels,
+    int32 Width,
+    int32 Height,
+    const TArray<FDetectionResult>& Detections,
+    int32 DetectionSourceWidth,
+    int32 DetectionSourceHeight)
 {
     if (Pixels.Num() != Width * Height)
     {
@@ -1913,6 +2282,14 @@ void UMyActorComponent::WriteOwnerCameraVideoFrameSync(const TArray<FColor>& Pix
             *Dest++ = VideoColor.A;
         }
     }
+
+    DrawDetectionsOnVideoFrameBGRA(
+        RawFrame,
+        Width,
+        Height,
+        Detections,
+        DetectionSourceWidth,
+        DetectionSourceHeight);
 
     int32 BytesWrittenTotal = 0;
     while (BytesWrittenTotal < RawFrame.Num())
@@ -2179,6 +2556,149 @@ bool UMyActorComponent::EvaluatePlayerInOwnerCameraFov(
     OutPixel.Y = (1.f - NdcY) * 0.5f * SafeHeight;
 
     return bWithinDistance && bWithinFov;
+}
+
+const AActor* UMyActorComponent::ResolveDetectionTimingTargetActor() const
+{
+    const APawn* OwnerPawn = Cast<APawn>(GetOwner());
+    const AAIController* AIController = OwnerPawn ? Cast<AAIController>(OwnerPawn->GetController()) : nullptr;
+    const UBlackboardComponent* Blackboard = AIController ? AIController->GetBlackboardComponent() : nullptr;
+    if (Blackboard)
+    {
+        if (const UObject* TargetObject = Blackboard->GetValueAsObject(TEXT("TargetActor")))
+        {
+            if (const AActor* TargetActor = Cast<AActor>(TargetObject))
+            {
+                return TargetActor;
+            }
+        }
+    }
+
+    const UWorld* World = GetWorld();
+    const APlayerController* PlayerController = World ? UGameplayStatics::GetPlayerController(World, 0) : nullptr;
+    return PlayerController ? PlayerController->GetPawn() : nullptr;
+}
+
+bool UMyActorComponent::EvaluateTargetActorInOwnerCameraFov(
+    const AActor* TargetActor,
+    int32 SourceWidth,
+    int32 SourceHeight,
+    FVector2D& OutPixel,
+    float& OutDistance,
+    float& OutHorizontalAngleDegrees,
+    float& OutVerticalAngleDegrees,
+    bool& bOutHasEvaluation) const
+{
+    bOutHasEvaluation = false;
+    OutPixel = FVector2D::ZeroVector;
+    OutDistance = 0.f;
+    OutHorizontalAngleDegrees = 0.f;
+    OutVerticalAngleDegrees = 0.f;
+
+    const AActor* Owner = GetOwner();
+    const UCameraComponent* OwnerCamera = Owner ? Owner->FindComponentByClass<UCameraComponent>() : nullptr;
+    if (!Owner || !OwnerCamera || !IsValid(TargetActor) || TargetActor == Owner)
+    {
+        return false;
+    }
+
+    const APawn* TargetPawn = Cast<APawn>(TargetActor);
+    const FVector TargetLocation = TargetPawn ? TargetPawn->GetPawnViewLocation() : TargetActor->GetActorLocation();
+    const FVector ToTarget = TargetLocation - OwnerCamera->GetComponentLocation();
+    OutDistance = ToTarget.Size();
+    if (OutDistance <= KINDA_SMALL_NUMBER)
+    {
+        bOutHasEvaluation = true;
+        OutPixel = FVector2D(SourceWidth * 0.5f, SourceHeight * 0.5f);
+        return true;
+    }
+
+    const FVector Direction = ToTarget / OutDistance;
+    const FTransform CameraTransform = OwnerCamera->GetComponentTransform();
+    const float ForwardAmount = FVector::DotProduct(Direction, CameraTransform.GetUnitAxis(EAxis::X));
+    const float RightAmount = FVector::DotProduct(Direction, CameraTransform.GetUnitAxis(EAxis::Y));
+    const float UpAmount = FVector::DotProduct(Direction, CameraTransform.GetUnitAxis(EAxis::Z));
+
+    bOutHasEvaluation = true;
+    if (ForwardAmount <= KINDA_SMALL_NUMBER)
+    {
+        OutHorizontalAngleDegrees = RightAmount >= 0.f ? 180.f : -180.f;
+        OutVerticalAngleDegrees = UpAmount >= 0.f ? 90.f : -90.f;
+        return false;
+    }
+
+    const float SafeWidth = FMath::Max(static_cast<float>(SourceWidth), 1.f);
+    const float SafeHeight = FMath::Max(static_cast<float>(SourceHeight), 1.f);
+    const float Aspect = SafeWidth / SafeHeight;
+    const float HalfHorizontalFovRad = FMath::DegreesToRadians(OwnerCamera->FieldOfView) * 0.5f;
+    const float HalfVerticalFovRad = FMath::Atan(FMath::Tan(HalfHorizontalFovRad) / FMath::Max(Aspect, KINDA_SMALL_NUMBER));
+    const float HorizontalAngleRad = FMath::Atan2(RightAmount, ForwardAmount);
+    const float VerticalAngleRad = FMath::Atan2(UpAmount, ForwardAmount);
+
+    OutHorizontalAngleDegrees = FMath::RadiansToDegrees(HorizontalAngleRad);
+    OutVerticalAngleDegrees = FMath::RadiansToDegrees(VerticalAngleRad);
+
+    const bool bWithinDistance = FovOnlyDetectionMaxDistance <= 0.f || OutDistance <= FovOnlyDetectionMaxDistance;
+    const bool bWithinFov =
+        FMath::Abs(HorizontalAngleRad) <= HalfHorizontalFovRad &&
+        FMath::Abs(VerticalAngleRad) <= HalfVerticalFovRad;
+
+    const float NdcX = FMath::Tan(HorizontalAngleRad) / FMath::Max(FMath::Tan(HalfHorizontalFovRad), KINDA_SMALL_NUMBER);
+    const float NdcY = FMath::Tan(VerticalAngleRad) / FMath::Max(FMath::Tan(HalfVerticalFovRad), KINDA_SMALL_NUMBER);
+    OutPixel.X = (NdcX + 1.f) * 0.5f * SafeWidth;
+    OutPixel.Y = (1.f - NdcY) * 0.5f * SafeHeight;
+
+    return bWithinDistance && bWithinFov;
+}
+
+bool UMyActorComponent::EvaluateDetectionTimingTarget(
+    int32 SourceWidth,
+    int32 SourceHeight,
+    FVector2D& OutPixel,
+    bool& bOutHasEvaluation) const
+{
+    float Distance = 0.f;
+    float HorizontalAngleDegrees = 0.f;
+    float VerticalAngleDegrees = 0.f;
+    return EvaluateTargetActorInOwnerCameraFov(
+        ResolveDetectionTimingTargetActor(),
+        SourceWidth,
+        SourceHeight,
+        OutPixel,
+        Distance,
+        HorizontalAngleDegrees,
+        VerticalAngleDegrees,
+        bOutHasEvaluation);
+}
+
+bool UMyActorComponent::HasDetectionContainingPixel(const TArray<FDetectionResult>& Detections, const FVector2D& Pixel) const
+{
+    for (const FDetectionResult& Detection : Detections)
+    {
+        if (Detection.Corners.Num() == 0)
+        {
+            continue;
+        }
+
+        float MinX = Detection.Corners[0].X;
+        float MinY = Detection.Corners[0].Y;
+        float MaxX = Detection.Corners[0].X;
+        float MaxY = Detection.Corners[0].Y;
+        for (const FVector2D& Corner : Detection.Corners)
+        {
+            MinX = FMath::Min(MinX, Corner.X);
+            MinY = FMath::Min(MinY, Corner.Y);
+            MaxX = FMath::Max(MaxX, Corner.X);
+            MaxY = FMath::Max(MaxY, Corner.Y);
+        }
+
+        if (Pixel.X >= MinX && Pixel.X <= MaxX && Pixel.Y >= MinY && Pixel.Y <= MaxY)
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool UMyActorComponent::BuildFovOnlyPersonDetection(
@@ -2827,6 +3347,15 @@ void UMyActorComponent::CaptureAndEnqueue(bool bSubmitDetection)
         return;
     }
 
+    bool bHasDetectionEvaluation = false;
+    bool bExpectedInFov = false;
+    FVector2D DetectionTargetPixel = FVector2D::ZeroVector;
+    bExpectedInFov = EvaluateDetectionTimingTarget(
+        SourceWidth,
+        SourceHeight,
+        DetectionTargetPixel,
+        bHasDetectionEvaluation);
+
     if (bUseSharedVisionModel)
     {
         if (bIsEndingPlay.load())
@@ -2838,7 +3367,14 @@ void UMyActorComponent::CaptureAndEnqueue(bool bSubmitDetection)
         {
             if (UCrowVisionSubsystem* VisionSubsystem = World->GetSubsystem<UCrowVisionSubsystem>())
             {
-                VisionSubsystem->SubmitFrame(this, MoveTemp(Pixels), SourceWidth, SourceHeight);
+                VisionSubsystem->SubmitFrame(
+                    this,
+                    MoveTemp(Pixels),
+                    SourceWidth,
+                    SourceHeight,
+                    DetectionTargetPixel,
+                    bHasDetectionEvaluation,
+                    bExpectedInFov);
                 if (ShouldLogFrameTimings())
                 {
                     const double TotalMs = (FPlatformTime::Seconds() - CaptureAndEnqueueStartSeconds) * 1000.0;
@@ -2857,6 +3393,9 @@ void UMyActorComponent::CaptureAndEnqueue(bool bSubmitDetection)
     Frame->Pixels = MoveTemp(Pixels);
     Frame->Width = SourceWidth;
     Frame->Height = SourceHeight;
+    Frame->DetectionTargetPixel = DetectionTargetPixel;
+    Frame->bHasDetectionEvaluation = bHasDetectionEvaluation;
+    Frame->bExpectedInFov = bExpectedInFov;
 
     {
         FScopeLock Lock(&FrameMutex);
@@ -2941,6 +3480,9 @@ void UMyActorComponent::StartWorker()
 
                 int32 LoggedSequence = 0;
                 int32 LoggedDetectionCount = 0;
+                const bool bDetectionSucceeded = Frame->bHasDetectionEvaluation &&
+                    Frame->bExpectedInFov &&
+                    HasDetectionContainingPixel(Det, Frame->DetectionTargetPixel);
                 {
                     FScopeLock Lock(&ResultsMutex);
                     ResultsShared = MoveTemp(Det);
@@ -2952,7 +3494,16 @@ void UMyActorComponent::StartWorker()
                     LoggedDetectionCount = ResultsShared.Num();
                 }
                 const double FrameTotalMs = (FPlatformTime::Seconds() - FrameT0) * 1000.0;
-                AppendFrameTimingLogLine(LoggedSequence, Frame->Width, Frame->Height, LoggedDetectionCount, FrameTotalMs, FrameInferMs);
+                AppendFrameTimingLogLine(
+                    LoggedSequence,
+                    Frame->Width,
+                    Frame->Height,
+                    LoggedDetectionCount,
+                    FrameTotalMs,
+                    FrameInferMs,
+                    bDetectionSucceeded,
+                    Frame->bHasDetectionEvaluation,
+                    Frame->bExpectedInFov);
             }
         }
         catch (const cv::Exception& e)
@@ -3125,6 +3676,32 @@ TArray<FDetectionResult> UMyActorComponent::ProcessSharedVisionFrame(
     }
 
     return Detections;
+}
+
+void UMyActorComponent::RecordDetectionModelFrameTiming(
+    int32 Sequence,
+    int32 Width,
+    int32 Height,
+    const TArray<FDetectionResult>& Detections,
+    double TotalMs,
+    double InferMs,
+    const FVector2D& DetectionTargetPixel,
+    bool bHasDetectionEvaluation,
+    bool bExpectedInFov)
+{
+    const bool bDetectionSucceeded = bHasDetectionEvaluation &&
+        bExpectedInFov &&
+        HasDetectionContainingPixel(Detections, DetectionTargetPixel);
+    AppendFrameTimingLogLine(
+        Sequence,
+        Width,
+        Height,
+        Detections.Num(),
+        TotalMs,
+        InferMs,
+        bDetectionSucceeded,
+        bHasDetectionEvaluation,
+        bExpectedInFov);
 }
 
 int32 UMyActorComponent::BeginSharedVisionRequest()
@@ -3528,6 +4105,7 @@ FString UMyActorComponent::ResolveModelPathForBackend(const FString& ModelPathUE
                 UE_LOG(LogTemp, Error, TEXT("Resolved model file not found: %s"), *ModelPathUE);
                 return false;
             }
+            ActiveDetectionModelPath = ModelPathUE;
 
             if (EffectiveInferenceBackend == EDetectionInferenceBackend::TensorRT)
             {
@@ -3696,10 +4274,11 @@ FString UMyActorComponent::ResolveModelPathForBackend(const FString& ModelPathUE
                 return false;
             }
 
-            if (!ConfigureOpenCVDNNBackend(OpenCVDnnNet, bOpenCVDNNPreferCUDA, bOpenCVDNNUseFP16))
+            if (!ConfigureOpenCVDNNBackend(OpenCVDnnNet, bOpenCVDNNPreferCUDA, bOpenCVDNNUseFP16, &OpenCVDNNExecutionProviderLabel))
             {
                 return false;
             }
+            ActiveDetectionModelPath = OpenCvModelPath;
 
             const int32 ClampedInputSize = FMath::Clamp(OnnxInputSize, 160, 1280);
             ModelInputWidth = ClampedInputSize;
@@ -4075,6 +4654,7 @@ bool UMyActorComponent::LoadOnnxRuntime(const FString& ModelPathUE, bool bForceC
         TrtOutputDetections = 0;
         bIsOnnxModel = true;
         bIsModelLoaded = true;
+        ActiveDetectionModelPath = ModelPathUE;
 
         UE_LOG(LogTemp, Log, TEXT("ONNX Runtime model loaded: %s (input=%dx%d, provider=%s%s)"),
             *ModelPathUE,

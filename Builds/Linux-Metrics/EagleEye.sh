@@ -1,5 +1,14 @@
-#!/bin/sh
-UE_TRUE_SCRIPT_NAME=$(echo \"$0\" | xargs readlink -f)
-UE_PROJECT_ROOT=$(dirname "$UE_TRUE_SCRIPT_NAME")
-chmod +x "$UE_PROJECT_ROOT/EagleEye/Binaries/Linux/EagleEye"
-"$UE_PROJECT_ROOT/EagleEye/Binaries/Linux/EagleEye" EagleEye "$@" 
+#!/usr/bin/env bash
+set -euo pipefail
+
+UE_TRUE_SCRIPT_NAME="$(readlink -f "$0")"
+UE_PROJECT_ROOT="$(dirname "$UE_TRUE_SCRIPT_NAME")"
+PACKAGE_ROOT="$UE_PROJECT_ROOT/EagleEye"
+
+export ORT_MIGRAPHX_CACHE_PATH="${ORT_MIGRAPHX_CACHE_PATH:-$PACKAGE_ROOT/Saved/MIGraphXCache/data}"
+export ORT_MIGRAPHX_MODEL_CACHE_PATH="${ORT_MIGRAPHX_MODEL_CACHE_PATH:-$PACKAGE_ROOT/Saved/MIGraphXCache/models}"
+export ORT_MIGRAPHX_EXHAUSTIVE_TUNE="${ORT_MIGRAPHX_EXHAUSTIVE_TUNE:-0}"
+
+mkdir -p "$ORT_MIGRAPHX_CACHE_PATH" "$ORT_MIGRAPHX_MODEL_CACHE_PATH"
+chmod +x "$PACKAGE_ROOT/Binaries/Linux/EagleEye"
+exec "$PACKAGE_ROOT/Binaries/Linux/EagleEye" EagleEye "$@"

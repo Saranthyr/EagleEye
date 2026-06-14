@@ -133,6 +133,16 @@ public:
         int32 Width,
         int32 Height,
         double* OutInferenceMs = nullptr);
+    void RecordDetectionModelFrameTiming(
+        int32 Sequence,
+        int32 Width,
+        int32 Height,
+        const TArray<FDetectionResult>& Detections,
+        double TotalMs,
+        double InferMs,
+        const FVector2D& DetectionTargetPixel,
+        bool bHasDetectionEvaluation,
+        bool bExpectedInFov);
 
     void RequestInferenceShutdown();
     int32 BeginSharedVisionRequest();
@@ -181,7 +191,23 @@ private:
         float& OutHorizontalAngleDegrees,
         float& OutVerticalAngleDegrees,
         bool& bOutHasEvaluation) const;
+    const AActor* ResolveDetectionTimingTargetActor() const;
+    bool EvaluateTargetActorInOwnerCameraFov(
+        const AActor* TargetActor,
+        int32 SourceWidth,
+        int32 SourceHeight,
+        FVector2D& OutPixel,
+        float& OutDistance,
+        float& OutHorizontalAngleDegrees,
+        float& OutVerticalAngleDegrees,
+        bool& bOutHasEvaluation) const;
+    bool EvaluateDetectionTimingTarget(
+        int32 SourceWidth,
+        int32 SourceHeight,
+        FVector2D& OutPixel,
+        bool& bOutHasEvaluation) const;
     bool HasPersonDetection(const TArray<FDetectionResult>& Detections) const;
+    bool HasDetectionContainingPixel(const TArray<FDetectionResult>& Detections, const FVector2D& Pixel) const;
     void InitFovDetectionMetricsTable();
     void AppendFovDetectionMetricsTableRow(
         const TCHAR* SourceLabel,
@@ -206,7 +232,13 @@ private:
     bool EnsureOwnerCameraVideoWriter(int32 Width, int32 Height);
     void StartOwnerCameraVideoWorker();
     void OwnerCameraVideoWorkerLoop();
-    void WriteOwnerCameraVideoFrameSync(const TArray<FColor>& Pixels, int32 Width, int32 Height);
+    void WriteOwnerCameraVideoFrameSync(
+        const TArray<FColor>& Pixels,
+        int32 Width,
+        int32 Height,
+        const TArray<FDetectionResult>& Detections,
+        int32 DetectionSourceWidth,
+        int32 DetectionSourceHeight);
     void CloseOwnerCameraVideoWriter(bool bWaitForEncoder = true);
     void FinalizeOwnerCameraVideoWriter(bool bWaitForEncoder = true);
     FString ResolveOwnerCameraVideoPath() const;
@@ -219,6 +251,9 @@ private:
         TArray<FColor> Pixels;
         int32 Width = 0;
         int32 Height = 0;
+        FVector2D DetectionTargetPixel = FVector2D::ZeroVector;
+        bool bHasDetectionEvaluation = false;
+        bool bExpectedInFov = false;
     };
 
     float CaptureFPS = 60.0f;
@@ -305,8 +340,11 @@ private:
     struct FOwnerCameraVideoFrame
     {
         TArray<FColor> Pixels;
+        TArray<FDetectionResult> Detections;
         int32 Width = 0;
         int32 Height = 0;
+        int32 DetectionSourceWidth = 0;
+        int32 DetectionSourceHeight = 0;
     };
 
     TQueue<TSharedPtr<FOwnerCameraVideoFrame>, EQueueMode::Mpsc> OwnerCameraVideoQueue;
@@ -410,10 +448,22 @@ private:
     bool RunOnnxRuntimeInference_BG(const cv::Mat& ModelInputBGR);
     bool RunOpenCVDNNInference_BG(const cv::Mat& ModelInputBGR);
     void InitFrameTimingLog();
-    void AppendFrameTimingLogLine(int32 Sequence, int32 Width, int32 Height, int32 DetectionCount, double TotalMs, double InferMs);
+    void AppendFrameTimingLogLine(
+        int32 Sequence,
+        int32 Width,
+        int32 Height,
+        int32 DetectionCount,
+        double TotalMs,
+        double InferMs,
+        bool bDetectionSucceeded,
+        bool bHasDetectionEvaluation,
+        bool bExpectedInFov);
     void FlushFrameTimingLog(bool bForce);
     FString GetFrameTimingRuntimeFileSuffix() const;
     FString GetFrameTimingRuntimeLabel() const;
+    FString GetFrameTimingExecutionProviderLabel() const;
+    FString GetFrameTimingOperatingSystemLabel() const;
+    FString GetFrameTimingDetectionModelLabel() const;
     FString ResolveFrameTimeCsvPathForCurrentRuntime() const;
     void ResetInferenceOutputState();
 
@@ -447,6 +497,8 @@ private:
     bool bOnnxRuntimeUsingGpuProvider = false;
 #endif
     cv::dnn::Net OpenCVDnnNet;
+    FString ActiveDetectionModelPath;
+    FString OpenCVDNNExecutionProviderLabel = TEXT("CPU");
     FString ResolvedFrameTimeCsvPath;
     TArray<FString> FrameTimeLogBuffer;
     bool bFrameTimingLogInitialized = false;
