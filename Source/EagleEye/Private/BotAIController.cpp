@@ -343,7 +343,31 @@ bool ABotAIController::IsValidHealingTarget(const ABotCharacter* HealerBot, cons
         return false;
     }
 
+    if (bRequireHealingLineOfSight && !HasHealingLineOfSight(*HealerBot, *TargetBot))
+    {
+        return false;
+    }
+
     return true;
+}
+
+bool ABotAIController::HasHealingLineOfSight(const ABotCharacter& HealerBot, const ABotCharacter& TargetBot) const
+{
+    const UWorld* World = HealerBot.GetWorld();
+    if (!World)
+    {
+        return false;
+    }
+
+    const FVector HeightOffset(0.f, 0.f, FMath::Max(0.f, HealingLineOfSightHeightOffset));
+    const FVector TraceStart = HealerBot.GetActorLocation() + HeightOffset;
+    const FVector TraceEnd = TargetBot.GetActorLocation() + HeightOffset;
+
+    FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(BotHealingLineOfSight), false, &HealerBot);
+    QueryParams.AddIgnoredActor(&TargetBot);
+
+    FHitResult Hit;
+    return !World->LineTraceSingleByChannel(Hit, TraceStart, TraceEnd, ECC_Visibility, QueryParams);
 }
 
 bool ABotAIController::ShouldUseMeleeHealing(const ABotCharacter& HealerBot, const ABotCharacter& TargetBot) const

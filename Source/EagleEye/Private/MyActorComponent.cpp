@@ -46,6 +46,247 @@ namespace
     uint64 GOwnerCameraReadbackLastEnqueueFrame = MAX_uint64;
     uint64 GOwnerCameraReadbackLastLockFrame = MAX_uint64;
 
+    void SetVideoPixelBGRA(TArray<uint8>& RawFrame, int32 Width, int32 Height, int32 X, int32 Y, const FColor& Color)
+    {
+        if (X < 0 || X >= Width || Y < 0 || Y >= Height)
+        {
+            return;
+        }
+
+        const int32 Offset = ((Y * Width) + X) * 4;
+        RawFrame[Offset + 0] = Color.B;
+        RawFrame[Offset + 1] = Color.G;
+        RawFrame[Offset + 2] = Color.R;
+        RawFrame[Offset + 3] = Color.A;
+    }
+
+    void DrawVideoPointBGRA(TArray<uint8>& RawFrame, int32 Width, int32 Height, int32 X, int32 Y, const FColor& Color, int32 Radius)
+    {
+        for (int32 OffsetY = -Radius; OffsetY <= Radius; ++OffsetY)
+        {
+            for (int32 OffsetX = -Radius; OffsetX <= Radius; ++OffsetX)
+            {
+                SetVideoPixelBGRA(RawFrame, Width, Height, X + OffsetX, Y + OffsetY, Color);
+            }
+        }
+    }
+
+    void DrawVideoLineBGRA(TArray<uint8>& RawFrame, int32 Width, int32 Height, FVector2D Start, FVector2D End, const FColor& Color, int32 Thickness)
+    {
+        const float DeltaX = End.X - Start.X;
+        const float DeltaY = End.Y - Start.Y;
+        const int32 Steps = FMath::Max(1, FMath::RoundToInt(FMath::Max(FMath::Abs(DeltaX), FMath::Abs(DeltaY))));
+        const int32 Radius = FMath::Max(0, Thickness / 2);
+
+        for (int32 Step = 0; Step <= Steps; ++Step)
+        {
+            const float Alpha = static_cast<float>(Step) / static_cast<float>(Steps);
+            const int32 X = FMath::RoundToInt(FMath::Lerp(Start.X, End.X, Alpha));
+            const int32 Y = FMath::RoundToInt(FMath::Lerp(Start.Y, End.Y, Alpha));
+            DrawVideoPointBGRA(RawFrame, Width, Height, X, Y, Color, Radius);
+        }
+    }
+
+    void FillVideoRectBGRA(TArray<uint8>& RawFrame, int32 Width, int32 Height, int32 X, int32 Y, int32 RectWidth, int32 RectHeight, const FColor& Color)
+    {
+        const int32 MinX = FMath::Clamp(X, 0, Width);
+        const int32 MinY = FMath::Clamp(Y, 0, Height);
+        const int32 MaxX = FMath::Clamp(X + RectWidth, 0, Width);
+        const int32 MaxY = FMath::Clamp(Y + RectHeight, 0, Height);
+
+        for (int32 PixelY = MinY; PixelY < MaxY; ++PixelY)
+        {
+            for (int32 PixelX = MinX; PixelX < MaxX; ++PixelX)
+            {
+                SetVideoPixelBGRA(RawFrame, Width, Height, PixelX, PixelY, Color);
+            }
+        }
+    }
+
+    const uint8* GetVideoGlyphRows(TCHAR Character)
+    {
+        static constexpr uint8 Space[7] = { 0, 0, 0, 0, 0, 0, 0 };
+        static constexpr uint8 Unknown[7] = { 14, 17, 1, 2, 4, 0, 4 };
+        static constexpr uint8 A[7] = { 14, 17, 17, 31, 17, 17, 17 };
+        static constexpr uint8 B[7] = { 30, 17, 17, 30, 17, 17, 30 };
+        static constexpr uint8 C[7] = { 14, 17, 16, 16, 16, 17, 14 };
+        static constexpr uint8 D[7] = { 30, 17, 17, 17, 17, 17, 30 };
+        static constexpr uint8 E[7] = { 31, 16, 16, 30, 16, 16, 31 };
+        static constexpr uint8 F[7] = { 31, 16, 16, 30, 16, 16, 16 };
+        static constexpr uint8 G[7] = { 14, 17, 16, 23, 17, 17, 15 };
+        static constexpr uint8 H[7] = { 17, 17, 17, 31, 17, 17, 17 };
+        static constexpr uint8 I[7] = { 14, 4, 4, 4, 4, 4, 14 };
+        static constexpr uint8 J[7] = { 1, 1, 1, 1, 17, 17, 14 };
+        static constexpr uint8 K[7] = { 17, 18, 20, 24, 20, 18, 17 };
+        static constexpr uint8 L[7] = { 16, 16, 16, 16, 16, 16, 31 };
+        static constexpr uint8 M[7] = { 17, 27, 21, 21, 17, 17, 17 };
+        static constexpr uint8 N[7] = { 17, 25, 21, 19, 17, 17, 17 };
+        static constexpr uint8 O[7] = { 14, 17, 17, 17, 17, 17, 14 };
+        static constexpr uint8 P[7] = { 30, 17, 17, 30, 16, 16, 16 };
+        static constexpr uint8 Q[7] = { 14, 17, 17, 17, 21, 18, 13 };
+        static constexpr uint8 R[7] = { 30, 17, 17, 30, 20, 18, 17 };
+        static constexpr uint8 S[7] = { 15, 16, 16, 14, 1, 1, 30 };
+        static constexpr uint8 T[7] = { 31, 4, 4, 4, 4, 4, 4 };
+        static constexpr uint8 U[7] = { 17, 17, 17, 17, 17, 17, 14 };
+        static constexpr uint8 V[7] = { 17, 17, 17, 17, 17, 10, 4 };
+        static constexpr uint8 W[7] = { 17, 17, 17, 21, 21, 21, 10 };
+        static constexpr uint8 X[7] = { 17, 17, 10, 4, 10, 17, 17 };
+        static constexpr uint8 Y[7] = { 17, 17, 10, 4, 4, 4, 4 };
+        static constexpr uint8 Z[7] = { 31, 1, 2, 4, 8, 16, 31 };
+        static constexpr uint8 Zero[7] = { 14, 17, 19, 21, 25, 17, 14 };
+        static constexpr uint8 One[7] = { 4, 12, 4, 4, 4, 4, 14 };
+        static constexpr uint8 Two[7] = { 14, 17, 1, 2, 4, 8, 31 };
+        static constexpr uint8 Three[7] = { 30, 1, 1, 14, 1, 1, 30 };
+        static constexpr uint8 Four[7] = { 2, 6, 10, 18, 31, 2, 2 };
+        static constexpr uint8 Five[7] = { 31, 16, 16, 30, 1, 1, 30 };
+        static constexpr uint8 Six[7] = { 14, 16, 16, 30, 17, 17, 14 };
+        static constexpr uint8 Seven[7] = { 31, 1, 2, 4, 8, 8, 8 };
+        static constexpr uint8 Eight[7] = { 14, 17, 17, 14, 17, 17, 14 };
+        static constexpr uint8 Nine[7] = { 14, 17, 17, 15, 1, 1, 14 };
+        static constexpr uint8 Colon[7] = { 0, 4, 4, 0, 4, 4, 0 };
+        static constexpr uint8 Dot[7] = { 0, 0, 0, 0, 0, 12, 12 };
+        static constexpr uint8 Dash[7] = { 0, 0, 0, 14, 0, 0, 0 };
+        static constexpr uint8 Slash[7] = { 1, 1, 2, 4, 8, 16, 16 };
+        static constexpr uint8 Underscore[7] = { 0, 0, 0, 0, 0, 0, 31 };
+
+        switch (FChar::ToUpper(Character))
+        {
+        case TEXT('A'): return A;
+        case TEXT('B'): return B;
+        case TEXT('C'): return C;
+        case TEXT('D'): return D;
+        case TEXT('E'): return E;
+        case TEXT('F'): return F;
+        case TEXT('G'): return G;
+        case TEXT('H'): return H;
+        case TEXT('I'): return I;
+        case TEXT('J'): return J;
+        case TEXT('K'): return K;
+        case TEXT('L'): return L;
+        case TEXT('M'): return M;
+        case TEXT('N'): return N;
+        case TEXT('O'): return O;
+        case TEXT('P'): return P;
+        case TEXT('Q'): return Q;
+        case TEXT('R'): return R;
+        case TEXT('S'): return S;
+        case TEXT('T'): return T;
+        case TEXT('U'): return U;
+        case TEXT('V'): return V;
+        case TEXT('W'): return W;
+        case TEXT('X'): return X;
+        case TEXT('Y'): return Y;
+        case TEXT('Z'): return Z;
+        case TEXT('0'): return Zero;
+        case TEXT('1'): return One;
+        case TEXT('2'): return Two;
+        case TEXT('3'): return Three;
+        case TEXT('4'): return Four;
+        case TEXT('5'): return Five;
+        case TEXT('6'): return Six;
+        case TEXT('7'): return Seven;
+        case TEXT('8'): return Eight;
+        case TEXT('9'): return Nine;
+        case TEXT(':'): return Colon;
+        case TEXT('.'): return Dot;
+        case TEXT('-'): return Dash;
+        case TEXT('/'): return Slash;
+        case TEXT('_'): return Underscore;
+        case TEXT(' '): return Space;
+        default: return Unknown;
+        }
+    }
+
+    void DrawVideoTextBGRA(TArray<uint8>& RawFrame, int32 Width, int32 Height, int32 X, int32 Y, const FString& Text, const FColor& Color, int32 Scale)
+    {
+        const int32 SafeScale = FMath::Max(1, Scale);
+        int32 CursorX = X;
+
+        for (int32 CharIndex = 0; CharIndex < Text.Len(); ++CharIndex)
+        {
+            const uint8* Rows = GetVideoGlyphRows(Text[CharIndex]);
+            for (int32 Row = 0; Row < 7; ++Row)
+            {
+                for (int32 Col = 0; Col < 5; ++Col)
+                {
+                    if ((Rows[Row] & (1 << (4 - Col))) == 0)
+                    {
+                        continue;
+                    }
+
+                    FillVideoRectBGRA(
+                        RawFrame,
+                        Width,
+                        Height,
+                        CursorX + Col * SafeScale,
+                        Y + Row * SafeScale,
+                        SafeScale,
+                        SafeScale,
+                        Color);
+                }
+            }
+
+            CursorX += 6 * SafeScale;
+        }
+    }
+
+    void DrawDetectionsOnVideoFrameBGRA(
+        TArray<uint8>& RawFrame,
+        int32 Width,
+        int32 Height,
+        const TArray<FDetectionResult>& Detections,
+        int32 DetectionSourceWidth,
+        int32 DetectionSourceHeight)
+    {
+        if (Width <= 0 || Height <= 0 || DetectionSourceWidth <= 0 || DetectionSourceHeight <= 0 || Detections.IsEmpty())
+        {
+            return;
+        }
+
+        const float ScaleX = static_cast<float>(Width) / static_cast<float>(DetectionSourceWidth);
+        const float ScaleY = static_cast<float>(Height) / static_cast<float>(DetectionSourceHeight);
+        const FColor BoxColor(255, 0, 0, 255);
+        const FColor LabelColor(255, 255, 0, 255);
+        const FColor LabelBackgroundColor(0, 0, 0, 220);
+        constexpr int32 BoxThickness = 3;
+        constexpr int32 TextScale = 2;
+
+        for (const FDetectionResult& Detection : Detections)
+        {
+            if (Detection.Corners.Num() < 2)
+            {
+                continue;
+            }
+
+            float MinX = TNumericLimits<float>::Max();
+            float MinY = TNumericLimits<float>::Max();
+            for (int32 CornerIndex = 0; CornerIndex < Detection.Corners.Num(); ++CornerIndex)
+            {
+                FVector2D Start = Detection.Corners[CornerIndex];
+                FVector2D End = Detection.Corners[(CornerIndex + 1) % Detection.Corners.Num()];
+                Start.X *= ScaleX;
+                Start.Y *= ScaleY;
+                End.X *= ScaleX;
+                End.Y *= ScaleY;
+                MinX = FMath::Min(MinX, Start.X);
+                MinY = FMath::Min(MinY, Start.Y);
+                DrawVideoLineBGRA(RawFrame, Width, Height, Start, End, BoxColor, BoxThickness);
+            }
+
+            const FString Label = Detection.Label.IsEmpty()
+                ? FString::Printf(TEXT("CLASS %d: %.2f"), Detection.ClassId, Detection.Confidence)
+                : Detection.Label;
+            const FString TrimmedLabel = Label.Left(32);
+            const int32 LabelWidth = FMath::Max(1, TrimmedLabel.Len()) * 6 * TextScale + 4;
+            constexpr int32 LabelHeight = 7 * TextScale + 4;
+            const int32 LabelX = FMath::Clamp(FMath::FloorToInt(MinX), 0, FMath::Max(0, Width - LabelWidth));
+            const int32 LabelY = FMath::Clamp(FMath::FloorToInt(MinY) - LabelHeight, 0, FMath::Max(0, Height - LabelHeight));
+
+            FillVideoRectBGRA(RawFrame, Width, Height, LabelX, LabelY, LabelWidth, LabelHeight, LabelBackgroundColor);
+            DrawVideoTextBGRA(RawFrame, Width, Height, LabelX + 2, LabelY + 2, TrimmedLabel, LabelColor, TextScale);
+        }
+    }
+
     FString GetOnnxRuntimeGpuCrashGuardPath()
     {
         return FPaths::Combine(FPaths::ProjectSavedDir(), OnnxRuntimeGpuCrashGuardFileName);
@@ -1931,8 +2172,11 @@ void UMyActorComponent::RecordOwnerCameraVideoFrame(const TArray<FColor>& Pixels
 
     TSharedPtr<FOwnerCameraVideoFrame> Frame = MakeShared<FOwnerCameraVideoFrame>();
     Frame->Pixels = Pixels;
+    Frame->Detections = LastFrameDetections;
     Frame->Width = Width;
     Frame->Height = Height;
+    Frame->DetectionSourceWidth = LastFrameSourceWidth;
+    Frame->DetectionSourceHeight = LastFrameSourceHeight;
     PendingOwnerCameraVideoFrames.fetch_add(1);
     OwnerCameraVideoQueue.Enqueue(Frame);
 }
@@ -1981,14 +2225,26 @@ void UMyActorComponent::OwnerCameraVideoWorkerLoop()
                 continue;
             }
 
-            WriteOwnerCameraVideoFrameSync(Frame->Pixels, Frame->Width, Frame->Height);
+            WriteOwnerCameraVideoFrameSync(
+                Frame->Pixels,
+                Frame->Width,
+                Frame->Height,
+                Frame->Detections,
+                Frame->DetectionSourceWidth,
+                Frame->DetectionSourceHeight);
         }
     }
 
     FinalizeOwnerCameraVideoWriter(!bOwnerCameraVideoFastShutdown.load());
 }
 
-void UMyActorComponent::WriteOwnerCameraVideoFrameSync(const TArray<FColor>& Pixels, int32 Width, int32 Height)
+void UMyActorComponent::WriteOwnerCameraVideoFrameSync(
+    const TArray<FColor>& Pixels,
+    int32 Width,
+    int32 Height,
+    const TArray<FDetectionResult>& Detections,
+    int32 DetectionSourceWidth,
+    int32 DetectionSourceHeight)
 {
     if (Pixels.Num() != Width * Height)
     {
@@ -2026,6 +2282,14 @@ void UMyActorComponent::WriteOwnerCameraVideoFrameSync(const TArray<FColor>& Pix
             *Dest++ = VideoColor.A;
         }
     }
+
+    DrawDetectionsOnVideoFrameBGRA(
+        RawFrame,
+        Width,
+        Height,
+        Detections,
+        DetectionSourceWidth,
+        DetectionSourceHeight);
 
     int32 BytesWrittenTotal = 0;
     while (BytesWrittenTotal < RawFrame.Num())

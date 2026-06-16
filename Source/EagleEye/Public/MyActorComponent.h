@@ -232,7 +232,13 @@ private:
     bool EnsureOwnerCameraVideoWriter(int32 Width, int32 Height);
     void StartOwnerCameraVideoWorker();
     void OwnerCameraVideoWorkerLoop();
-    void WriteOwnerCameraVideoFrameSync(const TArray<FColor>& Pixels, int32 Width, int32 Height);
+    void WriteOwnerCameraVideoFrameSync(
+        const TArray<FColor>& Pixels,
+        int32 Width,
+        int32 Height,
+        const TArray<FDetectionResult>& Detections,
+        int32 DetectionSourceWidth,
+        int32 DetectionSourceHeight);
     void CloseOwnerCameraVideoWriter(bool bWaitForEncoder = true);
     void FinalizeOwnerCameraVideoWriter(bool bWaitForEncoder = true);
     FString ResolveOwnerCameraVideoPath() const;
@@ -334,8 +340,11 @@ private:
     struct FOwnerCameraVideoFrame
     {
         TArray<FColor> Pixels;
+        TArray<FDetectionResult> Detections;
         int32 Width = 0;
         int32 Height = 0;
+        int32 DetectionSourceWidth = 0;
+        int32 DetectionSourceHeight = 0;
     };
 
     TQueue<TSharedPtr<FOwnerCameraVideoFrame>, EQueueMode::Mpsc> OwnerCameraVideoQueue;

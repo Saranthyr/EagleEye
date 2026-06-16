@@ -141,6 +141,9 @@ public class EagleEye : ModuleRules
                 AddNativeSharedLibrary(TensorRTInferLib);
                 AddNativeSharedLibrary(TensorRTPluginLib);
                 AddNativeSharedLibrary(CudaRuntimeLib);
+                StageAndCopyMatchingRuntimeFiles(Path.GetDirectoryName(TensorRTInferLib), "libnvinfer.so*");
+                StageAndCopyMatchingRuntimeFiles(Path.GetDirectoryName(TensorRTPluginLib), "libnvinfer_plugin.so*");
+                StageAndCopyMatchingRuntimeFiles(Path.GetDirectoryName(CudaRuntimeLib), "libcudart.so*");
             }
             else
             {

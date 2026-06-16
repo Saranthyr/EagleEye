@@ -269,6 +269,29 @@
 				}
 			},
 			{
+				"label": "Package EagleEye Win10 DirectML Metrics",
+				"group": "build",
+				"command": "powershell.exe",
+				"args": [
+					"-NoProfile",
+					"-ExecutionPolicy",
+					"Bypass",
+					"-File",
+					"E:\\EagleEye\\Scripts\\package-win10-directml.ps1",
+					"-UERoot",
+					"E:\\UE_5.6",
+					"-Config",
+					"Development",
+					"-ArchiveRoot",
+					"E:\\EagleEye\\Builds\\Win10-DirectML-Metrics"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "E:\\EagleEye"
+				}
+			},
+			{
 				"label": "EagleEye Win64 Shipping Rebuild",
 				"group": "build",
 				"command": "Engine\\Build\\BatchFiles\\Build.bat",
