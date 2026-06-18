@@ -35,6 +35,7 @@ public:
         TArray<FColor>&& Pixels,
         int32 Width,
         int32 Height,
+        float CapturedWorldTimeSeconds,
         const FVector2D& DetectionTargetPixel,
         bool bHasDetectionEvaluation,
         bool bExpectedInFov);
@@ -57,6 +58,7 @@ private:
         int32 Width = 0;
         int32 Height = 0;
         double SubmitTimeSeconds = 0.0;
+        float CapturedWorldTimeSeconds = -FLT_MAX;
         FString RequesterName;
         bool bRequesterLogFrameTimings = false;
         FVector2D DetectionTargetPixel = FVector2D::ZeroVector;
@@ -72,7 +74,6 @@ private:
     void RequestHostInferenceShutdown();
     void HandleWorldBeginTearDown(UWorld* World);
     void HandleWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources);
-    bool HasActiveRequestForRequesterLocked(const UMyActorComponent* Requester) const;
     int32 CountActiveModelUsersLocked() const;
     float GetRequesterDistanceToPlayerSq(const UMyActorComponent* Requester) const;
     int32 FindFarthestPendingFrameIndexLocked() const;

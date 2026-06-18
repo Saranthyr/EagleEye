@@ -104,4 +104,7 @@ public:
 
     UPROPERTY(EditAnywhere, Config, Category="Logging")
     bool bEnableDetectionMetricLogs = false;
+
+    UPROPERTY(EditAnywhere, Config, Category="Debug")
+    bool bDisableDetectionAndPathDebugDrawing = false;
 };

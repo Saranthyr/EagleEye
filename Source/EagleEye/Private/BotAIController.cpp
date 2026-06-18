@@ -336,38 +336,13 @@ bool ABotAIController::IsValidHealingTarget(const ABotCharacter* HealerBot, cons
         return false;
     }
 
-    if (HealingSearchRadius > 0.f &&
-        FVector::DistSquared(HealerBot->GetActorLocation(), TargetBot->GetActorLocation()) >
-            FMath::Square(HealingSearchRadius))
-    {
-        return false;
-    }
-
-    if (bRequireHealingLineOfSight && !HasHealingLineOfSight(*HealerBot, *TargetBot))
-    {
-        return false;
-    }
-
     return true;
 }
 
-bool ABotAIController::HasHealingLineOfSight(const ABotCharacter& HealerBot, const ABotCharacter& TargetBot) const
+bool ABotAIController::DoesHealingTargetMatchDetection(const ABotCharacter& TargetBot, const FVector& DetectedLocation) const
 {
-    const UWorld* World = HealerBot.GetWorld();
-    if (!World)
-    {
-        return false;
-    }
-
-    const FVector HeightOffset(0.f, 0.f, FMath::Max(0.f, HealingLineOfSightHeightOffset));
-    const FVector TraceStart = HealerBot.GetActorLocation() + HeightOffset;
-    const FVector TraceEnd = TargetBot.GetActorLocation() + HeightOffset;
-
-    FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(BotHealingLineOfSight), false, &HealerBot);
-    QueryParams.AddIgnoredActor(&TargetBot);
-
-    FHitResult Hit;
-    return !World->LineTraceSingleByChannel(Hit, TraceStart, TraceEnd, ECC_Visibility, QueryParams);
+    return HealingDetectionMatchRadius <= 0.f ||
+        FVector::DistSquared(TargetBot.GetActorLocation(), DetectedLocation) <= FMath::Square(HealingDetectionMatchRadius);
 }
 
 bool ABotAIController::ShouldUseMeleeHealing(const ABotCharacter& HealerBot, const ABotCharacter& TargetBot) const
@@ -391,7 +366,9 @@ bool ABotAIController::CanReachHealingTargetForMelee(const ABotCharacter& Healer
     return HealerBot.IsFlyingBot() || HealerBot.IsWalkingBot();
 }
 
-ABotCharacter* ABotAIController::FindHealingTarget(const ABotCharacter* HealerBot) const
+ABotCharacter* ABotAIController::FindHealingTargetFromDetection(
+    const ABotCharacter* HealerBot,
+    const FVector& DetectedLocation) const
 {
     if (!IsValid(HealerBot))
     {
@@ -416,10 +393,13 @@ ABotCharacter* ABotAIController::FindHealingTarget(const ABotCharacter* HealerBo
             continue;
         }
 
+        if (!DoesHealingTargetMatchDetection(*Candidate, DetectedLocation))
+        {
+            continue;
+        }
+
         const float CandidateHealthPercent = Candidate->GetHealthPercent();
-        const float CandidateDistanceSq = FVector::DistSquared(
-            HealerBot->GetActorLocation(),
-            Candidate->GetActorLocation());
+        const float CandidateDistanceSq = FVector::DistSquared(Candidate->GetActorLocation(), DetectedLocation);
         if (!BestTarget ||
             CandidateHealthPercent < BestHealthPercent ||
             (FMath::IsNearlyEqual(CandidateHealthPercent, BestHealthPercent) &&
@@ -459,14 +439,22 @@ void ABotAIController::UpdateHealingTarget(float DeltaSeconds)
         return;
     }
 
+    if (HasDetectedTargetKey.IsNone() || !BlackboardComponent->GetValueAsBool(HasDetectedTargetKey))
+    {
+        ClearHealingTarget(*BlackboardComponent);
+        return;
+    }
+
+    const FVector DetectedTargetLocation = BlackboardComponent->GetValueAsVector(DetectedTargetLocationKey);
     const float CurrentTime = World->GetTimeSeconds();
     ABotCharacter* TargetBot = CurrentHealingTarget.Get();
     const bool bShouldRefreshTarget =
         !IsValidHealingTarget(HealerBot, TargetBot) ||
+        !DoesHealingTargetMatchDetection(*TargetBot, DetectedTargetLocation) ||
         CurrentTime - LastHealingTargetSearchTime >= HealingTargetRefreshSeconds;
     if (bShouldRefreshTarget)
     {
-        TargetBot = FindHealingTarget(HealerBot);
+        TargetBot = FindHealingTargetFromDetection(HealerBot, DetectedTargetLocation);
         CurrentHealingTarget = TargetBot;
         LastHealingTargetSearchTime = CurrentTime;
     }
@@ -478,12 +466,9 @@ void ABotAIController::UpdateHealingTarget(float DeltaSeconds)
     }
 
     const FVector TargetLocation = TargetBot->GetActorLocation();
-    BlackboardComponent->SetValueAsBool(HasDetectedTargetKey, true);
     BlackboardComponent->SetValueAsBool(HasLineOfSightKey, true);
     BlackboardComponent->SetValueAsObject(TargetActorKey, TargetBot);
     BlackboardComponent->SetValueAsVector(TargetLocationKey, TargetLocation);
-    BlackboardComponent->SetValueAsVector(DetectedTargetLocationKey, TargetLocation);
-    SetFocalPoint(TargetLocation, EAIFocusPriority::Gameplay);
 
     bCurrentHealingTargetUsesMelee = HealerBot->IsCloseDamageHealing() && ShouldUseMeleeHealing(*HealerBot, *TargetBot);
     if (bCurrentHealingTargetUsesMelee)
@@ -498,14 +483,18 @@ void ABotAIController::UpdateHealingTarget(float DeltaSeconds)
             FVector::DistSquared(HealerBot->GetActorLocation(), TargetLocation) <= FMath::Square(CloseDamageRange))
         {
             HealerBot->TryApplyCloseDamageToActor(TargetBot);
+            StopMovement();
+            SetFocalPoint(TargetLocation, EAIFocusPriority::Gameplay);
+            return;
         }
 
+        ClearFocus(EAIFocusPriority::Gameplay);
         MoveToActor(
             TargetBot,
             FMath::Max(0.f, HealingMeleeMoveAcceptanceRadius),
             false,
             true,
-            true,
+            false,
             nullptr,
             true);
         return;
@@ -520,18 +509,20 @@ void ABotAIController::UpdateHealingTarget(float DeltaSeconds)
         const float DistanceSq = FVector::DistSquared(HealerBot->GetActorLocation(), TargetLocation);
         if (ProjectileRange > 0.f && DistanceSq > FMath::Square(ProjectileRange * 0.85f))
         {
+            ClearFocus(EAIFocusPriority::Gameplay);
             MoveToActor(
                 TargetBot,
                 FMath::Max(100.f, ProjectileRange * 0.75f),
                 true,
                 true,
-                true,
+                false,
                 nullptr,
                 true);
         }
         else
         {
             StopMovement();
+            SetFocalPoint(TargetLocation, EAIFocusPriority::Gameplay);
         }
         return;
     }
@@ -551,11 +542,9 @@ void ABotAIController::ClearHealingTarget(UBlackboardComponent& BlackboardCompon
 
 void ABotAIController::ClearHealingBlackboardTarget(UBlackboardComponent& BlackboardComponent)
 {
-    BlackboardComponent.SetValueAsBool(HasDetectedTargetKey, false);
     BlackboardComponent.SetValueAsBool(HasLineOfSightKey, false);
     BlackboardComponent.ClearValue(TargetActorKey);
     BlackboardComponent.ClearValue(TargetLocationKey);
-    BlackboardComponent.ClearValue(DetectedTargetLocationKey);
 }
 
 void ABotAIController::StartBehaviorTreeForPawn(APawn* InPawn)

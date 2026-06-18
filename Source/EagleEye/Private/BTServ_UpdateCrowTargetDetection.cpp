@@ -1011,6 +1011,13 @@ namespace
         return !Settings || Settings->bEnableDetectionDebugLogs;
     }
 
+    bool IsDetectionAndPathDebugDrawingDisabled()
+    {
+        UEagleEyeDetectionSettings::LoadRuntimeConfig();
+        const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
+        return Settings && Settings->bDisableDetectionAndPathDebugDrawing;
+    }
+
     void PrintCrowDetectionDebug(
         const AActor& ControlledActor,
         const FString& Message,
@@ -2201,7 +2208,7 @@ void UBTServ_UpdateCrowTargetDetection::TickNode(
         bDrawDebug,
         bLogDebug);
 
-    if (bDrawDebug && IsDetectionDebugEnabled())
+    if (bDrawDebug && !IsDetectionAndPathDebugDrawingDisabled() && IsDetectionDebugEnabled())
     {
         if (UWorld* World = ControlledPawn->GetWorld())
         {

@@ -82,7 +82,7 @@ protected:
     float HealingHealthPercentThreshold = 0.65f;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Healing", meta=(ClampMin="0.0"))
-    float HealingSearchRadius = 5000.f;
+    float HealingDetectionMatchRadius = 450.f;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Healing", meta=(ClampMin="0.0"))
     float HealingTargetRefreshSeconds = 0.25f;
@@ -96,12 +96,6 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Healing")
     bool bUseRangedHealingWhenMeleeUnreachable = true;
 
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Healing")
-    bool bRequireHealingLineOfSight = true;
-
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Healing", meta=(ClampMin="0.0"))
-    float HealingLineOfSightHeightOffset = 80.f;
-
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="AI|Random Movement")
     FBotRandomMovementSettings DefaultRandomMovementSettings;
 
@@ -114,10 +108,10 @@ private:
     bool ShouldUseRandomWalking(const APawn* ControlledPawn) const;
     bool IsBlackboardKeyBlockingRandomMovement(FName KeyName) const;
     bool IsValidHealingTarget(const ABotCharacter* HealerBot, const ABotCharacter* TargetBot) const;
-    bool HasHealingLineOfSight(const ABotCharacter& HealerBot, const ABotCharacter& TargetBot) const;
+    bool DoesHealingTargetMatchDetection(const ABotCharacter& TargetBot, const FVector& DetectedLocation) const;
     bool ShouldUseMeleeHealing(const ABotCharacter& HealerBot, const ABotCharacter& TargetBot) const;
     bool CanReachHealingTargetForMelee(const ABotCharacter& HealerBot, const ABotCharacter& TargetBot) const;
-    ABotCharacter* FindHealingTarget(const ABotCharacter* HealerBot) const;
+    ABotCharacter* FindHealingTargetFromDetection(const ABotCharacter* HealerBot, const FVector& DetectedLocation) const;
     void StartBehaviorTreeForPawn(APawn* InPawn);
     void UpdateBlackboardTarget(AActor* TargetActor, bool bHasLineOfSight);
     void UpdateHealingTarget(float DeltaSeconds);

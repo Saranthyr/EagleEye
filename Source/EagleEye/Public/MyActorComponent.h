@@ -146,7 +146,12 @@ public:
 
     void RequestInferenceShutdown();
     int32 BeginSharedVisionRequest();
-    void ConsumeSharedVisionResult(TArray<FDetectionResult>&& Detections, int32 SourceWidth, int32 SourceHeight, int32 RequestSerial);
+    void ConsumeSharedVisionResult(
+        TArray<FDetectionResult>&& Detections,
+        int32 SourceWidth,
+        int32 SourceHeight,
+        float CapturedWorldTimeSeconds,
+        int32 RequestSerial);
 
 protected:
     virtual void BeginPlay() override;
@@ -169,7 +174,7 @@ private:
     void ClearLastFrameSceneDepth();
     void ResetOwnerCameraReadback();
     void AdvanceOwnerCameraReadbackGeneration();
-    bool PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight);
+    bool PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight, float& OutCapturedWorldTimeSeconds);
     bool EnqueueAsyncOwnerCameraReadback();
     bool EnsureOwnerCameraCapture();
     void ReleaseOwnerCameraCaptureResources();
@@ -251,6 +256,7 @@ private:
         TArray<FColor> Pixels;
         int32 Width = 0;
         int32 Height = 0;
+        float CapturedWorldTimeSeconds = -FLT_MAX;
         FVector2D DetectionTargetPixel = FVector2D::ZeroVector;
         bool bHasDetectionEvaluation = false;
         bool bExpectedInFov = false;
@@ -330,6 +336,7 @@ private:
     int32 PendingOwnerCameraReadbackWidth = 0;
     int32 PendingOwnerCameraReadbackHeight = 0;
     double PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
+    float PendingOwnerCameraReadbackCapturedWorldTimeSeconds = -FLT_MAX;
     double OwnerCameraReadbackWarmupEndSeconds = 0.0;
     TArray<float> PendingOwnerCameraReadbackDepth;
     int32 PendingOwnerCameraReadbackDepthWidth = 0;
@@ -374,7 +381,7 @@ private:
     int32 ResultsSourceWidth = 0;  // guarded by ResultsMutex
     int32 ResultsSourceHeight = 0; // guarded by ResultsMutex
     int32 ResultsSequence = 0;    // guarded by ResultsMutex
-    float ResultsTimeSeconds = -FLT_MAX; // guarded by ResultsMutex
+    float ResultsTimeSeconds = -FLT_MAX; // guarded by ResultsMutex, capture world time
 
     // Worker control
     FTimerHandle TimerHandle_Capture;

@@ -15,7 +15,7 @@
 
 namespace
 {
-    constexpr int32 DetectionSettingsMenuItemCount = 15;
+    constexpr int32 DetectionSettingsMenuItemCount = 16;
     constexpr float DetectionSettingsMenuToggleCooldownSeconds = 0.30f;
     constexpr float DetectionSettingsMenuNavigationCooldownSeconds = 0.16f;
     constexpr float DetectionSettingsMenuValueCooldownSeconds = 0.14f;
@@ -121,6 +121,13 @@ namespace
             return Value;
         }
         return TEXT("...") + Value.Right(FMath::Max(1, MaxChars - 3));
+    }
+
+    bool IsDetectionAndPathDebugDrawingDisabled()
+    {
+        UEagleEyeDetectionSettings::LoadRuntimeConfig();
+        const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
+        return Settings && Settings->bDisableDetectionAndPathDebugDrawing;
     }
 }
 
@@ -280,6 +287,7 @@ void AMyHUD::RefreshDetectionSettingsMenu()
     bPendingEnableDetectionDebugLogs = Settings->bEnableDetectionDebugLogs;
     bPendingEnableDetectionPerformanceLogs = Settings->bEnableDetectionPerformanceLogs;
     bPendingEnableDetectionMetricLogs = Settings->bEnableDetectionMetricLogs;
+    bPendingDisableDetectionAndPathDebugDrawing = Settings->bDisableDetectionAndPathDebugDrawing;
     LastDetectionSettingsMessage = TEXT("Cancel closes. Confirm applies selected action.");
 
     if (PendingModelPathOverride.IsEmpty() && ModelPathOptions.Num() > 0)
@@ -400,6 +408,9 @@ void AMyHUD::AdjustDetectionSettingsValue(int32 Direction)
     case EDetectionSettingsMenuItem::DetectionMetricLogs:
         bPendingEnableDetectionMetricLogs = !bPendingEnableDetectionMetricLogs;
         break;
+    case EDetectionSettingsMenuItem::DisableDetectionAndPathDebugDrawing:
+        bPendingDisableDetectionAndPathDebugDrawing = !bPendingDisableDetectionAndPathDebugDrawing;
+        break;
     case EDetectionSettingsMenuItem::ApplyReload:
         ApplyPendingDetectionSettings();
         break;
@@ -431,6 +442,7 @@ void AMyHUD::ApplyPendingDetectionSettings()
     Settings->bEnableDetectionDebugLogs = bPendingEnableDetectionDebugLogs;
     Settings->bEnableDetectionPerformanceLogs = bPendingEnableDetectionPerformanceLogs;
     Settings->bEnableDetectionMetricLogs = bPendingEnableDetectionMetricLogs;
+    Settings->bDisableDetectionAndPathDebugDrawing = bPendingDisableDetectionAndPathDebugDrawing;
     const bool bRuntimeConfigSaved = UEagleEyeDetectionSettings::SaveRuntimeConfig();
 
     int32 ReloadedComponents = 0;
@@ -447,19 +459,21 @@ void AMyHUD::ApplyPendingDetectionSettings()
     }
 
     LastDetectionSettingsMessage = FString::Printf(
-        TEXT("Saved (%s). Reloaded %d detection component(s). Debug=%s Perf=%s Metrics=%s."),
+        TEXT("Saved (%s). Reloaded %d detection component(s). Debug=%s Perf=%s Metrics=%s Draw=%s."),
         bRuntimeConfigSaved ? TEXT("config ok") : TEXT("config write failed"),
         ReloadedComponents,
         Settings->bEnableDetectionDebugLogs ? TEXT("On") : TEXT("Off"),
         Settings->bEnableDetectionPerformanceLogs ? TEXT("On") : TEXT("Off"),
-        Settings->bEnableDetectionMetricLogs ? TEXT("On") : TEXT("Off"));
-    UE_LOG(LogTemp, Log, TEXT("Detection settings applied: model=%s debug=%s perf=%s metrics=%s pathDecision=%s pathObject=%s config=%s path=%s reloaded=%d"),
+        Settings->bEnableDetectionMetricLogs ? TEXT("On") : TEXT("Off"),
+        Settings->bDisableDetectionAndPathDebugDrawing ? TEXT("Off") : TEXT("On"));
+    UE_LOG(LogTemp, Log, TEXT("Detection settings applied: model=%s debug=%s perf=%s metrics=%s pathDecision=%s pathObject=%s detectionPathDrawDebug=%s config=%s path=%s reloaded=%d"),
         *Settings->ModelPathOverride,
         Settings->bEnableDetectionDebugLogs ? TEXT("true") : TEXT("false"),
         Settings->bEnableDetectionPerformanceLogs ? TEXT("true") : TEXT("false"),
         Settings->bEnableDetectionMetricLogs ? TEXT("true") : TEXT("false"),
         Settings->bEnablePathfindingDecisionLogs ? TEXT("true") : TEXT("false"),
         Settings->bEnablePathfindingObjectLogs ? TEXT("true") : TEXT("false"),
+        Settings->bDisableDetectionAndPathDebugDrawing ? TEXT("false") : TEXT("true"),
         bRuntimeConfigSaved ? TEXT("updated") : TEXT("failed"),
         *UEagleEyeDetectionSettings::GetRuntimeConfigFilename(),
         ReloadedComponents);
@@ -497,6 +511,8 @@ FString AMyHUD::GetDetectionSettingsItemLabel(int32 ItemIndex) const
         return TEXT("Detection perf logs");
     case EDetectionSettingsMenuItem::DetectionMetricLogs:
         return TEXT("Detection metric logs");
+    case EDetectionSettingsMenuItem::DisableDetectionAndPathDebugDrawing:
+        return TEXT("Detection/path debug draw");
     case EDetectionSettingsMenuItem::ApplyReload:
         return TEXT("Apply + reload");
     default:
@@ -536,6 +552,8 @@ FString AMyHUD::GetDetectionSettingsItemValue(int32 ItemIndex) const
         return bPendingEnableDetectionPerformanceLogs ? TEXT("On") : TEXT("Off");
     case EDetectionSettingsMenuItem::DetectionMetricLogs:
         return bPendingEnableDetectionMetricLogs ? TEXT("On") : TEXT("Off");
+    case EDetectionSettingsMenuItem::DisableDetectionAndPathDebugDrawing:
+        return bPendingDisableDetectionAndPathDebugDrawing ? TEXT("Off") : TEXT("On");
     case EDetectionSettingsMenuItem::ApplyReload:
         return TEXT("Enter");
     default:
@@ -786,7 +804,7 @@ void AMyHUD::DrawHUD()
         return;
     }
 
-    if (!bDetectionHudEnabled)
+    if (!bDetectionHudEnabled || IsDetectionAndPathDebugDrawingDisabled())
     {
         return;
     }

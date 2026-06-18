@@ -97,6 +97,7 @@ private:
         DetectionDebugLogs,
         DetectionPerformanceLogs,
         DetectionMetricLogs,
+        DisableDetectionAndPathDebugDrawing,
         ApplyReload,
         Count
     };
@@ -132,6 +133,7 @@ private:
     bool bPendingEnableDetectionDebugLogs = true;
     bool bPendingEnableDetectionPerformanceLogs = false;
     bool bPendingEnableDetectionMetricLogs = false;
+    bool bPendingDisableDetectionAndPathDebugDrawing = false;
     TArray<FString> ModelPathOptions;
     TArray<FString> NamesPathOptions;
     FString LastDetectionSettingsMessage;

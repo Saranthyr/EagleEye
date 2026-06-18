@@ -1083,6 +1083,7 @@ void UMyActorComponent::SetCaptureResolution(int32 InWidth, int32 InHeight)
         PendingOwnerCameraReadbackWidth = 0;
         PendingOwnerCameraReadbackHeight = 0;
         PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
+        PendingOwnerCameraReadbackCapturedWorldTimeSeconds = -FLT_MAX;
 
         OwnerCaptureRenderTarget->ResizeTarget(CaptureWidth, CaptureHeight);
         OwnerCaptureRenderTarget->UpdateResourceImmediate(true);
@@ -1577,9 +1578,9 @@ void UMyActorComponent::BeginPlay() {
 
     if (bSharedVisionModelHost)
     {
-        if (UWorld* World = GetWorld())
+        if (UWorld* SharedWorld = GetWorld())
         {
-            if (UCrowVisionSubsystem* VisionSubsystem = World->GetSubsystem<UCrowVisionSubsystem>())
+            if (UCrowVisionSubsystem* VisionSubsystem = SharedWorld->GetSubsystem<UCrowVisionSubsystem>())
             {
                 VisionSubsystem->RegisterModelHost(this);
             }
@@ -1632,9 +1633,9 @@ void UMyActorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason) {
 
     if (bSharedVisionModelHost)
     {
-        if (UWorld* World = GetWorld())
+        if (UWorld* SharedWorld = GetWorld())
         {
-            if (UCrowVisionSubsystem* VisionSubsystem = World->GetSubsystem<UCrowVisionSubsystem>())
+            if (UCrowVisionSubsystem* VisionSubsystem = SharedWorld->GetSubsystem<UCrowVisionSubsystem>())
             {
                 VisionSubsystem->UnregisterModelHost(this);
             }
@@ -1781,6 +1782,7 @@ bool UMyActorComponent::EnsureOwnerCameraCapture()
         PendingOwnerCameraReadbackWidth = 0;
         PendingOwnerCameraReadbackHeight = 0;
         PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
+        PendingOwnerCameraReadbackCapturedWorldTimeSeconds = -FLT_MAX;
         OwnerCaptureRenderTarget->ResizeTarget(DesiredCaptureWidth, DesiredCaptureHeight);
         OwnerCaptureRenderTarget->UpdateResourceImmediate(true);
     }
@@ -3073,6 +3075,7 @@ void UMyActorComponent::ResetOwnerCameraReadback()
     PendingOwnerCameraReadbackWidth = 0;
     PendingOwnerCameraReadbackHeight = 0;
     PendingOwnerCameraReadbackSubmitTimeSeconds = 0.0;
+    PendingOwnerCameraReadbackCapturedWorldTimeSeconds = -FLT_MAX;
     PendingOwnerCameraReadbackDepth.Reset();
     PendingOwnerCameraReadbackDepthWidth = 0;
     PendingOwnerCameraReadbackDepthHeight = 0;
@@ -3087,10 +3090,11 @@ void UMyActorComponent::AdvanceOwnerCameraReadbackGeneration()
     }
 }
 
-bool UMyActorComponent::PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight)
+bool UMyActorComponent::PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, int32& OutWidth, int32& OutHeight, float& OutCapturedWorldTimeSeconds)
 {
     OutWidth = 0;
     OutHeight = 0;
+    OutCapturedWorldTimeSeconds = -FLT_MAX;
 
     UWorld* World = GetWorld();
     if (bIsEndingPlay.load() || !World || World->bIsTearingDown)
@@ -3157,6 +3161,7 @@ bool UMyActorComponent::PollAsyncOwnerCameraReadback(TArray<FColor>& OutPixels, 
 
     OutWidth = PendingOwnerCameraReadbackWidth;
     OutHeight = PendingOwnerCameraReadbackHeight;
+    OutCapturedWorldTimeSeconds = PendingOwnerCameraReadbackCapturedWorldTimeSeconds;
     if (RowPitchInPixels < OutWidth || BufferHeight < OutHeight)
     {
         UE_LOG(LogTemp, Warning, TEXT("Dropping async owner-camera readback for %s with invalid pitch/height row_pitch=%d buffer_h=%d size=%dx%d"),
@@ -3233,6 +3238,7 @@ bool UMyActorComponent::EnqueueAsyncOwnerCameraReadback()
         return false;
     }
 
+    const float CapturedWorldTimeSeconds = World->GetTimeSeconds();
     const double SceneCaptureStartSeconds = FPlatformTime::Seconds();
     OwnerSceneCapture->CaptureScene();
     const double SceneCaptureMs = (FPlatformTime::Seconds() - SceneCaptureStartSeconds) * 1000.0;
@@ -3261,6 +3267,7 @@ bool UMyActorComponent::EnqueueAsyncOwnerCameraReadback()
     PendingOwnerCameraReadbackWidth = OwnerCaptureRenderTarget->SizeX;
     PendingOwnerCameraReadbackHeight = OwnerCaptureRenderTarget->SizeY;
     PendingOwnerCameraReadbackSubmitTimeSeconds = FPlatformTime::Seconds();
+    PendingOwnerCameraReadbackCapturedWorldTimeSeconds = CapturedWorldTimeSeconds;
     PendingOwnerCameraReadbackDepth = MoveTemp(CapturedDepth);
     PendingOwnerCameraReadbackDepthWidth = CapturedDepthWidth;
     PendingOwnerCameraReadbackDepthHeight = CapturedDepthHeight;
@@ -3301,15 +3308,18 @@ void UMyActorComponent::CaptureAndEnqueue(bool bSubmitDetection)
     TArray<FColor> Pixels;
     int32 SourceWidth = 0;
     int32 SourceHeight = 0;
+    UWorld* World = GetWorld();
+    float CapturedWorldTimeSeconds = World ? World->GetTimeSeconds() : -FLT_MAX;
 
     bool bCaptured = false;
     if (bUseOwnerCameraCapture && bUseAsyncOwnerCameraReadback)
     {
-        bCaptured = PollAsyncOwnerCameraReadback(Pixels, SourceWidth, SourceHeight);
+        bCaptured = PollAsyncOwnerCameraReadback(Pixels, SourceWidth, SourceHeight, CapturedWorldTimeSeconds);
         EnqueueAsyncOwnerCameraReadback();
     }
     else
     {
+        CapturedWorldTimeSeconds = World ? World->GetTimeSeconds() : -FLT_MAX;
         bCaptured = bUseOwnerCameraCapture
             ? CaptureSceneToPixels(Pixels, SourceWidth, SourceHeight)
             : CaptureViewportToPixels(Pixels, SourceWidth, SourceHeight);
@@ -3363,15 +3373,16 @@ void UMyActorComponent::CaptureAndEnqueue(bool bSubmitDetection)
             return;
         }
 
-        if (UWorld* World = GetWorld())
+        if (UWorld* SharedWorld = GetWorld())
         {
-            if (UCrowVisionSubsystem* VisionSubsystem = World->GetSubsystem<UCrowVisionSubsystem>())
+            if (UCrowVisionSubsystem* VisionSubsystem = SharedWorld->GetSubsystem<UCrowVisionSubsystem>())
             {
                 VisionSubsystem->SubmitFrame(
                     this,
                     MoveTemp(Pixels),
                     SourceWidth,
                     SourceHeight,
+                    CapturedWorldTimeSeconds,
                     DetectionTargetPixel,
                     bHasDetectionEvaluation,
                     bExpectedInFov);
@@ -3393,6 +3404,7 @@ void UMyActorComponent::CaptureAndEnqueue(bool bSubmitDetection)
     Frame->Pixels = MoveTemp(Pixels);
     Frame->Width = SourceWidth;
     Frame->Height = SourceHeight;
+    Frame->CapturedWorldTimeSeconds = CapturedWorldTimeSeconds;
     Frame->DetectionTargetPixel = DetectionTargetPixel;
     Frame->bHasDetectionEvaluation = bHasDetectionEvaluation;
     Frame->bExpectedInFov = bExpectedInFov;
@@ -3489,7 +3501,7 @@ void UMyActorComponent::StartWorker()
                     ResultsSourceWidth = Frame->Width;
                     ResultsSourceHeight = Frame->Height;
                     ++ResultsSequence;
-                    ResultsTimeSeconds = 0.f;
+                    ResultsTimeSeconds = Frame->CapturedWorldTimeSeconds;
                     LoggedSequence = ResultsSequence;
                     LoggedDetectionCount = ResultsShared.Num();
                 }
@@ -3630,7 +3642,9 @@ void UMyActorComponent::CopyResultsFromWorker()
     LastFrameSourceWidth = SourceWidth;
     LastFrameSourceHeight = SourceHeight;
     LastFrameSequence = Sequence;
-    LastFrameTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : ResultTimeSeconds;
+    LastFrameTimeSeconds = ResultTimeSeconds > -FLT_MAX * 0.5f
+        ? ResultTimeSeconds
+        : (GetWorld() ? GetWorld()->GetTimeSeconds() : -FLT_MAX);
 
     LogFovDetectionMetricSample(TEXT("model_local"), LastFrameDetections, SourceWidth, SourceHeight);
 }
@@ -3718,6 +3732,7 @@ void UMyActorComponent::ConsumeSharedVisionResult(
     TArray<FDetectionResult>&& Detections,
     int32 SourceWidth,
     int32 SourceHeight,
+    float CapturedWorldTimeSeconds,
     int32 RequestSerial)
 {
     UWorld* World = GetWorld();
@@ -3739,7 +3754,9 @@ void UMyActorComponent::ConsumeSharedVisionResult(
         LastFrameSourceWidth = 0;
         LastFrameSourceHeight = 0;
         ++LastFrameSequence;
-        LastFrameTimeSeconds = World->GetTimeSeconds();
+        LastFrameTimeSeconds = CapturedWorldTimeSeconds > -FLT_MAX * 0.5f
+            ? CapturedWorldTimeSeconds
+            : World->GetTimeSeconds();
         return;
     }
 
@@ -3747,7 +3764,9 @@ void UMyActorComponent::ConsumeSharedVisionResult(
     LastFrameSourceWidth = SourceWidth;
     LastFrameSourceHeight = SourceHeight;
     ++LastFrameSequence;
-    LastFrameTimeSeconds = World->GetTimeSeconds();
+    LastFrameTimeSeconds = CapturedWorldTimeSeconds > -FLT_MAX * 0.5f
+        ? CapturedWorldTimeSeconds
+        : World->GetTimeSeconds();
 
     if (ShouldLogFrameTimings())
     {

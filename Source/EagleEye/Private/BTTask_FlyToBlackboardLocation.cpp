@@ -163,6 +163,13 @@ namespace
             (!Settings || Settings->bEnablePathfindingObjectLogs);
     }
 
+    bool IsDetectionAndPathDebugDrawingDisabled()
+    {
+        UEagleEyeDetectionSettings::LoadRuntimeConfig();
+        const UEagleEyeDetectionSettings* Settings = GetDefault<UEagleEyeDetectionSettings>();
+        return Settings && Settings->bDisableDetectionAndPathDebugDrawing;
+    }
+
     const TCHAR* LexToString(ECollisionEnabled::Type CollisionEnabled)
     {
         switch (CollisionEnabled)
@@ -1846,7 +1853,8 @@ void UBTTask_FlyToBlackboardLocation::TickTask(
         LogMovementDecision(TEXT("Hold"));
 
         const bool bShouldDrawDecisionDebug = bDrawDebug && IsPathfindingDecisionLoggingEnabled();
-        const bool bShouldDrawPathDebug = bDrawPathDebug && IsPathfindingObjectLoggingEnabled();
+        const bool bShouldDrawPathDebug =
+            !IsDetectionAndPathDebugDrawingDisabled() && bDrawPathDebug && IsPathfindingObjectLoggingEnabled();
 
         if (bShouldDrawDecisionDebug && GEngine)
         {
@@ -2032,7 +2040,8 @@ void UBTTask_FlyToBlackboardLocation::TickTask(
     }
 
     const bool bShouldDrawDecisionDebug = bDrawDebug && IsPathfindingDecisionLoggingEnabled();
-    const bool bShouldDrawPathDebug = bDrawPathDebug && IsPathfindingObjectLoggingEnabled();
+    const bool bShouldDrawPathDebug =
+        !IsDetectionAndPathDebugDrawingDisabled() && bDrawPathDebug && IsPathfindingObjectLoggingEnabled();
 
     if (bShouldDrawDecisionDebug || bShouldDrawPathDebug)
     {
